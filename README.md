@@ -30,8 +30,9 @@ Three models are emulated:
 
 **Quadra 800 / 650 / 610 (colour, 68040)**
 - 68040 with its MMU and FPU at 33 MHz.
-- DAFB built-in video: 640×480 and 800×600 at 1/2/4/8 bits and millions of
-  colours (the ROM's own driver picks the mode; the monitor reports as VGA).
+- DAFB built-in video: a VGA monitor (640×480, 800×600) or an Apple 21-inch
+  display (1152×870), at 1/2/4/8 bits and millions of colours on VGA (the
+  ROM's own driver picks the mode).
 - NCR 53C96 SCSI with pseudo-DMA, up to seven disks.
 - ADB keyboard and mouse, Enhanced ASC sound, clock and PRAM, soft power off.
 - Follows QEMU's Quadra 800 model (GLUE interrupt routing, djMEMC, IOSB,
@@ -89,12 +90,13 @@ Three models are emulated:
   - *Hard disks*: choose the image for each SCSI ID 0–6 (from the top of the
     card or the `disks` folder), then *Restart the Mac* to use them.
   - *Machine, ROM and memory*: model (auto, Plus, II, Quadra), ROM file,
-    memory size and the Mac II screen size. *Apply* saves the settings and
+    memory size, the Mac II screen size and the Quadra's monitor (VGA, or a
+    21-inch display at 1152×870). *Apply* saves the settings and
     restarts the Pi with them.
   - *Display, sound and input*: speed (1×–8×, unlimited), colour scheme,
     sound, volume, mouse speed and key layout.
-  - *Network file transfer*: the address of the web file manager and what it
-    is doing.
+  - *Network*: connection type, Wi-Fi name, password and country, keyboard
+    layout for typing them, and the web file manager's address.
   - Restart the Mac, interrupt switch, screenshot, save settings.
 - **F11** toggles unlimited speed (turbo).
 - **F10** saves a screenshot to `screenshots/macNNN.bmp` on the SD card.
@@ -102,20 +104,28 @@ Three models are emulated:
 - The ACT LED shows disk activity.
 - Settings live in a plain-text `macemu.cfg`.
 
-**Network file transfer**
-- Plug the Pi into your network with an Ethernet cable. It gets an address
-  by DHCP while the Mac starts up (nothing waits for it).
+**Network: Wi-Fi or Ethernet**
+- Wi-Fi (Pi 3, 3+, 4, 5, Zero W and Zero 2 W): open the F12 menu, choose
+  *Network*, type the Wi-Fi name and password, pick your country and choose
+  *Save and restart*. The Wi-Fi chip's firmware is in `firmware/` on the
+  card. A `wpa_supplicant.conf` of your own on the card works too.
+- Ethernet: plug in a cable (Pi 3/3+ via USB, Pi 4 and Pi 5 built in).
+- *Connection* chooses Automatic (Wi-Fi when a Wi-Fi network is set up,
+  otherwise the cable), Wi-Fi, Ethernet or Off. One of them is used at a time.
+- Nothing waits for the network: it comes up while the Mac starts.
+
+**Web file manager and software update**
 - Open `http://macemu.local/` in a browser (or the address shown on the
-  menu's *Network file transfer* page). The page lists the ROMs and disk
-  images on the card and lets you **upload** (drag and drop, any size up to
-  4 GB), **download** and **delete** them, and restart the Mac.
-- Disks the Mac is using cannot be replaced or deleted, and the Pi's own
-  start-up files are hidden and protected. Uploads go to a temporary file
-  first, so a broken transfer never leaves half a disk behind.
-- Transfers run alongside the Mac; they are fastest while the F12 menu is
-  open, because the Mac is paused then.
-- Wired Ethernet only (Pi 3/3+ via USB, Pi 4 and Pi 5 built in); Wi-Fi is not
-  supported. `network=0` in `macemu.cfg` turns it off.
+  menu's *Network* page). Upload (drag and drop, up to 4 GB), download and
+  delete disk images and ROMs, and restart the Mac.
+- *Update the emulator*: drop a new `MacEmulator-SD.zip` on the page. The
+  browser unpacks it and sends the new kernels, firmware and start-up files;
+  then the Pi restarts. Your settings, ROMs, PRAM and disks are kept.
+- Disks the Mac is using cannot be replaced or deleted, the Pi's start-up
+  files can only be replaced by an update, and `macemu.cfg` and the Wi-Fi
+  files (which hold the password) are never shown or sent. Uploads go to a
+  temporary file first, so a broken transfer never leaves half a file.
+- Transfers are fastest while the F12 menu is open (the Mac is paused).
 
 **Fast start-up**
 - The Pi's rainbow splash, the boot delay and the firmware's warning
@@ -316,3 +326,8 @@ restart. Hard disk images are read and written in place.
 The emulator sources in this repository are original work. Circle (GPLv3) is
 downloaded at build time and linked into the kernel, so a distributed kernel
 image falls under the GPLv3.
+
+The Wi-Fi chip firmware in `sdcard/firmware/` comes from Raspberry Pi's
+[firmware-nonfree](https://github.com/RPi-Distro/firmware-nonfree) and is
+redistributed under its own licence (`firmware/LICENCE.firmware-nonfree`).
+The WPA supplicant (Circle's port of hostap) is BSD licensed.

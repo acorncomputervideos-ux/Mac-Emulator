@@ -25,6 +25,11 @@ enum {
 // Returns a MacKey, or MK_None (0xFF) if the key has no Macintosh equivalent.
 int usbToMacKey(u8 usage);
 
+// The character a key types, for text fields in the menu: 0 if none.
+// Backspace gives '\b'.  `uk` selects the British layout ("@" and quote
+// swapped, # key), otherwise US.
+char usbToAscii(u8 usage, bool shift, bool uk);
+
 // Mac modifier key for one bit of the HID modifier byte.
 int usbModifierToMacKey(u8 modifierBit, bool altIsOption);
 

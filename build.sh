@@ -48,6 +48,10 @@ command -v ${PREFIX}gcc >/dev/null 2>&1 || { echo "cross compiler ${PREFIX}gcc n
 if [ ! -d "$CIRCLE" ]; then
     git clone --depth 1 --branch "$CIRCLE_TAG" https://github.com/rsta2/circle.git "$CIRCLE"
 fi
+# The Wi-Fi driver's WPA supplicant is a submodule of Circle.
+if [ ! -f "$CIRCLE/addon/wlan/hostap/wpa_supplicant/Makefile.circle" ]; then
+    git -C "$CIRCLE" submodule update --init --depth 1 addon/wlan/hostap
+fi
 
 STAMP="$CIRCLE/.macemu-$MODEL"
 if [ ! -f "$STAMP" ]; then
@@ -59,9 +63,13 @@ if [ ! -f "$STAMP" ]; then
     ./makeall clean >/dev/null
     make -C addon/fatfs clean >/dev/null
     make -C addon/SDCard clean >/dev/null
+    make -C addon/wlan clean >/dev/null
+    make -C addon/wlan/hostap/wpa_supplicant -f Makefile.circle clean >/dev/null
     ./makeall -j"$(nproc)"
     make -C addon/fatfs -j"$(nproc)"
     make -C addon/SDCard -j"$(nproc)"
+    make -C addon/wlan -j"$(nproc)"
+    make -C addon/wlan/hostap/wpa_supplicant -f Makefile.circle -j"$(nproc)"
     touch "$STAMP"
 fi
 
@@ -74,6 +82,7 @@ if [ "$MODEL" = firmware ]; then
        bcm2712-rpi-5-b.dtb bcm2712d0-rpi-5-b.dtb bcm2712-rpi-500.dtb "$TOP/sdcard/"
     mkdir -p "$TOP/sdcard/overlays"
     cp bcm2712d0.dtbo "$TOP/sdcard/overlays/"
+    "$TOP/tools/fetch_wifi_firmware.sh" "$TOP/sdcard/firmware"
     echo "Firmware copied to sdcard/"
     exit 0
 fi

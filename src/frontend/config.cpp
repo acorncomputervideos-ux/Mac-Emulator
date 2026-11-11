@@ -10,6 +10,7 @@ void Config::setDefaults()
     strCopy(machine, "auto", sizeof machine);
     videoWidth = 640;
     videoHeight = 480;
+    strCopy(monitor, "vga", sizeof monitor);
     strCopy(diskDir, "disks", kPath);
     speed = 1;
     palette = 0;
@@ -17,7 +18,9 @@ void Config::setDefaults()
     volume = 8;
     strCopy(soundDevice, "hdmi", sizeof soundDevice);
     mouseSpeed = 4;
-    network = 1;
+    strCopy(network, "auto", sizeof network);
+    strCopy(wifiCountry, "GB", sizeof wifiCountry);
+    strCopy(keyboard, "uk", sizeof keyboard);
 }
 
 static int clampInt(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -28,6 +31,7 @@ void Config::sanitize()
     if (!strEqNoCase(machine, "plus") && !strEqNoCase(machine, "ii") && !strEqNoCase(machine, "quadra")) strCopy(machine, "auto", sizeof machine);
     if (videoWidth < 512 || videoHeight < 342 || videoWidth > 1024 || videoHeight > 768 || (videoWidth & 7))
         { videoWidth = 640; videoHeight = 480; }
+    if (!strEq(monitor, "21")) strCopy(monitor, "vga", sizeof monitor);
     if (speed != 0 && speed != 1 && speed != 2 && speed != 4 && speed != 8) speed = 1;
     scale = clampInt(scale, 0, 8);
     palette = clampInt(palette, 0, 15);
@@ -36,7 +40,13 @@ void Config::sanitize()
     sound = sound ? 1 : 0;
     altIsOption = altIsOption ? 1 : 0;
     floppyReadOnly = floppyReadOnly ? 1 : 0;
-    network = network ? 1 : 0;
+    if (strEq(network, "1")) strCopy(network, "auto", sizeof network);
+    if (strEq(network, "0")) strCopy(network, "off", sizeof network);
+    if (!strEqNoCase(network, "ethernet") && !strEqNoCase(network, "wifi") && !strEqNoCase(network, "off"))
+        strCopy(network, "auto", sizeof network);
+    if (strLen(wifiCountry) != 2) strCopy(wifiCountry, "GB", sizeof wifiCountry);
+    for (int i = 0; i < 2; i++) if (wifiCountry[i] >= 'a' && wifiCountry[i] <= 'z') wifiCountry[i] = (char)(wifiCountry[i] - 32);
+    if (!strEqNoCase(keyboard, "us")) strCopy(keyboard, "uk", sizeof keyboard);
     if (width < 0 || width > 4096) width = 0;
     if (height < 0 || height > 4096) height = 0;
     if (!strEqNoCase(soundDevice, "pwm")) strCopy(soundDevice, "hdmi", sizeof soundDevice);
@@ -87,6 +97,7 @@ void Config::parse(const char *text, u32 len)
             while (*x && *x != 'x' && *x != 'X') x++;
             videoHeight = *x ? toInt(x + 1) : 0;
         }
+        else if (strEqNoCase(p, "monitor")) strCopy(monitor, val, sizeof monitor);
         else if (strEqNoCase(p, "floppy1")) strCopy(floppy[0], val, kPath);
         else if (strEqNoCase(p, "floppy2")) strCopy(floppy[1], val, kPath);
         else if (lower(p[0]) == 'h' && lower(p[1]) == 'd' && p[2] >= '0' && p[2] <= '6' && !p[3])
@@ -103,7 +114,11 @@ void Config::parse(const char *text, u32 len)
         else if (strEqNoCase(p, "mouse_speed")) mouseSpeed = toInt(val);
         else if (strEqNoCase(p, "alt_is_option")) altIsOption = toInt(val);
         else if (strEqNoCase(p, "floppy_readonly")) floppyReadOnly = toInt(val);
-        else if (strEqNoCase(p, "network")) network = toInt(val);
+        else if (strEqNoCase(p, "network")) strCopy(network, val, sizeof network);
+        else if (strEqNoCase(p, "wifi_name")) strCopy(wifiSsid, val, sizeof wifiSsid);
+        else if (strEqNoCase(p, "wifi_password")) strCopy(wifiPassword, val, sizeof wifiPassword);
+        else if (strEqNoCase(p, "wifi_country")) strCopy(wifiCountry, val, sizeof wifiCountry);
+        else if (strEqNoCase(p, "keyboard")) strCopy(keyboard, val, sizeof keyboard);
         else if (strEqNoCase(p, "date")) strCopy(date, val, sizeof date);
     }
     sanitize();
@@ -140,6 +155,7 @@ u32 Config::serialize(char *out, u32 max) const
         line(out, max, "video", v);
     }
     line(out, max, "floppy1", floppy[0]);
+    line(out, max, "monitor", monitor);
     line(out, max, "floppy2", floppy[1]);
     for (int i = 0; i < kHardDisks; i++) {
         if (!hd[i][0]) continue;
@@ -158,7 +174,11 @@ u32 Config::serialize(char *out, u32 max) const
     lineInt(out, max, "mouse_speed", mouseSpeed);
     lineInt(out, max, "alt_is_option", altIsOption);
     lineInt(out, max, "floppy_readonly", floppyReadOnly);
-    lineInt(out, max, "network", network);
+    line(out, max, "network", network);
+    line(out, max, "wifi_name", wifiSsid);
+    line(out, max, "wifi_password", wifiPassword);
+    line(out, max, "wifi_country", wifiCountry);
+    line(out, max, "keyboard", keyboard);
     line(out, max, "date", date);
     return strLen(out);
 }

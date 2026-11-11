@@ -5,6 +5,10 @@ namespace macemu {
 
 static const u32 kRamSizes[] = {512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072};
 static const int kVideoModes[][2] = {{640, 480}, {832, 624}, {1024, 768}};
+static const char *kNetModes[] = {"auto", "ethernet", "wifi", "off"};
+static const char *kCountries[] = {"GB", "US", "IE", "DE", "FR", "ES", "IT", "NL", "BE", "CH", "AT", "SE",
+                                   "NO", "DK", "FI", "PL", "PT", "AU", "NZ", "CA", "JP"};
+static const int kCountryCount = (int)(sizeof kCountries / sizeof kCountries[0]);
 
 Osd::Osd(Config &config, OsdHost &h) : cfg(config), host(h)
 {
@@ -15,6 +19,8 @@ Osd::Osd(Config &config, OsdHost &h) : cfg(config), host(h)
     pickId = 0;
     pickCount = pickSel = pickTop = 0;
     message[0] = 0;
+    editItem = -1;
+    editBuf[0] = 0;
 }
 
 void Osd::open()
@@ -23,6 +29,7 @@ void Osd::open()
     dirty = true;
     page = PageMain;
     message[0] = 0;
+    editItem = -1;
 }
 
 void Osd::say(const char *text)
@@ -47,7 +54,7 @@ int Osd::items(Page p, int *out) const
         for (int i = ItSpeed; i <= ItPrefsBack; i++) out[n++] = i;
         break;
     default:
-        out[n++] = ItNetworkBack;
+        for (int i = ItNetMode; i <= ItNetworkBack; i++) out[n++] = i;
         break;
     }
     return n;
@@ -106,6 +113,27 @@ void Osd::adjust(int item, int dir)
         pendingReboot = true;
         return;
     }
+    case ItNetMode: {
+        int i = 0;
+        while (i < 3 && !strEqNoCase(kNetModes[i], cfg.network)) i++;
+        strCopy(cfg.network, kNetModes[cycle(i, dir, 0, 3)], sizeof cfg.network);
+        pendingReboot = true;
+        return;
+    }
+    case ItWifiCountry: {
+        int i = 0;
+        while (i < kCountryCount - 1 && !strEqNoCase(kCountries[i], cfg.wifiCountry)) i++;
+        strCopy(cfg.wifiCountry, kCountries[cycle(i, dir, 0, kCountryCount - 1)], sizeof cfg.wifiCountry);
+        pendingReboot = true;
+        return;
+    }
+    case ItMonitor:
+        strCopy(cfg.monitor, strEq(cfg.monitor, "21") ? "vga" : "21", sizeof cfg.monitor);
+        pendingReboot = true;
+        return;
+    case ItKeyboard:
+        strCopy(cfg.keyboard, strEqNoCase(cfg.keyboard, "uk") ? "us" : "uk", sizeof cfg.keyboard);
+        return;
     case ItVideo: {
         int i = 0;
         while (i < 2 && kVideoModes[i][0] != cfg.videoWidth) i++;
@@ -163,7 +191,11 @@ void Osd::activate(int item)
     case ItSave: say(host.saveSettings() ? "Settings saved to macemu.cfg" : "Could not write macemu.cfg"); break;
     case ItResume: isOpen = false; break;
     case ItRom: openPicker(PickRom, 0); break;
-    case ItApply: host.saveAndReboot(); break;
+    case ItApply: case ItNetApply: host.saveAndReboot(); break;
+    case ItWifiName: case ItWifiPass:
+        editItem = item;
+        strCopy(editBuf, item == ItWifiName ? cfg.wifiSsid : cfg.wifiPassword, sizeof editBuf);
+        break;
     case ItDisksBack: case ItMachineBack: case ItPrefsBack: case ItNetworkBack:
         page = PageMain;
         break;
@@ -212,10 +244,38 @@ void Osd::pickerKey(Nav nav)
     if (pickSel >= pickTop + kVisible) pickTop = pickSel - kVisible + 1;
 }
 
+void Osd::typeChar(char c)
+{
+    if (!editing()) return;
+    dirty = true;
+    u32 n = strLen(editBuf);
+    if (c == '\b') {
+        if (n) editBuf[n - 1] = 0;
+    } else if (c >= 32 && c < 127 && n + 1 < sizeof editBuf) {
+        editBuf[n] = c;
+        editBuf[n + 1] = 0;
+    }
+}
+
 void Osd::key(Nav nav)
 {
     if (!isOpen) return;
     dirty = true;
+    if (editItem >= 0) {
+        if (nav == NavSelect) {
+            if (editItem == ItWifiName) strCopy(cfg.wifiSsid, editBuf, sizeof cfg.wifiSsid);
+            else strCopy(cfg.wifiPassword, editBuf, sizeof cfg.wifiPassword);
+            if (editItem == ItWifiName && editBuf[0] && strEqNoCase(cfg.network, "off"))
+                strCopy(cfg.network, "auto", sizeof cfg.network);
+            pendingReboot = true;
+            editItem = -1;
+        } else if (nav == NavBack) {
+            editItem = -1;
+        } else if (nav == NavLeft) {
+            typeChar('\b');
+        }
+        return;
+    }
     if (page == PagePicker) { pickerKey(nav); return; }
     int list[kMaxItems];
     int n = items(page, list);
@@ -255,7 +315,33 @@ void Osd::label(int item, char *out, u32 max)
     case ItDisksPage: strAppend(out, "Hard disks  >", max); break;
     case ItMachinePage: strAppend(out, "Machine, ROM and memory  >", max); break;
     case ItPrefsPage: strAppend(out, "Display, sound and input  >", max); break;
-    case ItNetworkPage: strAppend(out, "Network file transfer  >", max); break;
+    case ItNetworkPage: strAppend(out, "Network: Wi-Fi, Ethernet, web  >", max); break;
+    case ItNetMode: {
+        const char *m = strEqNoCase(cfg.network, "ethernet") ? "Ethernet cable" : strEqNoCase(cfg.network, "wifi") ? "Wi-Fi"
+                      : strEqNoCase(cfg.network, "off") ? "Off" : "Automatic";
+        field("Connection", m);
+        break;
+    }
+    case ItWifiName: case ItWifiPass: {
+        const char *name = item == ItWifiName ? "Wi-Fi name" : "Wi-Fi password";
+        if (editItem == item) {
+            // Show the end of what is being typed, with a cursor.
+            u32 room = max > 20 ? max - 20 : 1;
+            const char *t = editBuf;
+            while (strLen(t) + 1 > room) t++;
+            strCopy(v, t, sizeof v);
+            strAppend(v, "_", sizeof v);
+        } else if (item == ItWifiName) {
+            strCopy(v, cfg.wifiSsid[0] ? cfg.wifiSsid : "(not set)", sizeof v);
+        } else {
+            strCopy(v, cfg.wifiPassword[0] ? "********" : "(none: open network)", sizeof v);
+        }
+        field(name, v);
+        break;
+    }
+    case ItWifiCountry: field("Wi-Fi country", cfg.wifiCountry); break;
+    case ItKeyboard: field("Keyboard layout", strEqNoCase(cfg.keyboard, "us") ? "US" : "UK"); break;
+    case ItNetApply: strAppend(out, pendingReboot ? "Save and restart now" : "Save and restart", max); break;
     case ItReset: strAppend(out, disksChanged ? "Restart the Mac (attach new disks)" : "Restart the Mac", max); break;
     case ItInterrupt: strAppend(out, "Press the interrupt switch", max); break;
     case ItScreenshot: strAppend(out, "Save a screenshot", max); break;
@@ -279,6 +365,7 @@ void Osd::label(int item, char *out, u32 max)
         appendUint(v, (u32)cfg.videoHeight, sizeof v);
         field("Mac II screen", v);
         break;
+    case ItMonitor: field("Quadra monitor", strEq(cfg.monitor, "21") ? "21-inch, 1152 x 870" : "VGA, 640 x 480 / 800 x 600"); break;
     case ItApply: strAppend(out, pendingReboot ? "Apply: save and restart now" : "Save and restart", max); break;
     case ItSpeed:
         if (cfg.speed) { appendUint(v, (u32)cfg.speed, sizeof v); strAppend(v, "x", sizeof v); }
@@ -316,7 +403,7 @@ void Osd::draw(Surface &s, const Font &f)
     if (cols < 20) cols = 20;
     int list[kMaxItems];
     int n = page == PagePicker ? 0 : items(page, list);
-    int rows = page == PagePicker ? kVisible + 2 : (page == PageNetwork ? 4 : n);
+    int rows = page == PagePicker ? kVisible + 2 : (page == PageNetwork ? n + 4 : n);
     int w = (cols + 2) * fw;
     int h = (rows + 6) * fh;
     if (h > s.height) h = s.height;
@@ -331,7 +418,7 @@ void Osd::draw(Surface &s, const Font &f)
     char line[96];
 
     static const char *titles[] = {"Mac Emulator", "Hard disks", "Machine, ROM and memory", "Display, sound and input",
-                                   "Network file transfer", ""};
+                                   "Network", ""};
     if (page == PagePicker) {
         const char *t = pickTarget == PickHardDisk ? "Choose a hard disk image" : pickTarget == PickRom ? "Choose a ROM"
                       : "Choose a floppy disk";
@@ -378,7 +465,9 @@ void Osd::draw(Surface &s, const Font &f)
         ty += fh;
     }
     ty += fh / 2;
-    const char *msg = message[0] ? message : (page == PageMachine && pendingReboot) ? "Changes apply after a restart" : 0;
+    const char *msg = message[0] ? message
+                    : editItem >= 0 ? "Type, then Enter to keep or Esc to cancel"
+                    : ((page == PageMachine || page == PageNetwork) && pendingReboot) ? "Changes apply after a restart" : 0;
     if (msg) drawText(s, f, tx, ty, msg, ColSelBg);
     if (page == PageMain) {
         ty = y + h - 2 * fh - fh / 4;

@@ -19,6 +19,9 @@ using namespace macemu;
 typedef ::u64 hostu64;
 
 #define DRIVE		"SD:"
+#define WLAN_FIRMWARE	DRIVE "/firmware/"
+#define WPA_CONFIG	DRIVE "/macemu-wifi.conf"	// written from macemu.cfg
+#define WPA_USER_CONFIG	DRIVE "/wpa_supplicant.conf"	// or one of your own
 #define CONFIG_FILE	DRIVE "/macemu.cfg"
 #define PRAM_FILE	DRIVE "/macemu.pram"
 #define SHOT_DIR	DRIVE "/screenshots"
@@ -74,6 +77,11 @@ CKernel::CKernel (void)
 	m_nSpeedPercent (100),
 	m_pNet (0),
 	m_pWebServer (0),
+	m_pWLAN (0),
+	m_pWPASupplicant (0),
+	m_bWiFi (FALSE),
+	m_bWiFiPending (FALSE),
+	m_nNetStartTicks (0),
 	m_bNetRunning (FALSE),
 	m_nNetTicks (0)
 {
@@ -98,7 +106,7 @@ CKernel::CKernel (void)
 		m_HardDiskPath[i][0] = '\0';
 	}
 	m_InfoLine[0][0] = m_InfoLine[1][0] = '\0';
-	strCopy (m_NetLine[0], "Network: off (network=0 in macemu.cfg)", sizeof m_NetLine[0]);
+	strCopy (m_NetLine[0], "Network: off (Connection is set to Off)", sizeof m_NetLine[0]);
 	m_NetLine[1][0] = m_NetLine[2][0] = '\0';
 	m_ROMName[0] = '\0';
 	m_Config.setDefaults ();
@@ -498,7 +506,7 @@ TShutdownMode CKernel::Run (void)
 		{
 			m_Config.ramKB = 8192;
 		}
-		m_pQuadra = new Quadra;
+		m_pQuadra = new Quadra (strEq (m_Config.monitor, "21") ? Dafb::Apple21 : Dafb::VGA);
 	}
 	else if (bMacII)
 	{
@@ -572,11 +580,23 @@ TShutdownMode CKernel::Run (void)
 	hostu64 nNextFrame = CTimer::GetClockTicks64 ();
 	m_nStatsTime = nNextFrame;
 
+	boolean bMenuWasOpen = FALSE;
 	while (1)
 	{
 		UpdateUSB ();
 		UpdateNetwork ();
 		ProcessInput ();
+
+		// The menu was closed (Esc, F12, Resume, Restart ...): repaint the
+		// whole Mac screen over it.
+		if (bMenuWasOpen && !m_pOsd->active ())
+		{
+			fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+			m_bForceRedraw = TRUE;
+			DrawMac (TRUE);
+			Present ();
+		}
+		bMenuWasOpen = m_pOsd->active ();
 
 		unsigned nSpeed = m_bTurbo ? 0 : (unsigned) m_Config.speed;
 		if (m_pOsd->active ())
@@ -924,32 +944,164 @@ void CKernel::UpdateInfo (void)
 
 // ----------------------------------------------------------------- network
 
-// Wired Ethernet with DHCP, and the web file manager on port 80.  Nothing
-// waits for the network: it comes up in the background while the Mac starts.
+// Wired Ethernet or Wi-Fi with DHCP, and the web file manager on port 80.
+// Nothing waits for the network: it comes up in the background while the
+// Mac starts.  Circle drives one network device at a time, so "auto" picks
+// Wi-Fi when a Wi-Fi network has been set up and the cable otherwise.
 void CKernel::StartNetwork (void)
 {
-	if (!m_Config.network)
+	if (strEqNoCase (m_Config.network, "off"))
 	{
 		return;
 	}
 
-	strCopy (m_NetLine[0], "Network: waiting for a connection...", sizeof m_NetLine[0]);
-	strCopy (m_NetLine[1], "Plug in an Ethernet cable (Wi-Fi is not supported).", sizeof m_NetLine[1]);
+	FILINFO Info;
+	boolean bUserConfig = f_stat (WPA_USER_CONFIG, &Info) == FR_OK;
+	m_bWiFi = strEqNoCase (m_Config.network, "wifi")
+		  || (strEqNoCase (m_Config.network, "auto")
+		      && (m_Config.wifiSsid[0] != '\0' || bUserConfig));
+
+	if (!m_bWiFi)
+	{
+		StartEthernet ();
+		return;
+	}
+
+	// Loading the Wi-Fi firmware takes a moment: do it once the Mac has
+	// started, so that the Happy Mac is not held up.
+	strCopy (m_NetLine[0], "Wi-Fi: starting...", sizeof m_NetLine[0]);
+	m_NetLine[1][0] = '\0';
+	m_bWiFiPending = TRUE;
+}
+
+void CKernel::StartEthernet (void)
+{
+	strCopy (m_NetLine[0], "Ethernet: waiting for a connection...", sizeof m_NetLine[0]);
+	strCopy (m_NetLine[1], "Plug in a network cable.", sizeof m_NetLine[1]);
 
 	m_pNet = new CNetSubSystem (0, 0, 0, 0, "macemu");
 	if (m_pNet == 0 || !m_pNet->Initialize (FALSE))
 	{
-		m_Logger.Write (FromKernel, LogWarning, "No network");
-		strCopy (m_NetLine[0], "Network: no Ethernet adapter found", sizeof m_NetLine[0]);
-		m_NetLine[1][0] = '\0';
+		m_Logger.Write (FromKernel, LogWarning, "No Ethernet");
+		strCopy (m_NetLine[0], "Ethernet: no adapter found on this Pi", sizeof m_NetLine[0]);
+		strCopy (m_NetLine[1], "Choose Wi-Fi below.", sizeof m_NetLine[1]);
+		delete m_pNet;
+		m_pNet = 0;
 		return;
 	}
 
+	m_nNetStartTicks = m_Timer.GetTicks ();
 	m_pWebServer = new CWebServer (m_pNet, DRIVE, this);
+}
+
+void CKernel::StartWiFi (void)
+{
+	m_bWiFiPending = FALSE;
+
+	const char *pConfig = WPA_USER_CONFIG;
+	if (m_Config.wifiSsid[0] != '\0')
+	{
+		if (m_Config.wifiPassword[0] != '\0' && strLen (m_Config.wifiPassword) < 8)
+		{
+			strCopy (m_NetLine[0], "Wi-Fi: the password is too short", sizeof m_NetLine[0]);
+			strCopy (m_NetLine[1], "WPA passwords have 8 to 63 characters.", sizeof m_NetLine[1]);
+			return;
+		}
+
+		pConfig = WPA_CONFIG;
+		if (m_Config.wifiPassword[0] != '\0' && !WriteWiFiConfig (pConfig))
+		{
+			strCopy (m_NetLine[0], "Wi-Fi: cannot write " WPA_CONFIG, sizeof m_NetLine[0]);
+			return;
+		}
+	}
+	else
+	{
+		FILINFO Info;
+		if (f_stat (WPA_USER_CONFIG, &Info) != FR_OK)
+		{
+			strCopy (m_NetLine[0], "Wi-Fi: no network set up yet", sizeof m_NetLine[0]);
+			strCopy (m_NetLine[1], "Enter the Wi-Fi name and password below.", sizeof m_NetLine[1]);
+			return;
+		}
+	}
+
+	m_Logger.Write (FromKernel, LogNotice, "Starting Wi-Fi");
+	m_pWLAN = new CBcm4343Device (WLAN_FIRMWARE);
+	if (m_pWLAN == 0 || !m_pWLAN->Initialize ())
+	{
+		m_Logger.Write (FromKernel, LogWarning, "No Wi-Fi");
+		strCopy (m_NetLine[0], "Wi-Fi: not available on this Pi", sizeof m_NetLine[0]);
+		strCopy (m_NetLine[1], "(or the firmware folder is missing)", sizeof m_NetLine[1]);
+		return;
+	}
+
+	m_pNet = new CNetSubSystem (0, 0, 0, 0, "macemu", NetDeviceTypeWLAN);
+	if (m_pNet == 0 || !m_pNet->Initialize (FALSE))
+	{
+		strCopy (m_NetLine[0], "Wi-Fi: cannot start the network", sizeof m_NetLine[0]);
+		delete m_pNet;
+		m_pNet = 0;
+		return;
+	}
+
+	if (m_Config.wifiSsid[0] != '\0' && m_Config.wifiPassword[0] == '\0')
+	{
+		m_pWLAN->JoinOpenNet (m_Config.wifiSsid);	// no password: an open network
+	}
+	else
+	{
+		m_pWPASupplicant = new CWPASupplicant (pConfig);
+		if (m_pWPASupplicant == 0 || !m_pWPASupplicant->Initialize ())
+		{
+			strCopy (m_NetLine[0], "Wi-Fi: cannot start WPA", sizeof m_NetLine[0]);
+			return;
+		}
+	}
+
+	strCopy (m_NetLine[0], "Wi-Fi: connecting to ", sizeof m_NetLine[0]);
+	strAppend (m_NetLine[0], m_Config.wifiSsid[0] ? m_Config.wifiSsid : "the network", sizeof m_NetLine[0]);
+	strAppend (m_NetLine[0], "...", sizeof m_NetLine[0]);
+	m_NetLine[1][0] = '\0';
+
+	m_nNetStartTicks = m_Timer.GetTicks ();
+	m_pWebServer = new CWebServer (m_pNet, DRIVE, this);
+}
+
+// The WPA supplicant's settings, from the menu's Wi-Fi name and password.
+// The name is written in hex so that any characters work.
+boolean CKernel::WriteWiFiConfig (const char *pPath)
+{
+	static char Text[512];
+	Text[0] = '\0';
+	strAppend (Text, "# Written by the Mac Emulator from macemu.cfg\ncountry=", sizeof Text);
+	strAppend (Text, m_Config.wifiCountry, sizeof Text);
+	strAppend (Text, "\nnetwork={\n\tssid=", sizeof Text);
+	for (const char *p = m_Config.wifiSsid; *p; p++)
+	{
+		appendHex (Text, (u8) *p, 2, sizeof Text);
+	}
+	strAppend (Text, "\n\tpsk=\"", sizeof Text);
+	strAppend (Text, m_Config.wifiPassword, sizeof Text);
+	strAppend (Text, "\"\n\tkey_mgmt=WPA-PSK\n\tscan_ssid=1\n}\n", sizeof Text);
+
+	FIL File;
+	if (f_open (&File, pPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	{
+		return FALSE;
+	}
+	UINT nWritten;
+	boolean bOK = f_write (&File, Text, strLen (Text), &nWritten) == FR_OK && nWritten == strLen (Text);
+	return f_close (&File) == FR_OK && bOK;
 }
 
 void CKernel::UpdateNetwork (void)
 {
+	if (m_bWiFiPending && m_nFrames >= 90)
+	{
+		StartWiFi ();
+	}
+
 	if (m_pNet == 0)
 	{
 		return;
@@ -977,6 +1129,13 @@ void CKernel::UpdateNetwork (void)
 			resetMachine ();
 			m_pWebServer->RestartDone ();
 		}
+
+		if (m_pWebServer->RebootRequested ())
+		{
+			// A software update has been installed: start it.
+			m_pOsd->close ();
+			saveAndReboot ();
+		}
 	}
 
 	// Status for the menu, about twice a second.
@@ -997,9 +1156,15 @@ void CKernel::UpdateNetwork (void)
 		strCopy (m_NetLine[0], "Web file manager: http://", sizeof m_NetLine[0]);
 		strAppend (m_NetLine[0], (const char *) IPString, sizeof m_NetLine[0]);
 		strAppend (m_NetLine[0], "/", sizeof m_NetLine[0]);
-		strCopy (m_NetLine[1], "or http://macemu.local/ - open it in a browser", sizeof m_NetLine[1]);
+		strCopy (m_NetLine[1], m_bWiFi ? "(Wi-Fi) or http://macemu.local/ in a browser"
+					       : "(cable) or http://macemu.local/ in a browser", sizeof m_NetLine[1]);
 		m_Logger.Write (FromKernel, LogNotice, "Web file manager at http://%s/",
 				(const char *) IPString);
+	}
+
+	if (!m_bNetRunning && m_bWiFi && nTicks - m_nNetStartTicks > 40 * HZ)
+	{
+		strCopy (m_NetLine[1], "Still trying: check the name, password and country.", sizeof m_NetLine[1]);
 	}
 
 	if (m_bNetRunning && m_pWebServer != 0)
@@ -1328,6 +1493,33 @@ void CKernel::HandleKey (u8 ucUsage, boolean bDown)
 	{
 		if (!bDown)
 		{
+			return;
+		}
+
+		if (m_pOsd->editing ())
+		{
+			// Typing the Wi-Fi name or password.
+			if (ucUsage == HID_ENTER || ucUsage == HID_KP_ENTER)
+			{
+				m_pOsd->key (Osd::NavSelect);
+			}
+			else if (ucUsage == HID_ESC)
+			{
+				m_pOsd->key (Osd::NavBack);
+			}
+			else
+			{
+				boolean bShift = (m_LastModifiers & (HIDMOD_LSHIFT | HIDMOD_RSHIFT)) != 0;
+				if (m_bCapsLock && ucUsage >= 0x04 && ucUsage <= 0x1D)
+				{
+					bShift = !bShift;
+				}
+				char c = usbToAscii (ucUsage, bShift, !strEqNoCase (m_Config.keyboard, "us"));
+				if (c != 0)
+				{
+					m_pOsd->typeChar (c);
+				}
+			}
 			return;
 		}
 

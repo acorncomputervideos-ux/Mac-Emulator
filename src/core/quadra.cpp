@@ -2,9 +2,9 @@
 
 namespace macemu {
 
-Quadra::Quadra()
+Quadra::Quadra(int monitor)
     : cpu(this), fpu(Fpu::MC68040FPU), mmu(*this), via1(&via1Host), via2(&via2Host),
-      asc(Asc::Enhanced), adb(via1), dafb(Dafb::VGA), via1Host(*this), via2Host(*this)
+      asc(Asc::Enhanced), adb(via1), dafb(monitor), via1Host(*this), via2Host(*this)
 {
     ioLog = 0;
     stepHook = 0;

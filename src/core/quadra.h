@@ -39,7 +39,8 @@ public:
         kSamplesPerFrame = 370,
     };
 
-    Quadra();
+    // monitor: Dafb::VGA (640x480, 800x600) or Dafb::Apple21 (1152x870).
+    explicit Quadra(int monitor = Dafb::VGA);
 
     // rom: the 1 MB ROM shared by the Quadra 610/650/800 (checksum F1ACAD13).
     bool init(const u8 *rom, u32 romSize, u8 *ram, u32 ramSize);

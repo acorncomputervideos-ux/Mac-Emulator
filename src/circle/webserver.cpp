@@ -30,8 +30,8 @@ static const char PageHead[] =
 "td{padding:5px 6px;border-top:1px solid #eee}td.s{text-align:right;white-space:nowrap;color:#555}"
 "td.a{text-align:right;white-space:nowrap}a{color:#0645ad;text-decoration:none}"
 "button{font-size:14px;padding:4px 10px;margin:2px}.u{color:#a60;font-size:13px}"
-"#drop{border:2px dashed #999;border-radius:6px;padding:18px;text-align:center;color:#555}"
-"#drop.on{border-color:#06c;background:#eef5ff}progress{width:100%}.n{color:#666;font-size:13px}"
+"#drop,#upd{border:2px dashed #999;border-radius:6px;padding:18px;text-align:center;color:#555}"
+"#drop.on,#upd.on{border-color:#06c;background:#eef5ff}progress{width:100%}.n{color:#666;font-size:13px}"
 "</style></head><body><header>Mac Emulator &mdash; SD card</header><main>";
 
 static const char PageUpload[] =
@@ -47,6 +47,11 @@ static const char PageUpload[] =
 static const char PageTail[] =
 "<section><h2>Mac</h2><button onclick=restart()>Restart the Mac</button>"
 " <span class=n>Saves the disks and starts the Mac again with the disks chosen in the menu.</span></section>"
+"<section><h2>Update the emulator</h2>"
+"<div id=upd>Drop the new <b>MacEmulator-SD.zip</b> here, or <input type=file id=updpick accept='.zip'></div>"
+"<div id=ust></div><progress id=upr value=0 max=1 hidden></progress>"
+"<p class=n>Installs the new emulator and Pi start-up files, then restarts the Pi. "
+"Your settings, ROMs and disks are kept.</p></section>"
 "</main><script>"
 "var q=[],busy=0;"
 "function $(i){return document.getElementById(i)}"
@@ -64,6 +69,42 @@ static const char PageTail[] =
 "fetch('/files/'+n,{method:'DELETE'}).then(function(r){return r.text().then(function(t){"
 "if(r.ok)location.reload();else alert(t)})})}"
 "function restart(){fetch('/restart',{method:'POST'}).then(function(r){return r.text()}).then(alert)}"
+// The update: unzip in the browser, send each file, then reboot the Pi.
+"var keep=/^(macemu\\.cfg|macemu\\.pram|wpa_supplicant\\.conf|macemu-wifi\\.conf|disks\\/.*|screenshots\\/.*|.*\\.rom)$/i;"
+"function u16(d,o){return d.getUint16(o,true)}function u32(d,o){return d.getUint32(o,true)}"
+"async function unzip(buf){var d=new DataView(buf),e=buf.byteLength-22;"
+"while(e>=0&&u32(d,e)!=0x06054b50)e--;if(e<0)throw 'This is not a zip file.';"
+"var n=u16(d,e+10),p=u32(d,e+16),out=[];"
+"for(var i=0;i<n;i++){if(u32(d,p)!=0x02014b50)throw 'The zip file is damaged.';"
+"var m=u16(d,p+10),cs=u32(d,p+20),nl=u16(d,p+28),xl=u16(d,p+30),cl=u16(d,p+32),lo=u32(d,p+42);"
+"var name=new TextDecoder().decode(new Uint8Array(buf,p+46,nl));p+=46+nl+xl+cl;"
+"if(name.endsWith('/'))continue;"
+"var ds=lo+30+u16(d,lo+26)+u16(d,lo+28),raw=new Uint8Array(buf,ds,cs);"
+"out.push({name:name,method:m,raw:raw})}"
+"var pre=out.length&&out[0].name.indexOf('/')>0?out[0].name.split('/')[0]+'/':'';"
+"if(pre&&out.every(function(f){return f.name.startsWith(pre)}))"
+"out.forEach(function(f){f.name=f.name.slice(pre.length)});"
+"return out}"
+"async function inflate(f){if(f.method==0)return f.raw;"
+"if(f.method!=8)throw f.name+': unsupported compression';"
+"var s=new Blob([f.raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));"
+"return new Uint8Array(await new Response(s).arrayBuffer())}"
+"async function update(file){var st=$('ust'),p=$('upr');"
+"if(typeof DecompressionStream=='undefined'){alert('Please use a newer web browser for updates.');return}"
+"try{st.textContent='Reading '+file.name+' ...';var fl=await unzip(await file.arrayBuffer());"
+"fl=fl.filter(function(f){return !keep.test(f.name)});"
+"if(!fl.some(function(f){return /^kernel.*\\.img$/.test(f.name)}))throw 'There is no emulator in this zip file.';"
+"p.hidden=false;p.max=fl.length;"
+"for(var i=0;i<fl.length;i++){var f=fl[i];p.value=i;st.textContent='Installing '+f.name+' ('+(i+1)+' of '+fl.length+')';"
+"var r=await fetch('/update/'+f.name.split('/').map(encodeURIComponent).join('/'),{method:'PUT',body:await inflate(f)});"
+"if(!r.ok)throw f.name+': '+await r.text()}"
+"p.value=fl.length;st.textContent='Installed. The Pi is restarting; this page will come back in a minute.';"
+"await fetch('/reboot',{method:'POST'});setTimeout(function(){location.reload()},30000)}"
+"catch(x){st.textContent='Update stopped: '+x}}"
+"var ud=$('upd');$('updpick').onchange=function(){if(this.files[0])update(this.files[0])};"
+"ud.ondragover=function(e){e.preventDefault();ud.className='on'};"
+"ud.ondragleave=function(){ud.className=''};"
+"ud.ondrop=function(e){e.preventDefault();ud.className='';if(e.dataTransfer.files[0])update(e.dataTransfer.files[0])};"
 "var d=$('drop');$('pick').onchange=function(){add(this.files)};"
 "d.ondragover=function(e){e.preventDefault();d.className='on'};"
 "d.ondragleave=function(){d.className=''};"
@@ -77,6 +118,7 @@ CWebServer::CWebServer (CNetSubSystem *pNet, const char *pDrive, CWebServerHost 
 	m_pHost (pHost),
 	m_bFlushRequest (FALSE),
 	m_bRestartRequest (FALSE),
+	m_bRebootRequest (FALSE),
 	m_pBuffer (new u8[BufferSize]),
 	m_pPage (new char[PageSize]),
 	m_nPageLength (0),
@@ -146,6 +188,25 @@ void CWebServer::Serve (CSocket *pSocket)
 		return;
 	}
 
+	if (strEq (Request.Method, "POST") && strEq (pPath, "reboot"))
+	{
+		Reboot (pSocket);
+		return;
+	}
+
+	// Software update: the files of a new SD card zip, one by one.
+	if (strEq (Request.Method, "PUT") && strncmp (pPath, "update/", 7) == 0)
+	{
+		pPath += 7;
+		if (!SafePath (pPath) || !Updatable (pPath))
+		{
+			SendStatus (pSocket, 403, "The update may not replace that file.");
+			return;
+		}
+		ReceiveFile (pSocket, &Request, pPath, TRUE);
+		return;
+	}
+
 	if (strncmp (pPath, "files/", 6) != 0)
 	{
 		SendStatus (pSocket, 404, "Not found");
@@ -153,7 +214,7 @@ void CWebServer::Serve (CSocket *pSocket)
 	}
 	pPath += 6;
 
-	if (!SafePath (pPath))
+	if (!SafePath (pPath) || Private (pPath))
 	{
 		SendStatus (pSocket, 403, "That name is not allowed.");
 		return;
@@ -342,6 +403,9 @@ void CWebServer::SendIndex (CSocket *pSocket)
 		Out ("</p>");
 	}
 
+	Out ("<p class=n>Emulator version: ");
+	OutHtml (m_pHost->Version ());
+	Out ("</p>");
 	Out (PageTail);
 
 	char Head[160] = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
@@ -385,7 +449,7 @@ void CWebServer::ListFolder (const char *pFolder, boolean bDiskDir)
 		strAppend (Name, Info.fname, sizeof Name);
 
 		if (!(Info.fattrib & (AM_DIR | AM_HID | AM_SYS)) && Info.fname[0] != '.'
-		    && !(!bDiskDir && Protected (Info.fname)))
+		    && !(!bDiskDir && (Protected (Info.fname) || Private (Info.fname))))
 		{
 			Out ("<tr><td><a href='/files/");
 			OutUrl (Name);
@@ -468,7 +532,7 @@ void CWebServer::SendFile (CSocket *pSocket, const char *pPath)
 	f_close (&File);
 }
 
-void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *pPath)
+void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *pPath, boolean bUpdate)
 {
 	if (!pRequest->bHaveLength || pRequest->nContentLength > MaxFileSize)
 	{
@@ -476,7 +540,7 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 		return;
 	}
 
-	if (Protected (pPath))
+	if (!bUpdate && Protected (pPath))
 	{
 		SendStatus (pSocket, 403, "That file belongs to the Pi's start-up and cannot be replaced here.");
 		return;
@@ -488,6 +552,8 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 		return;
 	}
 
+	MakeFolders (pPath);
+
 	// Write to a temporary name, then rename, so that a broken transfer
 	// never leaves half a disk behind.
 	char Path[192], TempPath[200];
@@ -498,7 +564,7 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 	FIL File;
 	if (f_open (&File, TempPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
 	{
-		SendStatus (pSocket, 500, "Cannot create the file (is the folder there?).");
+		SendStatus (pSocket, 500, "Cannot create the file.");
 		return;
 	}
 
@@ -605,6 +671,57 @@ void CWebServer::DeleteFile (CSocket *pSocket, const char *pPath)
 
 	CLogger::Get ()->Write (FromWeb, LogNotice, "Deleted %s", pPath);
 	SendStatus (pSocket, 200, "Deleted.");
+}
+
+void CWebServer::Reboot (CSocket *pSocket)
+{
+	SendStatus (pSocket, 200, "The Pi is restarting.");
+	CScheduler::Get ()->MsSleep (300);	// let the answer go out
+	m_bRebootRequest = TRUE;
+}
+
+// Create the folders on the way to a file (firmware/, overlays/ ...).
+void CWebServer::MakeFolders (const char *pPath)
+{
+	char Path[192];
+	FullPath (Path, sizeof Path, pPath);
+	unsigned nSkip = strLen (m_pDrive) + 1;
+	for (char *p = Path + nSkip; *p; p++)
+	{
+		if (*p == '/')
+		{
+			*p = '\0';
+			f_mkdir (Path);			// fails harmlessly if it exists
+			*p = '/';
+		}
+	}
+}
+
+// Files with the Wi-Fi password, and the settings that hold it: never
+// listed or sent, and never replaced from the web.
+boolean CWebServer::Private (const char *pPath)
+{
+	return strcasecmp (pPath, "macemu.cfg") == 0 || strcasecmp (pPath, "macemu-wifi.conf") == 0
+	       || strcasecmp (pPath, "wpa_supplicant.conf") == 0 || strcasecmp (pPath, "macemu.pram") == 0;
+}
+
+// An update may replace the emulator and the Pi's start-up files, but not
+// your settings, ROMs or disks.
+boolean CWebServer::Updatable (const char *pPath) const
+{
+	if (Private (pPath) || endsWithNoCase (pPath, ".rom"))
+	{
+		return FALSE;
+	}
+
+	const char *pDiskDir = m_pHost->DiskDir ();
+	unsigned n = strLen (pDiskDir);
+	if (n > 0 && strncasecmp (pPath, pDiskDir, n) == 0 && pPath[n] == '/')
+	{
+		return FALSE;
+	}
+
+	return strncasecmp (pPath, "screenshots/", 12) != 0;
 }
 
 void CWebServer::Restart (CSocket *pSocket)

@@ -45,6 +45,11 @@ public:
     // Status that changes by itself (network) is on screen: redraw it.
     void refresh() { if (isOpen && page == PageNetwork) dirty = true; }
 
+    // Text entry (Wi-Fi name and password): while editing() the frontend
+    // passes typed characters here ('\b' deletes); Enter keeps, Esc cancels.
+    bool editing() const { return isOpen && editItem >= 0; }
+    void typeChar(char c);
+
     // Settings that only take effect after a reboot have been changed.
     bool rebootPending() const { return pendingReboot; }
 
@@ -58,11 +63,11 @@ private:
         // hard disks
         ItHd0, ItHd6 = ItHd0 + 6, ItDisksBack,
         // machine
-        ItModel, ItRom, ItRam, ItVideo, ItApply, ItMachineBack,
+        ItModel, ItRom, ItRam, ItVideo, ItMonitor, ItApply, ItMachineBack,
         // display and sound
         ItSpeed, ItPalette, ItSound, ItVolume, ItMouse, ItAlt, ItPrefsBack,
         // network
-        ItNetworkBack,
+        ItNetMode, ItWifiName, ItWifiPass, ItWifiCountry, ItKeyboard, ItNetApply, ItNetworkBack,
     };
     enum PickTarget { PickFloppy1, PickFloppy2, PickHardDisk, PickRom };
 
@@ -76,6 +81,8 @@ private:
     int pickCount, pickSel, pickTop;
     char names[kMaxFiles][OsdHost::kNameLen];
     char message[64];
+    int editItem;                       // -1 when not editing
+    char editBuf[64];
 
     int items(Page p, int *out) const;
     void label(int item, char *out, u32 max);

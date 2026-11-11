@@ -16,6 +16,8 @@
 #include <circle/logger.h>
 #include <circle/sched/scheduler.h>
 #include <circle/net/netsubsystem.h>
+#include <wlan/bcm4343.h>
+#include <wlan/hostap/wpa_supplicant/wpasupplicant.h>
 #include <circle/usb/usbhcidevice.h>
 #include <circle/usb/usbkeyboard.h>
 #include <circle/input/mouse.h>
@@ -81,6 +83,7 @@ public:
 	// CWebServerHost
 	boolean FileInUse (const char *pPath) override;
 	const char *DiskDir (void) override		{ return m_Config.diskDir; }
+	const char *Version (void) override		{ return "built " __DATE__ " " __TIME__; }
 
 private:
 	boolean LoadConfig (void);
@@ -109,6 +112,9 @@ private:
 	void Housekeeping (void);
 	void UpdateInfo (void);
 	void StartNetwork (void);
+	void StartEthernet (void);
+	void StartWiFi (void);
+	boolean WriteWiFiConfig (const char *pPath);
 	void UpdateNetwork (void);
 	void WaitUntil (::u64 nUntil);
 
@@ -203,6 +209,11 @@ private:
 	// network
 	CNetSubSystem		*m_pNet;
 	CWebServer		*m_pWebServer;
+	CBcm4343Device		*m_pWLAN;
+	CWPASupplicant		*m_pWPASupplicant;
+	boolean			m_bWiFi;		// Wi-Fi chosen
+	boolean			m_bWiFiPending;		// start it once the Mac is running
+	unsigned		m_nNetStartTicks;
 	boolean			m_bNetRunning;
 	unsigned		m_nNetTicks;
 

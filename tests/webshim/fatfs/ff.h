@@ -25,5 +25,6 @@ FRESULT f_rename(const char *from, const char *to);
 FRESULT f_findfirst(DIR *dp, FILINFO *fi, const char *path, const char *pattern);
 FRESULT f_findnext(DIR *dp, FILINFO *fi);
 FRESULT f_closedir(DIR *dp);
+FRESULT f_mkdir(const char *path);
 FRESULT f_getfree(const char *path, DWORD *clusters, FATFS **fs);
 #endif

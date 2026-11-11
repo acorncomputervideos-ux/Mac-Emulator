@@ -111,6 +111,7 @@ FRESULT f_findfirst(DIR *dp, FILINFO *fi, const char *path, const char *)
     if (!dp->d) return FR_NO_FILE;
     return f_findnext(dp, fi);
 }
+FRESULT f_mkdir(const char *path) { return mkdir(hostPath(path).c_str(), 0755) == 0 ? FR_OK : FR_DISK_ERR; }
 FRESULT f_closedir(DIR *dp) { if (dp->d) closedir(dp->d); return FR_OK; }
 FRESULT f_getfree(const char *, DWORD *clusters, FATFS **fs)
 {
@@ -126,6 +127,7 @@ class Host : public CWebServerHost {
 public:
     boolean FileInUse(const char *p) override { return strcmp(p, "hd0.img") == 0 || strcmp(p, "disks/inuse.dsk") == 0; }
     const char *DiskDir() override { return "disks"; }
+    const char *Version() override { return "test <1>"; }
 };
 
 struct Reply { int code; std::string body; };
@@ -293,9 +295,46 @@ int main(int argc, char **argv)
     r = request("DELETE", "/files/disks/New%20Disk.img");
     CHECK(r.code == 404);
 
+    // Software update: start-up files may be replaced and folders made,
+    // settings, ROMs and disks may not.
+    r = request("PUT", "/update/kernel8.img", "new kernel");
+    CHECK(r.code == 201 && readFile("kernel8.img") == "new kernel");
+    r = request("PUT", "/update/firmware/brcmfmac43455-sdio.raspberrypi,5-model-b.bin", "fw");
+    CHECK(r.code == 201 && readFile("firmware/brcmfmac43455-sdio.raspberrypi,5-model-b.bin") == "fw");
+    r = request("PUT", "/update/overlays/a/b.dtbo", "ov");
+    CHECK(r.code == 201 && readFile("overlays/a/b.dtbo") == "ov");
+    writeFile("macemu.cfg", "wifi_password=secret");
+    r = request("PUT", "/update/macemu.cfg", "x");
+    CHECK(r.code == 403 && readFile("macemu.cfg") == "wifi_password=secret");
+    r = request("PUT", "/update/mac.rom", "x");
+    CHECK(r.code == 403);
+    r = request("PUT", "/update/disks/inuse.dsk", "x");
+    CHECK(r.code == 403);
+    r = request("PUT", "/update/../x", "x");
+    CHECK(r.code == 403);
+    r = request("PUT", "/update/hd0.img", "x");
+    CHECK(r.code == 409);
+
+    // Files with the Wi-Fi password are never shown or sent.
+    writeFile("macemu-wifi.conf", "psk=secret");
+    r = request("GET", "/");
+    CHECK(r.body.find("/files/macemu.cfg") == std::string::npos && r.body.find("/files/macemu-wifi") == std::string::npos);
+    CHECK(r.body.find("test &lt;1&gt;") != std::string::npos);
+    CHECK(r.body.find("Update the emulator") != std::string::npos);
+    r = request("GET", "/files/macemu-wifi.conf");
+    CHECK(r.code == 403);
+    r = request("GET", "/files/MACEMU.CFG");
+    CHECK(r.code == 403);
+    r = request("DELETE", "/files/macemu.cfg");
+    CHECK(r.code == 403);
+
     // Restart the Mac.
     r = request("POST", "/restart");
     CHECK(r.code == 200 && restarts == 1);
+    r = request("POST", "/reboot");
+    CHECK(r.code == 200);
+    usleep(500000);
+    CHECK(server->RebootRequested());
 
     // The server is still answering after all that.
     r = request("GET", "/");

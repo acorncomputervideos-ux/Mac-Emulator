@@ -216,7 +216,7 @@ int main(int argc, char **argv)
     static Quadra *quad = nullptr;
     if (quadra) {
         if (ram.size() < 0x800000) ram.resize(0x800000);
-        quad = new Quadra;
+        quad = new Quadra(getenv("QUADRA_21") ? Dafb::Apple21 : Dafb::VGA);
         ok = quad->init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
         if (traceIo) { quad->ioLog = logIo; }
         if (watchPc) {

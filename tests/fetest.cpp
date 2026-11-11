@@ -288,6 +288,8 @@ static void testOsd()
     CHECK(cfg.ramKB >= 512 && cfg.ramKB <= 131072);
     osd.key(Osd::NavDown); osd.key(Osd::NavRight);                           // Mac II video
     CHECK(cfg.videoWidth == 832 && cfg.videoHeight == 624);
+    osd.key(Osd::NavDown); osd.key(Osd::NavRight);                           // Quadra monitor
+    CHECK(strEq(cfg.monitor, "21"));
     osd.key(Osd::NavDown); osd.key(Osd::NavSelect);                          // apply
     CHECK(host.reboots == 1);
     osd.key(Osd::NavBack);
@@ -343,6 +345,72 @@ static void testOsd()
     osd.open();
     go(osd, 10); osd.key(Osd::NavSelect);
     CHECK(!osd.active());
+
+    // Network page: connection type, Wi-Fi name and password typed in.
+    Osd net(cfg, host);
+    net.open();
+    go(net, 5); net.key(Osd::NavSelect);
+    CHECK(strEq(cfg.network, "auto"));
+    net.key(Osd::NavRight);
+    CHECK(strEq(cfg.network, "ethernet") && net.rebootPending());
+    net.key(Osd::NavRight); net.key(Osd::NavRight);
+    CHECK(strEq(cfg.network, "off"));
+    net.key(Osd::NavDown); net.key(Osd::NavSelect);                         // edit the name
+    CHECK(net.editing());
+    for (const char *t = "My Wifi!x"; *t; t++) net.typeChar(*t);
+    net.typeChar('\b');
+    net.typeChar('\n');                                                    // ignored
+    net.key(Osd::NavSelect);
+    CHECK(!net.editing() && strEq(cfg.wifiSsid, "My Wifi!"));
+    CHECK(strEq(cfg.network, "auto"));                                       // a name turns Wi-Fi on
+    net.key(Osd::NavDown); net.key(Osd::NavSelect);                          // password
+    for (const char *t = "p@ss \"#1"; *t; t++) net.typeChar(*t);
+    net.key(Osd::NavBack);                                                   // cancel
+    CHECK(cfg.wifiPassword[0] == 0 && net.active());
+    net.key(Osd::NavSelect);
+    for (const char *t = "p@ss \"#1"; *t; t++) net.typeChar(*t);
+    net.key(Osd::NavSelect);
+    CHECK(strEq(cfg.wifiPassword, "p@ss \"#1"));
+    for (int i = 0; i < 70; i++) { net.key(Osd::NavSelect); net.typeChar('a'); net.key(Osd::NavSelect); }
+    CHECK(strLen(cfg.wifiPassword) == 63);                                   // never overflows
+    net.key(Osd::NavDown); net.key(Osd::NavRight);
+    CHECK(strEq(cfg.wifiCountry, "US"));
+    net.key(Osd::NavDown); net.key(Osd::NavSelect);
+    CHECK(strEq(cfg.keyboard, "us"));
+    {
+        BoxFont f;
+        std::vector<u32> px(640 * 480 + 256, 0x99);
+        Surface s{px.data(), 640, 480, 640, {}, false, 0, 0};
+        setPalette(s, 0);
+        net.key(Osd::NavUp); net.key(Osd::NavUp); net.key(Osd::NavUp); net.key(Osd::NavSelect);  // editing, long text
+        net.draw(s, f);
+        net.key(Osd::NavBack);
+        bool intact = true;
+        for (int i = 0; i < 256; i++) if (px[640 * 480 + i] != 0x99) intact = false;
+        CHECK(intact);
+    }
+    net.key(Osd::NavPageDown); net.key(Osd::NavUp); net.key(Osd::NavSelect);  // save and restart
+    CHECK(host.reboots == 2);
+
+    // The settings survive a save and load.
+    char text[4096];
+    u32 len = cfg.serialize(text, sizeof text);
+    Config back;
+    back.setDefaults();
+    back.parse(text, len);
+    CHECK(strEq(back.wifiSsid, "My Wifi!") && strEq(back.wifiPassword, cfg.wifiPassword));
+    CHECK(strEq(back.network, "auto") && strEq(back.wifiCountry, "US") && strEq(back.keyboard, "us"));
+    back.parse("network=0\nwifi_country=de\n", 26);
+    CHECK(strEq(back.network, "off") && strEq(back.wifiCountry, "DE"));
+    back.parse("network=1\n", 10);
+    CHECK(strEq(back.network, "auto"));
+
+    // Typing.
+    CHECK(usbToAscii(0x04, false, true) == 'a' && usbToAscii(0x04, true, true) == 'A');
+    CHECK(usbToAscii(0x1F, true, false) == '@' && usbToAscii(0x1F, true, true) == '"');
+    CHECK(usbToAscii(0x34, true, true) == '@' && usbToAscii(0x34, true, false) == '"');
+    CHECK(usbToAscii(0x27, false, true) == '0' && usbToAscii(0x2A, false, true) == '\b');
+    CHECK(usbToAscii(0x2C, false, true) == ' ' && usbToAscii(0x3A, false, true) == 0);
 }
 
 int main()

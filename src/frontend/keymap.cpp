@@ -78,4 +78,42 @@ int usbModifierToMacKey(u8 bit, bool altIsOption)
     }
 }
 
+char usbToAscii(u8 usage, bool shift, bool uk)
+{
+    if (usage >= 0x04 && usage <= 0x1D) return (char)((shift ? 'A' : 'a') + usage - 0x04);
+    if (usage >= 0x1E && usage <= 0x27) {
+        static const char plain[] = "1234567890";
+        static const char usShift[] = "!@#$%^&*()";
+        static const char ukShift[] = "!\"#$%^&*()";      // shift-3 is the pound sign: no ASCII
+        if (!shift) return plain[usage - 0x1E];
+        return (uk ? ukShift : usShift)[usage - 0x1E];
+    }
+    switch (usage) {
+    case 0x2A: return '\b';                             // Backspace
+    case 0x2C: return ' ';
+    case 0x2D: return shift ? '_' : '-';
+    case 0x2E: return shift ? '+' : '=';
+    case 0x2F: return shift ? '{' : '[';
+    case 0x30: return shift ? '}' : ']';
+    case 0x31: return shift ? '|' : '\\';
+    case 0x32: return shift ? '~' : '#';                 // UK # key
+    case 0x33: return shift ? ':' : ';';
+    case 0x34: return shift ? (uk ? '@' : '"') : '\'';
+    case 0x35: return shift ? (uk ? 0 : '~') : '`';     // UK shift: not ASCII
+    case 0x36: return shift ? '<' : ',';
+    case 0x37: return shift ? '>' : '.';
+    case 0x38: return shift ? '?' : '/';
+    case 0x64: return shift ? '|' : '\\';               // UK key left of Z
+    case 0x54: return '/';                              // keypad
+    case 0x55: return '*';
+    case 0x56: return '-';
+    case 0x57: return '+';
+    case 0x63: return '.';
+    default: break;
+    }
+    if (usage >= 0x59 && usage <= 0x61) return (char)('1' + usage - 0x59);
+    if (usage == 0x62) return '0';
+    return 0;
+}
+
 } // namespace macemu

@@ -13,7 +13,9 @@ OBJS	= main.o kernel.o storage.o webserver.o \
 	  ../core/mac.o ../core/macii.o \
 	  ../frontend/config.o ../frontend/keymap.o ../frontend/video.o ../frontend/osd.o
 
-LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
+LIBS	= $(CIRCLEHOME)/addon/wlan/hostap/wpa_supplicant/libwpa_supplicant.a \
+	  $(CIRCLEHOME)/addon/wlan/libwlan.a \
+	  $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
 	  $(CIRCLEHOME)/lib/net/libnet.a \
 	  $(CIRCLEHOME)/lib/sched/libsched.a \
 	  $(CIRCLEHOME)/addon/SDCard/libsdcard.a \
