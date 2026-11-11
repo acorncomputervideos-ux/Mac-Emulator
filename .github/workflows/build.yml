@@ -1,0 +1,33 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: make test
+      - name: 68000 instruction tests
+        run: |
+          git clone --depth 1 https://github.com/SingleStepTests/680x0.git sst
+          make cputest SST_PER_INSTRUCTION=300
+
+  kernel:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        model: [pi3, pi4, pi5, pi2, pi1]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross compilers
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-arm-none-eabi libnewlib-arm-none-eabi
+      - name: Build kernel
+        run: ./build.sh ${{ matrix.model }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.model }}
+          path: sdcard/*.img

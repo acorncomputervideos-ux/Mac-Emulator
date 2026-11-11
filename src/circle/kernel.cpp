@@ -1,0 +1,1110 @@
+// Mac Emulator for Raspberry Pi (Circle bare-metal kernel).
+
+#include "kernel.h"
+#include <circle/util.h>
+#include <circle/usb/usbhid.h>
+#include <circle/synchronize.h>
+#include <circle/sound/pwmsoundbasedevice.h>
+#include <circle/sound/hdmisoundbasedevice.h>
+
+#include "../core/keys.h"
+#include "../frontend/keymap.h"
+#include "../frontend/util.h"
+
+using macemu::Machine; using macemu::Osd; using macemu::Config; using macemu::Scsi;
+using namespace macemu;
+typedef ::u64 hostu64;
+
+#define DRIVE		"SD:"
+#define CONFIG_FILE	DRIVE "/macemu.cfg"
+#define PRAM_FILE	DRIVE "/macemu.pram"
+#define SHOT_DIR	DRIVE "/screenshots"
+
+static const char FromKernel[] = "macemu";
+
+static const unsigned FrameMicros = 16626;	// 370 lines x 352 cycles at 7.8336 MHz
+static const unsigned MaxFloppyBytes = 819200 + 84 + 4096;
+
+CKernel *CKernel::s_pThis = 0;
+
+CKernel::CKernel (void)
+:	m_Timer (&m_Interrupt),
+	m_Logger (m_Options.GetLogLevel (), &m_Timer),
+	m_USBHCI (&m_Interrupt, &m_Timer, TRUE),
+	m_EMMC (&m_Interrupt, &m_Timer, &m_ActLED),
+	m_pFrameBuffer (0),
+	m_pSound (0),
+	m_pKeyboard (0),
+	m_pMouse (0),
+	m_pMachine (0),
+	m_pOsd (0),
+	m_pROM (0),
+	m_nROMSize (0),
+	m_pRAM (0),
+	m_pPrevScreen (0),
+	m_bForceRedraw (TRUE),
+	m_nKeyIn (0),
+	m_nKeyOut (0),
+	m_LastModifiers (0),
+	m_nMouseX (0),
+	m_nMouseY (0),
+	m_nMouseButtons (0),
+	m_nMouseRemX (0),
+	m_nMouseRemY (0),
+	m_bCapsLock (FALSE),
+	m_bTurbo (FALSE),
+	m_nSampleRate (48000),
+	m_nSoundFraction (0),
+	m_nFrames (0),
+	m_nLastActivity (0),
+	m_nIdleFrames (0),
+	m_nScreenshot (0),
+	m_nEmulatedFrames (0),
+	m_nStatsTime (0),
+	m_nSpeedPercent (100)
+{
+	s_pThis = this;
+
+	m_ActLED.Blink (3);
+
+	memset (m_LastKeys, 0, sizeof m_LastKeys);
+	memset (m_bMacKeyDown, 0, sizeof m_bMacKeyDown);
+	m_pFloppy[0] = m_pFloppy[1] = 0;
+	m_FloppyName[0][0] = m_FloppyName[1][0] = '\0';
+	for (unsigned i = 0; i < Scsi::kTargets; i++)
+	{
+		m_pHardDisk[i] = 0;
+	}
+	m_InfoLine[0][0] = m_InfoLine[1][0] = '\0';
+	m_ROMName[0] = '\0';
+	m_Config.setDefaults ();
+}
+
+CKernel::~CKernel (void)
+{
+	s_pThis = 0;
+}
+
+boolean CKernel::Initialize (void)
+{
+	boolean bOK = m_Serial.Initialize (115200);
+
+	if (bOK)
+	{
+		CDevice *pTarget = m_DeviceNameService.GetDevice (m_Options.GetLogDevice (), FALSE);
+		bOK = m_Logger.Initialize (pTarget != 0 ? pTarget : &m_Serial);
+	}
+
+	if (bOK)
+	{
+		bOK = m_Interrupt.Initialize ();
+	}
+
+	if (bOK)
+	{
+		bOK = m_Timer.Initialize ();
+	}
+
+	if (bOK)
+	{
+		bOK = m_EMMC.Initialize ();
+	}
+
+	if (bOK)
+	{
+		bOK = m_USBHCI.Initialize ();
+	}
+
+	return bOK;
+}
+
+// ----------------------------------------------------------------- start-up
+
+boolean CKernel::LoadConfig (void)
+{
+	FIL File;
+	if (f_open (&File, CONFIG_FILE, FA_READ | FA_OPEN_EXISTING) != FR_OK)
+	{
+		m_Logger.Write (FromKernel, LogNotice, "No macemu.cfg, using defaults");
+		return FALSE;
+	}
+
+	static char Buffer[8192];
+	UINT nRead = 0;
+	f_read (&File, Buffer, sizeof Buffer - 1, &nRead);
+	f_close (&File);
+
+	m_Config.parse (Buffer, nRead);
+
+	return TRUE;
+}
+
+boolean CKernel::LoadROM (void)
+{
+	static const char *Candidates[] =
+	{
+		"", "mac.rom", "MacPlus.rom", "Plus.rom", "vMac.ROM", "mac512ke.rom", "Mac128K.rom", 0
+	};
+
+	for (unsigned i = 0; Candidates[i] != 0; i++)
+	{
+		const char *pName = i == 0 ? m_Config.rom : Candidates[i];
+		if (*pName == '\0')
+		{
+			continue;
+		}
+
+		char Path[160] = DRIVE "/";
+		strAppend (Path, pName, sizeof Path);
+
+		FIL File;
+		if (f_open (&File, Path, FA_READ | FA_OPEN_EXISTING) != FR_OK)
+		{
+			continue;
+		}
+
+		u32 nSize = (u32) f_size (&File);
+		if (nSize != 0x10000 && nSize != 0x20000)
+		{
+			m_Logger.Write (FromKernel, LogWarning, "%s: unsupported size %u", pName, nSize);
+			f_close (&File);
+			continue;
+		}
+
+		m_pROM = new u8[nSize];
+		UINT nRead = 0;
+		FRESULT Result = f_read (&File, m_pROM, nSize, &nRead);
+		f_close (&File);
+		if (Result != FR_OK || nRead != nSize)
+		{
+			delete [] m_pROM;
+			m_pROM = 0;
+			continue;
+		}
+
+		m_nROMSize = nSize;
+		strCopy (m_ROMName, pName, sizeof m_ROMName);
+		m_Logger.Write (FromKernel, LogNotice, "ROM %s (%uK, checksum %08X)",
+				pName, nSize / 1024, be32 (m_pROM));
+
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+boolean CKernel::SetupDisplay (void)
+{
+	m_pFrameBuffer = new CBcmFrameBuffer (m_Config.width ? m_Config.width : m_Options.GetWidth (),
+					      m_Config.height ? m_Config.height : m_Options.GetHeight (),
+					      8);
+	ApplyPalette ();
+	if (!m_pFrameBuffer->Initialize ())
+	{
+		return FALSE;
+	}
+
+	m_Surface.pixels = (u8 *) (uintptr) m_pFrameBuffer->GetBuffer ();
+	m_Surface.width = (int) m_pFrameBuffer->GetWidth ();
+	m_Surface.height = (int) m_pFrameBuffer->GetHeight ();
+	m_Surface.pitch = (int) m_pFrameBuffer->GetPitch ();
+
+	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+	m_Layout = layoutFor (m_Surface, m_Config.scale);
+	m_bForceRedraw = TRUE;
+
+	return TRUE;
+}
+
+void CKernel::ApplyPalette (void)
+{
+	if (m_pFrameBuffer == 0)
+	{
+		return;
+	}
+
+	u32 RGB[kColorCount];
+	paletteColors (m_Config.palette, RGB);
+	for (unsigned i = 0; i < kColorCount; i++)
+	{
+		// The firmware wants 0xAABBGGRR.
+		u32 c = RGB[i];
+		m_pFrameBuffer->SetPalette32 ((u8) i, 0xFF000000 | (c & 0x00FF00)
+							| ((c >> 16) & 0xFF) | ((c & 0xFF) << 16));
+	}
+
+	m_pFrameBuffer->UpdatePalette ();
+}
+
+void CKernel::SetupSound (void)
+{
+	if (strEqNoCase (m_Config.soundDevice, "pwm"))
+	{
+		m_nSampleRate = 44100;
+		m_pSound = new CPWMSoundBaseDevice (&m_Interrupt, m_nSampleRate, 2048);
+	}
+	else
+	{
+#if RASPPI <= 4
+		m_nSampleRate = 48000;
+		m_pSound = new CHDMISoundBaseDevice (&m_Interrupt, m_nSampleRate, 384 * 10);
+#else
+		m_nSampleRate = 44100;
+		m_pSound = new CPWMSoundBaseDevice (&m_Interrupt, m_nSampleRate, 2048);
+#endif
+	}
+
+	if (   !m_pSound->AllocateQueue (100)
+	    || (m_pSound->SetWriteFormat (SoundFormatSigned16, 2), !m_pSound->Start ()))
+	{
+		m_Logger.Write (FromKernel, LogWarning, "Sound device not available");
+		delete m_pSound;
+		m_pSound = 0;
+	}
+}
+
+void CKernel::AttachDisks (void)
+{
+	for (unsigned d = 0; d < 2; d++)
+	{
+		if (m_Config.floppy[d][0] != '\0' && !insertDisk ((int) d, m_Config.floppy[d]))
+		{
+			m_Logger.Write (FromKernel, LogWarning, "Cannot insert %s", m_Config.floppy[d]);
+		}
+	}
+
+	for (unsigned id = 0; id < Scsi::kTargets; id++)
+	{
+		char Path[160] = DRIVE "/";
+		if (m_Config.hd[id][0] != '\0')
+		{
+			strAppend (Path, m_Config.hd[id], sizeof Path);
+		}
+		else
+		{
+			strAppend (Path, "hd", sizeof Path);
+			appendUint (Path, id, sizeof Path);
+			strAppend (Path, ".img", sizeof Path);
+		}
+
+		CFileStorage *pDisk = new CFileStorage;
+		if (pDisk->Open (Path))
+		{
+			m_pHardDisk[id] = pDisk;
+			m_pMachine->scsi.attach ((int) id, pDisk);
+			m_Logger.Write (FromKernel, LogNotice, "SCSI ID %u: %s (%u MB%s)", id, Path,
+					pDisk->size () >> 20, pDisk->readOnly () ? ", read-only" : "");
+		}
+		else
+		{
+			delete pDisk;
+			if (m_Config.hd[id][0] != '\0')
+			{
+				m_Logger.Write (FromKernel, LogWarning, "Cannot open %s", Path);
+			}
+		}
+	}
+}
+
+void CKernel::LoadPRAM (void)
+{
+	FIL File;
+	if (f_open (&File, PRAM_FILE, FA_READ | FA_OPEN_EXISTING) == FR_OK)
+	{
+		UINT nRead;
+		f_read (&File, m_pMachine->pram, sizeof m_pMachine->pram, &nRead);
+		f_close (&File);
+	}
+
+	m_pMachine->pramDirty = false;
+}
+
+void CKernel::SavePRAM (void)
+{
+	if (!m_pMachine->pramDirty)
+	{
+		return;
+	}
+
+	FIL File;
+	if (f_open (&File, PRAM_FILE, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK)
+	{
+		UINT nWritten;
+		f_write (&File, m_pMachine->pram, sizeof m_pMachine->pram, &nWritten);
+		f_close (&File);
+		m_pMachine->pramDirty = false;
+	}
+}
+
+void CKernel::Fatal (const char *pLine1, const char *pLine2, const char *pLine3)
+{
+	m_Logger.Write (FromKernel, LogError, "%s %s %s", pLine1, pLine2, pLine3);
+
+	if (m_pFrameBuffer != 0)
+	{
+		const char *Lines[] = {"Mac Emulator cannot start", "", pLine1, pLine2, pLine3};
+		int fh = m_Font.height ();
+		int y = m_Surface.height / 2 - 3 * fh;
+		fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+		for (unsigned i = 0; i < sizeof Lines / sizeof Lines[0]; i++, y += fh + fh / 2)
+		{
+			int x = (m_Surface.width - (int) strlen (Lines[i]) * m_Font.width ()) / 2;
+			drawText (m_Surface, m_Font, x, y, Lines[i], ColSelFg);
+		}
+	}
+
+	while (1)
+	{
+		m_ActLED.Blink (2, 100, 100);
+		m_Timer.MsDelay (1500);
+	}
+}
+
+TShutdownMode CKernel::Run (void)
+{
+	m_Logger.Write (FromKernel, LogNotice, "Mac Emulator, built " __DATE__ " " __TIME__);
+
+	boolean bMounted = f_mount (&m_FileSystem, DRIVE, 1) == FR_OK;
+	if (bMounted)
+	{
+		LoadConfig ();
+	}
+
+	if (!SetupDisplay ())
+	{
+		m_Logger.Write (FromKernel, LogPanic, "Cannot initialize the framebuffer");
+	}
+
+	if (!bMounted)
+	{
+		Fatal ("Cannot mount the SD card (FAT32 expected).");
+	}
+
+	if (!LoadROM ())
+	{
+		Fatal ("No Macintosh ROM found on the SD card.",
+		       "Copy a 128K Mac Plus ROM (or 64K 128K/512K ROM) there",
+		       "and name it mac.rom, or set rom= in macemu.cfg.");
+	}
+
+	if (m_nROMSize == 0x10000 && m_Config.ramKB > 512)
+	{
+		m_Config.ramKB = 512;		// the 64K ROMs cannot use more
+	}
+
+	m_pRAM = new u8[m_Config.ramKB * 1024];
+	m_pPrevScreen = new u8[Machine::kScreenBytes];
+	m_pMachine = new Machine;
+	if (   m_pRAM == 0
+	    || m_pPrevScreen == 0
+	    || m_pMachine == 0
+	    || !m_pMachine->init (m_pROM, m_nROMSize, m_pRAM, m_Config.ramKB * 1024))
+	{
+		Fatal ("Out of memory, or unusable ROM image.");
+	}
+
+	m_pMachine->setClock (m_Config.clockSeconds (__DATE__, __TIME__));
+	LoadPRAM ();
+	AttachDisks ();
+
+	m_pOsd = new Osd (m_Config, *this);
+
+	if (m_Config.sound)
+	{
+		SetupSound ();
+	}
+
+	UpdateInfo ();
+	m_Logger.Write (FromKernel, LogNotice, "Running: %uK RAM, display %ux%u, zoom %d",
+			m_Config.ramKB, m_Surface.width, m_Surface.height, m_Layout.scale);
+
+	hostu64 nNextFrame = CTimer::GetClockTicks64 ();
+	m_nStatsTime = nNextFrame;
+
+	while (1)
+	{
+		UpdateUSB ();
+		ProcessInput ();
+
+		unsigned nSpeed = m_bTurbo ? 0 : (unsigned) m_Config.speed;
+		if (m_pOsd->active ())
+		{
+			// The Mac is paused while the menu is open.
+			if (m_pOsd->needsRedraw ())
+			{
+				blitMacScreen (m_Surface, m_Layout, m_pMachine->screen (), m_pPrevScreen, TRUE);
+				m_pOsd->draw (m_Surface, m_Font);
+			}
+
+			if (!m_pOsd->active ())
+			{
+				fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+				m_bForceRedraw = TRUE;
+			}
+
+			m_Timer.MsDelay (10);
+			nNextFrame = CTimer::GetClockTicks64 ();
+			continue;
+		}
+
+		if (nSpeed == 0)
+		{
+			// Unlimited: emulate for one display frame's worth of real time.
+			hostu64 nUntil = CTimer::GetClockTicks64 () + FrameMicros;
+			do
+			{
+				m_pMachine->runFrame ();
+				m_nEmulatedFrames++;
+				Housekeeping ();
+			}
+			while (CTimer::GetClockTicks64 () < nUntil);
+
+			nNextFrame = CTimer::GetClockTicks64 ();
+		}
+		else
+		{
+			for (unsigned i = 0; i < nSpeed; i++)
+			{
+				m_pMachine->runFrame ();
+				m_nEmulatedFrames++;
+				Housekeeping ();
+			}
+
+			if (nSpeed == 1)
+			{
+				QueueSound ();
+			}
+
+			nNextFrame += FrameMicros;
+			hostu64 nNow = CTimer::GetClockTicks64 ();
+			if (nNow + 4 * FrameMicros < nNextFrame || nNow > nNextFrame + 4 * FrameMicros)
+			{
+				nNextFrame = nNow;	// fell far behind (or clock jumped): resync
+			}
+
+			while (CTimer::GetClockTicks64 () < nNextFrame)
+			{
+				// wait for the next frame slot
+			}
+		}
+
+		UpdateScreen ();
+		m_nFrames++;
+
+		hostu64 nNow = CTimer::GetClockTicks64 ();
+		if (nNow - m_nStatsTime >= 2000000)
+		{
+			m_nSpeedPercent = (unsigned) ((hostu64) m_nEmulatedFrames * FrameMicros * 100
+						      / (nNow - m_nStatsTime));
+			m_nEmulatedFrames = 0;
+			m_nStatsTime = nNow;
+			UpdateInfo ();
+		}
+	}
+
+	return ShutdownHalt;
+}
+
+// ----------------------------------------------------------------- per frame
+
+void CKernel::UpdateScreen (void)
+{
+	blitMacScreen (m_Surface, m_Layout, m_pMachine->screen (), m_pPrevScreen, m_bForceRedraw);
+	m_bForceRedraw = FALSE;
+}
+
+void CKernel::QueueSound (void)
+{
+	if (m_pSound == 0 || !m_Config.sound)
+	{
+		return;
+	}
+
+	// Resample 370 samples/frame (22254.5 Hz) to the device rate.
+	static s16 Buffer[2 * 1200];
+	const s16 *pIn = m_pMachine->sound ();
+	unsigned nInRate = 22255;
+	unsigned nOut = 0;
+	int nVolume = m_Config.volume;
+	while (nOut < 1200)
+	{
+		unsigned nIndex = m_nSoundFraction / m_nSampleRate;
+		if (nIndex >= Machine::kSoundSamplesPerFrame)
+		{
+			m_nSoundFraction -= Machine::kSoundSamplesPerFrame * m_nSampleRate;
+			break;
+		}
+
+		s16 nSample = (s16) (pIn[nIndex] * nVolume / 10);
+		Buffer[2 * nOut] = nSample;
+		Buffer[2 * nOut + 1] = nSample;
+		nOut++;
+		m_nSoundFraction += nInRate;
+	}
+
+	unsigned nFree = m_pSound->GetQueueFramesAvail ();
+	if (nOut > nFree)
+	{
+		nOut = nFree;			// queue full: drop rather than block
+	}
+
+	if (nOut > 0)
+	{
+		m_pSound->Write (Buffer, nOut * 2 * sizeof (s16));
+	}
+}
+
+void CKernel::Housekeeping (void)
+{
+	// Disks the Mac ejected by itself.
+	for (unsigned d = 0; d < 2; d++)
+	{
+		if (m_pMachine->iwm.ejectedByGuest[d])
+		{
+			m_pMachine->iwm.ejectedByGuest[d] = false;
+			ejectDisk ((int) d);
+		}
+	}
+
+	// Activity LED, and write-back once the disks have been idle for a while.
+	u32 nActivity = m_pMachine->iwm.activityCounter + m_pMachine->scsi.activityCounter;
+	if (nActivity != m_nLastActivity)
+	{
+		m_nLastActivity = nActivity;
+		m_nIdleFrames = 0;
+		m_ActLED.On ();
+		return;
+	}
+
+	if (++m_nIdleFrames == 6)
+	{
+		m_ActLED.Off ();
+	}
+	else if (m_nIdleFrames == 120)
+	{
+		for (unsigned d = 0; d < 2; d++)
+		{
+			if (m_pFloppy[d] != 0)
+			{
+				m_pFloppy[d]->flush ();
+			}
+		}
+
+		m_pMachine->scsi.flush ();
+		SavePRAM ();
+	}
+	else if (m_nIdleFrames % 600 == 0)
+	{
+		SavePRAM ();
+	}
+}
+
+void CKernel::UpdateInfo (void)
+{
+	char *p = m_InfoLine[0];
+	p[0] = '\0';
+	strAppend (p, m_nROMSize == 0x20000 ? "Macintosh Plus, " : "Macintosh 128K/512K, ", 64);
+	appendUint (p, m_Config.ramKB, 64);
+	strAppend (p, "K RAM, ROM ", 64);
+	strAppend (p, m_ROMName, 64);
+
+	p = m_InfoLine[1];
+	p[0] = '\0';
+	strAppend (p, "Speed ", 64);
+	appendUint (p, m_nSpeedPercent, 64);
+	strAppend (p, "%   SCSI:", 64);
+	boolean bAny = FALSE;
+	for (unsigned id = 0; id < Scsi::kTargets; id++)
+	{
+		if (m_pHardDisk[id] != 0)
+		{
+			strAppend (p, " ", 64);
+			appendUint (p, id, 64);
+			bAny = TRUE;
+		}
+	}
+
+	if (!bAny)
+	{
+		strAppend (p, " none", 64);
+	}
+}
+
+// ----------------------------------------------------------------- input
+
+void CKernel::UpdateUSB (void)
+{
+	if (!m_USBHCI.UpdatePlugAndPlay ())
+	{
+		return;
+	}
+
+	if (m_pKeyboard == 0)
+	{
+		CUSBKeyboardDevice *pKeyboard =
+			(CUSBKeyboardDevice *) m_DeviceNameService.GetDevice ("ukbd1", FALSE);
+		if (pKeyboard != 0)
+		{
+			pKeyboard->RegisterRemovedHandler (KeyboardRemovedHandler);
+			pKeyboard->RegisterKeyStatusHandlerRaw (KeyStatusHandlerRaw);
+			m_pKeyboard = pKeyboard;
+			m_Logger.Write (FromKernel, LogNotice, "Keyboard attached");
+		}
+	}
+
+	if (m_pMouse == 0)
+	{
+		CMouseDevice *pMouse = (CMouseDevice *) m_DeviceNameService.GetDevice ("mouse1", FALSE);
+		if (pMouse != 0)
+		{
+			pMouse->RegisterRemovedHandler (MouseRemovedHandler);
+			pMouse->RegisterStatusHandler (MouseStatusHandler);
+			m_pMouse = pMouse;
+			m_Logger.Write (FromKernel, LogNotice, "Mouse attached");
+		}
+	}
+}
+
+// Interrupt context: turn the keyboard report into press/release events.
+void CKernel::KeyStatusHandlerRaw (unsigned char ucModifiers, const unsigned char RawKeys[6])
+{
+	CKernel *pThis = s_pThis;
+	if (pThis == 0)
+	{
+		return;
+	}
+
+	unsigned nIn = pThis->m_nKeyIn;
+	auto Push = [&] (u16 usEvent)
+	{
+		unsigned nNext = (nIn + 1) % KeyQueueSize;
+		if (nNext != pThis->m_nKeyOut)
+		{
+			pThis->m_KeyQueue[nIn] = usEvent;
+			nIn = nNext;
+		}
+	};
+
+	u8 ucChanged = ucModifiers ^ pThis->m_LastModifiers;
+	for (unsigned i = 0; i < 8; i++)
+	{
+		u8 ucBit = (u8) (1 << i);
+		if (ucChanged & ucBit)
+		{
+			Push ((u16) (0x4000 | ((ucModifiers & ucBit) ? 0x8000 : 0) | ucBit));
+		}
+	}
+	pThis->m_LastModifiers = ucModifiers;
+
+	for (unsigned i = 0; i < 6; i++)			// released keys
+	{
+		u8 k = pThis->m_LastKeys[i];
+		if (k < 4)
+		{
+			continue;
+		}
+
+		boolean bStill = FALSE;
+		for (unsigned j = 0; j < 6; j++)
+		{
+			bStill |= RawKeys[j] == k;
+		}
+
+		if (!bStill)
+		{
+			Push (k);
+		}
+	}
+
+	for (unsigned i = 0; i < 6; i++)			// pressed keys
+	{
+		u8 k = RawKeys[i];
+		if (k < 4)					// 1..3 are rollover/error codes
+		{
+			continue;
+		}
+
+		boolean bWas = FALSE;
+		for (unsigned j = 0; j < 6; j++)
+		{
+			bWas |= pThis->m_LastKeys[j] == k;
+		}
+
+		if (!bWas)
+		{
+			Push ((u16) (0x8000 | k));
+		}
+	}
+
+	if (RawKeys[0] != 1)					// ignore phantom (rollover) reports
+	{
+		memcpy (pThis->m_LastKeys, RawKeys, 6);
+	}
+
+	pThis->m_nKeyIn = nIn;
+}
+
+void CKernel::KeyboardRemovedHandler (CDevice *pDevice, void *pContext)
+{
+	if (s_pThis != 0)
+	{
+		s_pThis->m_pKeyboard = 0;
+	}
+}
+
+void CKernel::MouseStatusHandler (unsigned nButtons, int nDisplacementX, int nDisplacementY,
+				  int nWheelMove)
+{
+	if (s_pThis != 0)
+	{
+		s_pThis->m_nMouseX += nDisplacementX;
+		s_pThis->m_nMouseY += nDisplacementY;
+		s_pThis->m_nMouseButtons = nButtons;
+	}
+}
+
+void CKernel::MouseRemovedHandler (CDevice *pDevice, void *pContext)
+{
+	if (s_pThis != 0)
+	{
+		s_pThis->m_pMouse = 0;
+		s_pThis->m_nMouseButtons = 0;
+	}
+}
+
+void CKernel::ProcessInput (void)
+{
+	while (m_nKeyOut != m_nKeyIn)
+	{
+		u16 usEvent = m_KeyQueue[m_nKeyOut];
+		m_nKeyOut = (m_nKeyOut + 1) % KeyQueueSize;
+
+		boolean bDown = (usEvent & 0x8000) != 0;
+		if (usEvent & 0x4000)
+		{
+			HandleModifier ((u8) usEvent, bDown);
+		}
+		else
+		{
+			HandleKey ((u8) usEvent, bDown);
+		}
+	}
+
+	EnterCritical ();
+	int dx = m_nMouseX, dy = m_nMouseY;
+	m_nMouseX = m_nMouseY = 0;
+	unsigned nButtons = m_nMouseButtons;
+	LeaveCritical ();
+
+	if (m_pOsd->active ())
+	{
+		return;
+	}
+
+	// Mouse speed 4 is 1:1; each step is a quarter.
+	int nSpeed = m_Config.mouseSpeed;
+	m_nMouseRemX += dx * nSpeed;
+	m_nMouseRemY += dy * nSpeed;
+	int mx = m_nMouseRemX / 4, my = m_nMouseRemY / 4;
+	m_nMouseRemX -= mx * 4;
+	m_nMouseRemY -= my * 4;
+	if (mx != 0 || my != 0)
+	{
+		m_pMachine->mouseMove (mx, my);
+	}
+
+	m_pMachine->mouseButton ((nButtons & (MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT)) != 0);
+}
+
+void CKernel::MacKey (int nKey, boolean bDown)
+{
+	if (nKey < 0 || nKey >= 128 || m_bMacKeyDown[nKey] == bDown)
+	{
+		return;
+	}
+
+	m_bMacKeyDown[nKey] = bDown;
+	m_pMachine->keyEvent (nKey, bDown);
+}
+
+void CKernel::ReleaseAllKeys (void)
+{
+	for (int k = 0; k < 128; k++)
+	{
+		if (k != MK_CapsLock)
+		{
+			MacKey (k, FALSE);
+		}
+	}
+}
+
+void CKernel::HandleModifier (u8 ucBit, boolean bDown)
+{
+	if (m_pOsd->active ())
+	{
+		return;
+	}
+
+	// Both sides of a modifier map to one Mac key: only release it when
+	// no other key holding it remains down.
+	int nKey = usbModifierToMacKey (ucBit, m_Config.altIsOption != 0);
+	if (nKey == MK_None)
+	{
+		return;
+	}
+
+	if (!bDown)
+	{
+		for (unsigned i = 0; i < 8; i++)
+		{
+			u8 ucOther = (u8) (1 << i);
+			if (   ucOther != ucBit
+			    && (m_LastModifiers & ucOther)
+			    && usbModifierToMacKey (ucOther, m_Config.altIsOption != 0) == nKey)
+			{
+				return;
+			}
+		}
+	}
+
+	MacKey (nKey, bDown);
+}
+
+void CKernel::HandleKey (u8 ucUsage, boolean bDown)
+{
+	// Emulator hot keys.
+	if (ucUsage == HID_F12)
+	{
+		if (bDown)
+		{
+			if (m_pOsd->active ())
+			{
+				m_pOsd->close ();
+				fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+				m_bForceRedraw = TRUE;
+			}
+			else
+			{
+				ReleaseAllKeys ();
+				m_pOsd->open ();
+			}
+		}
+
+		return;
+	}
+
+	if (m_pOsd->active ())
+	{
+		if (!bDown)
+		{
+			return;
+		}
+
+		switch (ucUsage)
+		{
+		case HID_UP:		m_pOsd->key (Osd::NavUp);	break;
+		case HID_DOWN:		m_pOsd->key (Osd::NavDown);	break;
+		case HID_LEFT:		m_pOsd->key (Osd::NavLeft);	break;
+		case HID_RIGHT:		m_pOsd->key (Osd::NavRight);	break;
+		case HID_PAGEUP:	m_pOsd->key (Osd::NavPageUp);	break;
+		case HID_PAGEDOWN:	m_pOsd->key (Osd::NavPageDown);	break;
+		case HID_ENTER:
+		case HID_KP_ENTER:
+		case HID_SPACE:		m_pOsd->key (Osd::NavSelect);	break;
+		case HID_ESC:		m_pOsd->key (Osd::NavBack);	break;
+		default:						break;
+		}
+
+		return;
+	}
+
+	switch (ucUsage)
+	{
+	case HID_F11:
+		if (bDown)
+		{
+			m_bTurbo = !m_bTurbo;
+		}
+		return;
+
+	case HID_F10:
+		if (bDown)
+		{
+			screenshot ();
+		}
+		return;
+
+	case HID_F9:
+		if (bDown)
+		{
+			m_pMachine->interruptButton ();
+		}
+		return;
+
+	case HID_CAPSLOCK:
+		// The Mac's Caps Lock key latches mechanically.
+		if (bDown)
+		{
+			m_bCapsLock = !m_bCapsLock;
+			MacKey (MK_CapsLock, m_bCapsLock);
+		}
+		return;
+
+	default:
+		MacKey (usbToMacKey (ucUsage), bDown);
+		return;
+	}
+}
+
+// ----------------------------------------------------------------- OsdHost
+
+int CKernel::listDisks (char (*ppNames)[kNameLen], int nMax)
+{
+	char Path[160] = DRIVE "/";
+	strAppend (Path, m_Config.diskDir, sizeof Path);
+
+	DIR Directory;
+	FILINFO Info;
+	int n = 0;
+	FRESULT Result = f_findfirst (&Directory, &Info, Path, "*");
+	while (Result == FR_OK && Info.fname[0] != '\0' && n < nMax)
+	{
+		if (   !(Info.fattrib & (AM_DIR | AM_HID | AM_SYS))
+		    && Info.fname[0] != '.'
+		    && (   Info.fsize == 409600 || Info.fsize == 819200
+			|| (Info.fsize > 409600 + 84 && Info.fsize <= MaxFloppyBytes))
+		    && strLen (Info.fname) < kNameLen)
+		{
+			strCopy (ppNames[n++], Info.fname, kNameLen);
+		}
+
+		Result = f_findnext (&Directory, &Info);
+	}
+
+	f_closedir (&Directory);
+
+	return n;
+}
+
+bool CKernel::insertDisk (int nDrive, const char *pName)
+{
+	if (m_pFloppy[nDrive] != 0)
+	{
+		ejectDisk (nDrive);
+	}
+
+	// Names from macemu.cfg may carry a folder; picker names live in disk_dir.
+	char Path[160] = DRIVE "/";
+	boolean bHasFolder = FALSE;
+	for (const char *p = pName; *p; p++)
+	{
+		bHasFolder |= *p == '/';
+	}
+
+	if (!bHasFolder)
+	{
+		strAppend (Path, m_Config.diskDir, sizeof Path);
+		strAppend (Path, "/", sizeof Path);
+	}
+	strAppend (Path, pName, sizeof Path);
+
+	CMemoryStorage *pDisk = new CMemoryStorage;
+	if (   !pDisk->Load (Path, MaxFloppyBytes)
+	    || !m_pMachine->iwm.insert (nDrive, pDisk, m_Config.floppyReadOnly != 0))
+	{
+		delete pDisk;
+		return false;
+	}
+
+	m_pFloppy[nDrive] = pDisk;
+	strCopy (m_FloppyName[nDrive], pName, kNameLen);
+	strCopy (m_Config.floppy[nDrive], pName, Config::kPath);
+	m_Logger.Write (FromKernel, LogNotice, "Floppy %d: %s", nDrive + 1, Path);
+
+	return true;
+}
+
+void CKernel::ejectDisk (int nDrive)
+{
+	m_pMachine->iwm.eject (nDrive);			// flushes the image
+	delete m_pFloppy[nDrive];
+	m_pFloppy[nDrive] = 0;
+	m_FloppyName[nDrive][0] = '\0';
+	m_Config.floppy[nDrive][0] = '\0';
+}
+
+void CKernel::resetMachine (void)
+{
+	m_pMachine->iwm.flush ();
+	m_pMachine->scsi.flush ();
+	SavePRAM ();
+	ReleaseAllKeys ();
+	m_pMachine->reset ();
+	m_bForceRedraw = TRUE;
+}
+
+void CKernel::interruptButton (void)
+{
+	m_pMachine->interruptButton ();
+}
+
+void CKernel::settingsChanged (void)
+{
+	ApplyPalette ();
+	m_Layout = layoutFor (m_Surface, m_Config.scale);
+	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+	m_bForceRedraw = TRUE;
+
+	if (m_Config.sound && m_pSound == 0)
+	{
+		SetupSound ();
+	}
+}
+
+bool CKernel::saveSettings (void)
+{
+	static char Buffer[4096];
+	u32 nLength = m_Config.serialize (Buffer, sizeof Buffer);
+
+	FIL File;
+	if (f_open (&File, CONFIG_FILE, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	{
+		return false;
+	}
+
+	UINT nWritten = 0;
+	boolean bOK = f_write (&File, Buffer, nLength, &nWritten) == FR_OK && nWritten == nLength;
+
+	return f_close (&File) == FR_OK && bOK;
+}
+
+bool CKernel::screenshot (void)
+{
+	static u8 Bitmap[kBmpSize];
+	makeBmp (m_pMachine->screen (), Bitmap);
+
+	f_mkdir (SHOT_DIR);
+
+	// Find the next free name.
+	for (unsigned nTries = 0; nTries < 1000; nTries++)
+	{
+		char Path[64] = SHOT_DIR "/mac";
+		appendUint (Path, m_nScreenshot++ % 1000, sizeof Path, 3);
+		strAppend (Path, ".bmp", sizeof Path);
+
+		FIL File;
+		if (f_open (&File, Path, FA_WRITE | FA_CREATE_NEW) != FR_OK)
+		{
+			continue;
+		}
+
+		UINT nWritten = 0;
+		boolean bOK = f_write (&File, Bitmap, kBmpSize, &nWritten) == FR_OK && nWritten == kBmpSize;
+		f_close (&File);
+		m_Logger.Write (FromKernel, LogNotice, "Screenshot %s", Path);
+
+		return bOK;
+	}
+
+	return false;
+}

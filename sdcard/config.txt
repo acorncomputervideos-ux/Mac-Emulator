@@ -1,0 +1,47 @@
+# Raspberry Pi boot configuration for the Mac Emulator.
+#
+# Copy everything in this folder onto a FAT32-formatted SD card, together
+# with the Raspberry Pi firmware (./build.sh firmware), your Macintosh ROM
+# (mac.rom) and your disk images.
+
+arm_64bit=1
+kernel_address=0x80000
+initial_turbo=0
+disable_overscan=1
+
+# Send audio over HDMI even to monitors that report themselves as DVI.
+hdmi_drive=2
+
+[pi02]
+kernel=kernel8.img
+
+[pi3]
+kernel=kernel8.img
+
+[pi3+]
+kernel=kernel8.img
+
+[pi4]
+armstub=armstub8-rpi4.bin
+kernel=kernel8-rpi4.img
+
+[pi5]
+kernel=kernel_2712.img
+
+# 32-bit models (Pi 1, Zero, Zero W and Pi 2) ignore arm_64bit and boot
+# kernel.img / kernel7.img.
+[pi1]
+arm_64bit=0
+kernel=kernel.img
+
+[pi0]
+arm_64bit=0
+kernel=kernel.img
+
+[pi0w]
+arm_64bit=0
+kernel=kernel.img
+
+[pi2]
+arm_64bit=0
+kernel=kernel7.img
