@@ -27,6 +27,8 @@ public:
     void flush();
 
     u32 activityCounter;
+    // Debug: phase, last command, CDB opcode, FIFO count, TC.
+    void describe(char *out) const;
 
 private:
     enum Phase { DataOut = 0, DataIn = 1, Command = 2, Status = 3, MsgOut = 6, MsgIn = 7, BusFree = 8 };

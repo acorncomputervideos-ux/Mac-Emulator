@@ -288,16 +288,16 @@ void Esp::transferInfo()
         dmaDone = false;
         if (phase == DataIn) {
             fillFifo();
-            if (!fifoCount) { dmaDone = true; raise(INTR_BS); }
+            if (fifoCount < 2 && (tc() == 0 || phase != DataIn)) { dmaDone = true; raise(INTR_BS); }
         }
         if (phase == Command) commandBytes();
         if (phase == Status || phase == MsgIn) raise(INTR_BS);
         return;
     }
     switch (phase) {
-    case DataIn: {
+    case DataIn: {                                      // one byte per TI, as on the chip
         u8 v;
-        while (fifoCount < 16 && targetByteIn(v)) push(v);
+        if (!fifoCount && targetByteIn(v)) { push(v); fifoFromTarget = false; }
         raise(INTR_BS);
         break;
     }
@@ -379,6 +379,22 @@ void Esp::command(u8 cmd)
     }
 }
 
+void Esp::describe(char *o) const
+{
+    static const char hex[] = "0123456789ABCDEF";
+    const u8 v[] = {(u8)phase, lastCmd, cdb[0], (u8)fifoCount, rregs[R_TCMID], rregs[R_TCLO], (u8)connected, (u8)dma, rregs[R_INTR], rregs[R_STAT]};
+    const char *names[] = {"phase", "cmd", "cdb", "fifo", "tcm", "tcl", "conn", "dma", "intr", "stat"};
+    int n = 0;
+    for (int i = 0; i < 10; i++) {
+        for (const char *p = names[i]; *p; p++) o[n++] = *p;
+        o[n++] = '=';
+        o[n++] = hex[v[i] >> 4];
+        o[n++] = hex[v[i] & 15];
+        o[n++] = ' ';
+    }
+    o[n] = 0;
+}
+
 u8 Esp::read(int reg)
 {
     reg &= 15;
@@ -435,7 +451,9 @@ u8 Esp::dmaRead()
     if (!connected) return 0;
     u8 v = pop();
     fillFifo();
-    if (dma && !dmaDone && !fifoCount && (tc() == 0 || phase != DataIn)) {
+    // Done once TC is exhausted (or the target stops sending) and at most one
+    // byte is left: pseudo-DMA moves words, the odd byte is read from the FIFO.
+    if (dma && !dmaDone && fifoCount < 2 && (tc() == 0 || phase != DataIn)) {
         dmaDone = true;
         raise(INTR_BS);
     }

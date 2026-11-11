@@ -109,6 +109,7 @@ struct Host : OsdHost {
 static u32 gWatchPc = 0;
 static M68K *gWatchCpu = nullptr;
 static int gWatchHits = 0;
+static const char *(*gWatchEsp)() = nullptr;
 static int ioLogCount = 0;
 static void logIo(void *, const char *what, u32 addr, u32 value)
 {
@@ -123,6 +124,8 @@ static void watchCheck()
     gWatchHits++;
     printf("watch %08X: d0=%08X d1=%08X d2=%08X d5=%08X a0=%08X a1=%08X a2=%08X a3=%08X a4=%08X sr=%04X\n", c.instPC,
            c.d[0], c.d[1], c.d[2], c.d[5], c.a[0], c.a[1], c.a[2], c.a[3], c.a[4], c.getSR());
+    printf("      return %08X %08X %08X\n", c.rd(c.a[7], 2), c.rd(c.a[7] + 4, 2), c.rd(c.a[7] + 8, 2));
+    if (gWatchEsp) printf("      %s\n", gWatchEsp());
 }
 
 static void writePpm(const std::string &path, const Surface &s)
@@ -205,7 +208,11 @@ int main(int argc, char **argv)
         quad = new Quadra;
         ok = quad->init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
         if (traceIo) { quad->ioLog = logIo; }
-        if (watchPc) { gWatchPc = watchPc; gWatchCpu = &quad->cpu; quad->stepHook = watchCheck; }
+        if (watchPc) {
+            gWatchPc = watchPc; gWatchCpu = &quad->cpu; quad->stepHook = watchCheck;
+            static Quadra *q = quad;
+            gWatchEsp = [] { static char b[200]; q->esp.describe(b); return (const char *)b; };
+        }
         emu = quad;
     } else if (macII) {
         two = new MacII(cfg.videoWidth, cfg.videoHeight);
