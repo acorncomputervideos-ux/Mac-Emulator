@@ -26,6 +26,7 @@
 #include "adb.h"
 #include "asc.h"
 #include "dafb.h"
+#include "scc.h"
 #include "emulator.h"
 
 namespace macemu {
@@ -73,6 +74,7 @@ public:
     // Optional log of accesses that hit no device (for bring-up).
     void (*ioLog)(void *ctx, const char *what, u32 addr, u32 value);
     void (*stepHook)();                 // optional: called before every instruction
+    bool logAllIo;                      // with ioLog: report every I/O access, not just bus errors
     void *ioLogCtx;
 
     M68K cpu;
@@ -87,6 +89,7 @@ public:
     AdbKeyboard keyboard;
     AdbMouse mouse;
     Dafb dafb;
+    Scc scc;
 
 private:
     struct Via1Host : Via::Host {
@@ -127,13 +130,12 @@ private:
     u32 frameCount;
     s16 soundBuf[kSamplesPerFrame];
     u32 djmemc[16], iosb[8];
-    u8 sccPointer[2], sccWr[2][16];
 
     u32 access(u32 addr, int size, bool write, u32 value);
     u32 io(u32 off, int size, bool write, u32 value);
+    u32 io2(u32 off, int size, bool write, u32 value);
+    u32 io2(u32 off, bool write, u32 value);
     u32 busError(u32 addr, bool write, u32 value);
-    u8 sccRead(int ch, bool data);
-    void sccWrite(int ch, bool data, u8 v);
     void updateIrq();
 };
 

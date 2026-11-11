@@ -11,9 +11,8 @@ Three models are emulated:
   NuBus colour video card. Not yet tested with a real Mac II ROM.
 - **Quadra 800** (one ROM covers the Quadra 610/650/800 and Centris
   610/650): 68040 with MMU and FPU, built-in DAFB colour video, 53C96 SCSI,
-  Enhanced ASC. With a real Quadra 650 ROM it plays the startup chime and
-  reaches the disk prompt, reading SCSI disks. Booting System software is
-  the next step to test.
+  Enhanced ASC. With a real Quadra 650 ROM it **boots System 7.1 to the
+  Finder** from a SCSI disk image, in colour, with working mouse and menus.
 
 ## Features
 
@@ -215,9 +214,10 @@ What has been verified for the Quadra:
 - With the Quadra 610/650/800 ROM (`F1ACAD13`) on the host build and in the
   Pi 3 kernel under QEMU, the ROM plays the startup chime, sizes RAM, scans
   NuBus, turns on the 68040 MMU and shows the desktop with the disk prompt.
-  With a SCSI disk attached it selects the disk and reads it through the
-  53C96's pseudo-DMA. Booting System software has not been tried yet (no
-  bootable image was available).
+  With a System 7.1 hard disk image (with PowerTalk and AppleTalk) it boots
+  to the Finder in about 40 emulated seconds; the Apple menu opens with
+  the mouse. Getting there needed the 53C96's exact pseudo-DMA behaviour
+  and a real Z8530 SCC (the AppleTalk driver waits for its interrupts).
 - `mmutest` covers the 68040 MMU's table walks, faults, transparent
   translation and the translation cache.
 
@@ -258,7 +258,8 @@ What has **not** been verified:
 Not emulated yet:
 - The 68030 MMU, and with it the IIx/IIcx/SE/30/IIci.
 - Floppies on the Quadra beyond the SWIM's IWM mode (no 1.44 MB MFM disks).
-- Ethernet and serial ports (the chips are stubbed).
+- Ethernet (stubbed). The serial ports' SCC works, but nothing is
+  connected to it: AppleTalk finds no network.
 - Restartable access faults: a faulting instruction completes before the
   exception, so virtual memory should stay off.
 - Video modes with thousands or millions of colours.

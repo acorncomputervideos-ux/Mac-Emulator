@@ -126,6 +126,12 @@ static void watchCheck()
            c.d[0], c.d[1], c.d[2], c.d[5], c.a[0], c.a[1], c.a[2], c.a[3], c.a[4], c.getSR());
     printf("      return %08X %08X %08X\n", c.rd(c.a[7], 2), c.rd(c.a[7] + 4, 2), c.rd(c.a[7] + 8, 2));
     if (gWatchEsp) printf("      %s\n", gWatchEsp());
+    if (const char *dump = getenv("WATCH_DUMP")) {      // code around the watchpoint, for objdump
+        if (FILE *f = fopen(dump, "wb")) {
+            for (u32 i = 0; i < 4096; i++) fputc((int)c.rd(c.instPC - 128 + i, 0), f);
+            fclose(f);
+        }
+    }
 }
 
 static void writePpm(const std::string &path, const Surface &s)
@@ -278,6 +284,8 @@ int main(int argc, char **argv)
     bool shiftHeld = false;
     for (int f = 0; f < frames; f++) {
         mac.runFrame();
+        if (quad && getenv("IO_FROM") && f == atoi(getenv("IO_FROM"))) { ioLogCount = 0; quad->ioLog = logIo; quad->logAllIo = true; }
+        if (quad && getenv("IO_FROM") && f == atoi(getenv("IO_FROM")) + 1) { quad->logAllIo = false; quad->ioLog = nullptr; }
         if (tracePc && f % tracePc == 0 && quad) {
             printf("frame %d: pc=%08X sr=%04X tc=%04X a7=%08X disk activity %u\n", f, quad->cpu.pc, quad->cpu.getSR(), quad->mmu.tc, quad->cpu.a[7], mac.diskActivity());
         }
@@ -293,9 +301,19 @@ int main(int argc, char **argv)
                 mac.keyEvent(key, true); typeState = 1;
             } else { mac.keyEvent(key, false); typeState = 0; typed++; }
         }
-        if (clickX >= 0 && f == frames / 2) mac.mouseMove(clickX - 256, clickY - 171);
-        if (clickX >= 0 && f == frames / 2 + 10) mac.mouseButton(true);
-        if (clickX >= 0 && f == frames / 2 + 16) mac.mouseButton(false);
+        // Scripted click: park the cursor in the top-left corner, walk it to
+        // (clickX, clickY) one pixel per frame (no mouse acceleration), press,
+        // hold for CLICK_HOLD frames (default 6) and release.
+        if (clickX >= 0) {
+            int f0 = frames / 2, walk = f0 + 40;
+            int steps = clickX > clickY ? clickX : clickY;
+            int press = walk + steps + 5;
+            int hold = getenv("CLICK_HOLD") ? atoi(getenv("CLICK_HOLD")) : 6;
+            if (f >= f0 && f < walk) mac.mouseMove(-50, -50);
+            if (f >= walk && f < walk + steps) mac.mouseMove(f - walk < clickX ? 1 : 0, f - walk < clickY ? 1 : 0);
+            if (f == press) mac.mouseButton(true);
+            if (f == press + hold) mac.mouseButton(false);
+        }
 
         for (int d = 0; d < 2; d++)
             if (mac.floppy().ejectedByGuest[d]) { mac.floppy().ejectedByGuest[d] = false; host.ejectDisk(d); printf("frame %d: guest ejected floppy %d\n", f, d + 1); }

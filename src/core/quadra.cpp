@@ -8,6 +8,7 @@ Quadra::Quadra()
 {
     ioLog = 0;
     stepHook = 0;
+    logAllIo = false;
     ioLogCtx = 0;
     rom = 0; ram = 0;
     romMask = ramSize = 0;
@@ -21,8 +22,7 @@ Quadra::Quadra()
     memFill(soundBuf, 0, sizeof soundBuf);
     memFill(djmemc, 0, sizeof djmemc);
     memFill(iosb, 0, sizeof iosb);
-    memFill(sccPointer, 0, sizeof sccPointer);
-    memFill(sccWr, 0, sizeof sccWr);
+    scc.byteCycles = kCpuHz / 28800;                   // 230.4 kbit/s LocalTalk
     cpu.setModel(M68K::MC68040);
     cpu.attachFpu(&fpu);
     cpu.attachMmu(&mmu, &mmu);
@@ -48,10 +48,9 @@ void Quadra::resetLine()
     esp.reset();
     asc.reset();
     adb.reset();
+    scc.reset();
     memFill(djmemc, 0, sizeof djmemc);
     memFill(iosb, 0, sizeof iosb);
-    memFill(sccPointer, 0, sizeof sccPointer);
-    memFill(sccWr, 0, sizeof sccWr);
 }
 
 void Quadra::reset()
@@ -161,6 +160,21 @@ u32 Quadra::access(u32 a, int size, bool write, u32 v)
 // CPU reads or writes words or longs (dynamic bus sizing).
 u32 Quadra::io(u32 off, int size, bool write, u32 v)
 {
+    if (logAllIo && ioLog && size == 1) {
+        u32 r = io2(off, write, v);
+        ioLog(ioLogCtx, write ? "io write" : "io read ", 0x50000000 | off, write ? v : r);
+        return r;
+    }
+    return io2(off, size, write, v);
+}
+
+u32 Quadra::io2(u32 off, bool write, u32 v)
+{
+    return io2(off, 1, write, v);
+}
+
+u32 Quadra::io2(u32 off, int size, bool write, u32 v)
+{
     if (size > 1 && !((off >= 0x0E000 && off < 0x10000) || (off >= 0x18000 && off < 0x1A000))) {
         u32 r = 0;
         for (int i = 0; i < size; i++) {
@@ -197,8 +211,8 @@ u32 Quadra::io(u32 off, int size, bool write, u32 v)
     if (off >= 0x0A000 && off < 0x0A100) return 0;      // SONIC Ethernet: idle
     if ((off >= 0x0C000 && off < 0x0C008) || (off >= 0x0C020 && off < 0x0C040)) {
         int ch = (int)(off >> 1) & 1, data = (int)(off >> 2) & 1;
-        if (write) { sccWrite(ch, data != 0, (u8)v); return 0; }
-        return sccRead(ch, data != 0);
+        if (write) { scc.write(ch, data != 0, (u8)v); return 0; }
+        return scc.read(ch, data != 0);
     }
     if (off >= 0x0E000 && off < 0x10000) {              // djMEMC
         u32 r = (off & 0x3F) >> 2;
@@ -229,37 +243,6 @@ u32 Quadra::io(u32 off, int size, bool write, u32 v)
     return busError(0x50000000 | off, write, v);
 }
 
-// ---------------------------------------------------------------- SCC (enough for the ROM)
-
-u8 Quadra::sccRead(int ch, bool data)
-{
-    if (data) return 0;
-    int reg = sccPointer[ch];
-    sccPointer[ch] = 0;
-    switch (reg & 15) {
-    case 0: return 0x44;                                // Tx empty, CTS
-    case 1: return 0x07;                                // all sent
-    case 2: return sccWr[ch][2];
-    case 12: return sccWr[ch][12];
-    case 13: return sccWr[ch][13];
-    case 15: return sccWr[ch][15];
-    default: return 0;
-    }
-}
-
-void Quadra::sccWrite(int ch, bool data, u8 v)
-{
-    if (data) return;
-    int reg = sccPointer[ch];
-    if (reg == 0) {
-        sccPointer[ch] = v & 7;
-        if ((v & 0x38) == 0x08) sccPointer[ch] |= 8;
-        return;
-    }
-    sccPointer[ch] = 0;
-    sccWr[ch][reg] = v;
-}
-
 // ---------------------------------------------------------------- run loop
 
 void Quadra::runFrame()
@@ -282,6 +265,9 @@ void Quadra::runFrame()
             soundBuf[sample++] = asc.sample();
             nextSample += kCyclesPerFrame / kSamplesPerFrame;
         }
+        scc.tick(c);
+        bool si = scc.irq();
+        if (si != sccIrq) { sccIrq = si; updateIrq(); }
         bool e = esp.irq();                             // SCSI interrupt: VIA2 CB2
         if (e && !espIrqSeen) via2.raise(Via::IRQ_CB2);
         espIrqSeen = e;
