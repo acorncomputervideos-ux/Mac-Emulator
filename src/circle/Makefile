@@ -8,7 +8,7 @@
 CIRCLEHOME ?= ../../circle
 
 OBJS	= main.o kernel.o storage.o \
-	  ../core/m68k.o ../core/via.o ../core/iwm.o ../core/scsi.o ../core/mac.o \
+	  ../core/m68k.o ../core/fpu.o ../core/fmath.o ../core/via.o ../core/iwm.o ../core/scsi.o ../core/mac.o \
 	  ../frontend/config.o ../frontend/keymap.o ../frontend/video.o ../frontend/osd.o
 
 LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
@@ -25,5 +25,8 @@ include $(CIRCLEHOME)/Rules.mk
 
 # The emulator core is hot code: optimise it for speed.
 OPTIMIZE = -O3
+
+# sqrt() must become the hardware instruction: there is no libm to fall back on.
+CFLAGS += -fno-math-errno
 
 -include $(DEPS)

@@ -31,8 +31,14 @@ def bytes_of(bits): return bytes(int(bits[i:i + 8], 2) for i in range(0, len(bit
 
 CASES = []
 
-def case(name, asm, init=None, expect=None, model=2, sr=0x2700):
-    CASES.append(dict(name=name, asm=asm, init=init or {}, expect=expect or {}, model=model, sr=sr))
+def case(name, asm, init=None, expect=None, model=2, sr=0x2700, fpu=None):
+    if fpu is None:
+        fpu = 0
+    CASES.append(dict(name=name, asm=asm, init=init or {}, expect=expect or {}, model=model, sr=sr, fpu=fpu))
+
+def fcase(name, asm, init=None, expect=None, model=2, sr=0x2700, fpu=None):
+    """A case with an FPU: a 68882 on 68020/68030, the built-in one on a 68040."""
+    case(name, asm, init, expect, model, sr, fpu if fpu is not None else (4 if model == 4 else 2))
 
 # ------------------------------------------------------------ addressing modes
 
@@ -275,6 +281,95 @@ case("M bit selects the master stack", """
     move.l sp,d1
     trap #1""", {"d0": 0x9000}, {"d1": 0x9000, "vector": 33, "a7": 0x9000 - 8})
 
+
+# ------------------------------------------------------------ floating point
+import math
+FP_N, FP_Z, FP_I, FP_NAN = 1 << 27, 1 << 26, 1 << 25, 1 << 24
+EX_OPERR, EX_DZ, EX_OVFL = 1 << 13, 1 << 10, 1 << 12
+
+fcase("FADD.L", "fmove.l #3,fp0\n fadd.l #4,fp0", {}, {"fp0": 7, "fpsr": (0x0F000000, 0)})
+fcase("FMUL.S", "fmove.d #0r1.5,fp1\n fmul.s #0r2.0,fp1", {}, {"fp1": 3})
+fcase("FSUB to negative", "fmove.l #3,fp0\n fsub.l #5,fp0", {}, {"fp0": -2, "fpsr": (0x0F000000, FP_N)})
+fcase("FDIV by zero", "fmove.l #1,fp0\n fdiv.l #0,fp0", {}, {"fp0": "inf", "fpsr": (FP_I | FP_N | FP_Z | FP_NAN | EX_DZ, FP_I | EX_DZ)})
+fcase("FDIV 0/0 is NaN", "fmove.l #0,fp0\n fdiv.l #0,fp0", {}, {"fp0": "nan", "fpsr": (FP_NAN | EX_OPERR, FP_NAN | EX_OPERR)})
+fcase("FSQRT", "fsqrt.l #2,fp0", {}, {"fp0": (math.sqrt(2), 1e-15)})
+fcase("FSQRT of negative", "fsqrt.l #-4,fp0", {}, {"fp0": "nan", "fpsr": (EX_OPERR, EX_OPERR)})
+for nm, op, x, f in [("FSIN", "fsin", 0.5, math.sin), ("FCOS", "fcos", 2.0, math.cos), ("FTAN", "ftan", 1.0, math.tan),
+                     ("FATAN", "fatan", 3.0, math.atan), ("FASIN", "fasin", 0.25, math.asin), ("FACOS", "facos", -0.5, math.acos),
+                     ("FETOX", "fetox", 2.5, math.exp), ("FETOXM1", "fetoxm1", 1e-5, math.expm1), ("FLOGN", "flogn", 10.0, math.log),
+                     ("FLOGNP1", "flognp1", 1e-6, math.log1p), ("FLOG10", "flog10", 2000.0, math.log10),
+                     ("FLOG2", "flog2", 10.0, math.log2), ("FTWOTOX", "ftwotox", 3.5, lambda v: 2 ** v),
+                     ("FTENTOX", "ftentox", 2.5, lambda v: 10 ** v), ("FSINH", "fsinh", 1.5, math.sinh),
+                     ("FCOSH", "fcosh", 1.5, math.cosh), ("FTANH", "ftanh", 0.75, math.tanh), ("FATANH", "fatanh", 0.5, math.atanh)]:
+    fcase(nm, "%s.d #0r%r,fp2" % (op, x), {}, {"fp2": (f(x), 1e-15)})
+fcase("FMOVECR pi", "fmovecr #0,fp0", {}, {"fp0": (math.pi, 1e-16)})
+fcase("FMOVECR 1 and 100", "fmovecr #0x32,fp0\n fmovecr #0x34,fp1\n fmovecr #0x3B,fp2", {}, {"fp0": 1, "fp1": 100, "fp2": (1e256, 1e-15)})
+fcase("FMOVE.L rounding to nearest even", "fmove.d #0r2.5,fp0\n fmove.l fp0,d0\n fmove.d #0r3.5,fp0\n fmove.l fp0,d1", {}, {"d0": 2, "d1": 4})
+fcase("FMOVE.L round toward zero", "fmove.l #0x10,fpcr\n fmove.d #0r-2.7,fp0\n fmove.l fp0,d0", {}, {"d0": u32(-2)})
+fcase("FMOVE.L round toward minus infinity", "fmove.l #0x20,fpcr\n fmove.d #0r-2.1,fp0\n fmove.l fp0,d0", {}, {"d0": u32(-3)})
+fcase("FMOVE.L round toward plus infinity", "fmove.l #0x30,fpcr\n fmove.d #0r2.1,fp0\n fmove.l fp0,d0", {}, {"d0": 3})
+fcase("FMOVE.L overflow saturates", "fmove.d #0r1e10,fp0\n fmove.l fp0,d0", {}, {"d0": 0x7FFFFFFF, "fpsr": (EX_OPERR | 0x80, EX_OPERR | 0x80)})
+fcase("FMOVE.W from data register", "fmove.w d0,fp0", {"d0": 0x1234FFFF}, {"fp0": -1})
+fcase("FMOVE.B to data register", "fmove.l #-100,fp0\n fmove.b fp0,d0", {"d0": 0x12345678}, {"d0": 0x1234569C})
+fcase("FMOVE.S and .D to memory", "fmove.d #0r1.5,fp0\n fmove.s fp0,0x6000\n fmove.d fp0,0x6010", {},
+      {"mem32": [(0x6000, 0x3FC00000), (0x6010, 0x3FF80000), (0x6014, 0)]})
+fcase("FMOVE.X to memory", "fmove.l #1,fp0\n fmove.x fp0,0x6000\n fmove.l #-2,fp1\n fmove.x fp1,0x6010", {},
+      {"mem32": [(0x6000, 0x3FFF0000), (0x6004, 0x80000000), (0x6008, 0), (0x6010, 0xC0000000), (0x6014, 0x80000000)]})
+fcase("FMOVE.X from memory", """
+    move.l #0x40000000,0x6000
+    move.l #0xC0000000,0x6004
+    clr.l 0x6008
+    fmove.x 0x6000,fp3""", {}, {"fp3": 3})
+fcase("FMOVE.P to memory", "fmove.d #0r123.456,fp0\n fmove.p fp0,0x6000{#3}", {},
+      {"mem32": [(0x6000, 0x00020001), (0x6004, 0x23000000), (0x6008, 0)]})
+fcase("FMOVE.P negative exponent", "fmove.d #0r-0.0125,fp0\n fmove.p fp0,0x6000{#3}", {},
+      {"mem32": [(0x6000, 0xC0020001), (0x6004, 0x25000000)]})
+fcase("FMOVE.P from memory", """
+    move.l #0x00020001,0x6000
+    move.l #0x23000000,0x6004
+    clr.l 0x6008
+    fmove.p 0x6000,fp0""", {}, {"fp0": 123})
+fcase("FCMP and FBGT taken", "fmove.l #5,fp0\n fcmp.l #3,fp0\n fbgt 1f\n moveq #2,d0\n illegal\n1: moveq #1,d0", {}, {"d0": 1})
+fcase("FCMP and FBEQ not taken", "fmove.l #5,fp0\n fcmp.l #3,fp0\n fbeq 1f\n moveq #2,d0\n illegal\n1: moveq #1,d0", {}, {"d0": 2})
+fcase("FBUN with a NaN", "fmove.l #0,fp0\n fdiv.l #0,fp0\n fcmp.l #1,fp0\n fbun 1f\n moveq #2,d0\n illegal\n1: moveq #1,d0", {}, {"d0": 1})
+fcase("FBNGT on NaN", "fmove.l #0,fp0\n fdiv.l #0,fp0\n ftst.x fp0\n fbngt.l 1f\n moveq #2,d0\n illegal\n1: moveq #1,d0", {}, {"d0": 1})
+fcase("FSEQ", "fmove.l #0,fp0\n ftst.x fp0\n fseq d1\n fsne d2", {"d1": 0, "d2": 0xFFFFFFFF}, {"d1": 0xFF, "d2": 0xFFFFFF00})
+fcase("FDBF loop", "moveq #4,d0\n moveq #0,d1\n1: addq.l #1,d1\n fdbf d0,1b", {}, {"d1": 5, "d0": 0x0000FFFF})
+fcase("FTRAPEQ", "fmove.l #0,fp0\n ftst.x fp0\n ftrapeq", {}, {"vector": 7})
+fcase("FMOVEM.X round trip", """
+    fmove.l #1,fp0
+    fmove.l #2,fp1
+    fmove.l #3,fp2
+    fmovem.x fp0-fp2,-(a7)
+    fmovem.x (a7)+,fp3-fp5""", {}, {"fp3": 1, "fp4": 2, "fp5": 3, "a7": SSP - 8,
+                                     "mem32": [(SSP - 36, 0x3FFF0000), (SSP - 24, 0x40000000)]})
+fcase("FMOVEM.X dynamic list", "fmove.l #7,fp6\n fmovem.x d0,0x6000\n fmovem.x 0x6000,d1", {"d0": 0x02, "d1": 0x01},
+      {"mem32": [(0x6000, 0x40010000), (0x6004, 0xE0000000)], "fp7": 7})
+fcase("FMOVEM control registers", """
+    fmove.l #0x30,fpcr
+    fmovem.l fpcr/fpiar,-(a7)
+    move.l (a7),d0""", {}, {"d0": 0x30, "a7": SSP - 8 - 8})
+fcase("FSAVE null frame", "fsave -(a7)", {}, {"a7": SSP - 4 - 8, "mem32": [(SSP - 4, 0)]})
+fcase("FSAVE idle frame 68882", "fnop\n fmove.l #1,fp0\n fsave -(a7)", {}, {"a7": SSP - 60 - 8, "mem32": [(SSP - 60, 0x1F380000)]})
+fcase("FSAVE idle frame 68040", "fmove.l #1,fp0\n fsave -(a7)", {}, {"a7": SSP - 4 - 8, "mem32": [(SSP - 4, 0x41000000)]}, model=4)
+fcase("FRESTORE null resets", "fmove.l #1,fp0\n clr.l -(a7)\n frestore (a7)+", {}, {"fp0": "nan", "a7": SSP - 8})
+fcase("FSAVE is privileged", "fsave -(a7)", {}, {"vector": 8}, sr=0)
+fcase("FREM quotient", "fmove.d #0r10.5,fp0\n frem.l #3,fp0", {}, {"fp0": -1.5, "fpsr": (0x00FF0000, 0x00040000)})
+fcase("FMOD negative quotient", "fmove.d #0r-7.5,fp0\n fmod.l #2,fp0", {}, {"fp0": -1.5, "fpsr": (0x00FF0000, 0x00830000)})
+fcase("FINT and FINTRZ", "fmove.d #0r-2.5,fp0\n fint.x fp0,fp1\n fintrz.d #0r-2.7,fp2", {}, {"fp1": -2, "fp2": -2})
+fcase("FGETEXP and FGETMAN", "fgetexp.l #10,fp0\n fgetman.l #10,fp1", {}, {"fp0": 3, "fp1": 1.25})
+fcase("FSCALE", "fmove.l #3,fp0\n fscale.l #4,fp0", {}, {"fp0": 48})
+fcase("FSINCOS", "fmove.d #0r0.5,fp0\n fsincos.x fp0,fp1:fp2", {}, {"fp1": (math.cos(0.5), 1e-15), "fp2": (math.sin(0.5), 1e-15)})
+fcase("FABS and FNEG", "fabs.l #-9,fp0\n fneg.l #4,fp1", {}, {"fp0": 9, "fp1": -4})
+fcase("FSGLMUL rounds to single", "fmove.d #0r1.0000001,fp0\n fsglmul.d #0r1.0000001,fp0", {},
+      {"fp0": (float.fromhex("0x1.000004p+0"), 0)})
+fcase("FPU precision: single", "fmove.l #0x40,fpcr\n fmove.l #1,fp0\n fdiv.l #3,fp0", {},
+      {"fp0": (float.fromhex("0x1.555556p-2"), 0)})
+fcase("68040 FSMOVE rounds to single", "fmove.d #0r1.0000000001,fp0\n fsmove.x fp0,fp1", {}, {"fp1": 1}, model=4)
+fcase("68040 FDADD", "fdadd.l #2,fp0", {}, {"fp0": "nan"}, model=4)
+fcase("68040-only opcode on a 68882", ".word 0xF200,0x0062", {}, {"vector": 11})
+fcase("68040 FPU runs FSIN (no FPSP needed)", "fsin.d #0r0.5,fp0", {}, {"fp0": (math.sin(0.5), 1e-15)}, model=4)
+
 CASES = [c for c in CASES if c]
 
 def assemble(asm, workdir):
@@ -284,7 +379,7 @@ def assemble(asm, workdir):
     obj = os.path.join(workdir, "t.o")
     elf = os.path.join(workdir, "t.elf")
     binf = os.path.join(workdir, "t.bin")
-    subprocess.run([AS, "-m68040", "--register-prefix-optional", "-o", obj, src], check=True)
+    subprocess.run([AS, "-m68040", "-m68882", "--register-prefix-optional", "-o", obj, src], check=True)
     subprocess.run([LD, "-Ttext=0x%x" % ORG, "-o", elf, obj], check=True)
     subprocess.run([OBJCOPY, "-O", "binary", "-j", ".text", elf, binf], check=True)
     syms = {}
@@ -326,10 +421,21 @@ def main():
                         exp.append("{X_MEM,%d,0x%X,0x%08X,0}" % (size, addr, value(val, syms)))
             if "vector" not in e:
                 exp.append("{X_VECTOR,0,0,4,0}")
+            fexp = []
+            for k, v in e.items():
+                if k.startswith("fp") and k[2:].isdigit():
+                    if v == "inf": fexp.append("{%s,FINF,0}" % k[2:])
+                    elif v == "nan": fexp.append("{%s,FNAN,0}" % k[2:])
+                    else:
+                        val, tol = v if isinstance(v, tuple) else (v, 0)
+                        fexp.append("{%s,%sL,%sL}" % (k[2:], float(val).hex(), repr(float(tol))))
+                elif k == "fpsr":
+                    exp.append("{X_FPSR,0,0,0x%08X,0x%08X}" % (v[1], v[0]))
+            out.append("static const FExpect fexp%d[] = {%s{-1,0,0}};" % (n, "".join(x + "," for x in fexp)))
             out.append("static const Init init%d[] = {%s{-1,0}};" % (n, "".join(i + "," for i in init)))
-            out.append("static const Expect exp%d[] = {%s{X_END,0,0,0,0}};" % (n, "".join(x + "," for x in exp)))
-            rows.append('    {"%s", %d, 0x%04X, code%d, %d, init%d, exp%d},' % (
-                c["name"], c["model"], c["sr"], n, len(code), n, n))
+            out.append("static const Expect expect%d[] = {%s{X_END,0,0,0,0}};" % (n, "".join(x + "," for x in exp)))
+            rows.append('    {"%s", %d, %d, 0x%04X, code%d, %d, init%d, expect%d, fexp%d},' % (
+                c["name"], c["model"], c["fpu"], c["sr"], n, len(code), n, n, n))
     out.append("")
     out.append("static const Case kCases[] = {")
     out += rows

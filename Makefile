@@ -5,7 +5,7 @@ CXX      ?= g++
 CXXFLAGS ?= -O2 -g -Wall -Wextra
 BUILD    := build
 
-CORE     := src/core/m68k.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/mac.cpp
+CORE     := src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/mac.cpp
 FRONTEND := src/frontend/config.cpp src/frontend/keymap.cpp src/frontend/video.cpp src/frontend/osd.cpp
 HEADERS  := $(wildcard src/core/*.h src/frontend/*.h)
 
@@ -26,8 +26,8 @@ $(BUILD)/hwtest: tests/hwtest.cpp $(CORE) $(HEADERS) | $(BUILD)
 $(BUILD)/fetest: tests/fetest.cpp $(CORE) $(FRONTEND) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/fetest.cpp $(CORE) $(FRONTEND)
 
-$(BUILD)/cpu020test: tests/cpu020test.cpp tests/cpu020_cases.h src/core/m68k.cpp src/core/m68k.h | $(BUILD)
-	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/cpu020test.cpp src/core/m68k.cpp
+$(BUILD)/cpu020test: tests/cpu020test.cpp tests/cpu020_cases.h $(CORE) $(HEADERS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/cpu020test.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp
 
 # Regenerate the 68020+ cases (needs binutils-m68k-linux-gnu).
 tests/cpu020_cases.h: tools/gen_cpu020_tests.py

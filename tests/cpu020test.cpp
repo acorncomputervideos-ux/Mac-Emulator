@@ -3,14 +3,18 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <cmath>
 #include "../src/core/m68k.h"
+#include "../src/core/fpu.h"
 
 using namespace macemu;
 
 struct Init { int reg; u32 value; };
-enum { X_END, X_REG, X_CCR, X_VECTOR, X_MEM };
+enum { X_END, X_REG, X_CCR, X_VECTOR, X_MEM, X_FPSR };
 struct Expect { int kind; int a; u32 addr; u32 value; u32 mask; };
-struct Case { const char *name; int model; u32 sr; const unsigned char *code; u32 len; const Init *init; const Expect *expect; };
+enum { FINF = 1000000, FNAN = 2000000 };
+struct FExpect { int reg; long double value; long double tol; };
+struct Case { const char *name; int model; int fpu; u32 sr; const unsigned char *code; u32 len; const Init *init; const Expect *expect; const FExpect *fexpect; };
 
 #include "cpu020_cases.h"
 
@@ -37,6 +41,8 @@ int main(int argc, char **argv)
         memcpy(&bus.mem[0x1000], c.code, c.len);
         M68K cpu(&bus);
         cpu.setModel(c.model);
+        Fpu fpu(c.fpu);
+        if (c.fpu) cpu.attachFpu(&fpu);
         cpu.setSR(0x2700);
         cpu.a[7] = 0x8000;
         cpu.setUSP(0x7000);
@@ -79,12 +85,29 @@ int main(int argc, char **argv)
             case X_VECTOR:
                 if (vector != (int)e->value) bad(" vector%u=%d(want %u)", 0, (u32)vector, e->value);
                 break;
+            case X_FPSR: {
+                u32 got = fpu.fpsr & e->mask;
+                if (got != e->value) bad(" fpsr&%08X=%08X(want %08X)", e->mask, got, e->value);
+                break;
+            }
             case X_MEM: {
                 u32 got = 0;
                 for (int i = 0; i < e->a; i++) got = (got << 8) | bus.mem[(e->addr + i) & (kMemSize - 1)];
                 if (got != e->value) bad(" [%X]=%X(want %X)", e->addr, got, e->value);
                 break;
             }
+            }
+        }
+        for (const FExpect *f = c.fexpect; f->reg >= 0; f++) {
+            long double got = fpu.fp[f->reg];
+            bool ok;
+            if (f->value == FINF) ok = std::isinf(got);
+            else if (f->value == FNAN) ok = std::isnan(got);
+            else ok = fabsl(got - f->value) <= f->tol * fabsl(f->value);
+            if (!ok) {
+                char b[128];
+                snprintf(b, sizeof b, " fp%d=%.20Lg(want %.20Lg)", f->reg, got, f->value);
+                strncat(why, b, sizeof why - strlen(why) - 1);
             }
         }
         if (why[0]) { failed++; printf("FAIL %-45s%s\n", c.name, why); }
