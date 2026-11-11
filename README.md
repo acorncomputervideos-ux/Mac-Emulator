@@ -1,16 +1,48 @@
 # Mac Emulator for Raspberry Pi
 
-A classic Macintosh (Mac Plus, 512Ke, 512K, 128K) emulator that runs **bare
-metal** on the Raspberry Pi using the [Circle](https://github.com/rsta2/circle)
-C++ environment. There is no Linux underneath: the Pi boots straight into the
-Mac, and gets to the Happy Mac in about a second.
+A classic Macintosh emulator that runs **bare metal** on the Raspberry Pi
+using the [Circle](https://github.com/rsta2/circle) C++ environment. There is
+no Linux underneath: the Pi boots straight into the Mac.
+
+Two models are emulated:
+
+- **Macintosh Plus** (and 512Ke, 512K, 128K): black and white, 68000.
+- **Macintosh II**: colour, 68020 + 68881 FPU, ADB, Apple Sound Chip and a
+  NuBus colour video card. **Not yet tested with a real Mac II ROM; see
+  [Status](#status-and-limitations).**
+
+The 68030/68040 CPUs and FPU needed for later models (up to the Quadras) are
+already in the core. The Quadra machine itself is still to come.
 
 ## Features
 
-**Machine**
-- Motorola 68000 interpreter, checked against the 1,000,000-test
+**Processors**
+- Motorola 68000, checked against the 1,000,000-test
   [SingleStepTests](https://github.com/SingleStepTests/680x0) suite.
   Every vector that does not involve an address error passes.
+- 68020, 68030 and 68040 instruction sets: 32-bit addressing, memory-indirect
+  modes, bit fields, CAS/CAS2, 64-bit multiply and divide, MOVEC/VBR/MSP,
+  stack frame formats, bus errors and MOVE16.
+- 68881/68882 and 68040 floating point: every instruction, including the
+  transcendental functions, in every data format (also packed decimal). It
+  computes in `long double`, which is IEEE quad precision on the 64-bit Pi
+  kernels, a superset of the 68881's 80-bit extended format.
+
+**Macintosh II (colour)**
+- 24-bit and 32-bit addressing (the Mac II HMMU), ROM overlay, NuBus slots
+  with bus errors for empty slots.
+- A NuBus colour video card designed for the emulator. It offers 1, 2, 4 and
+  8 bits per pixel at 640×480, 832×624 or 1024×768 (`video=`), with a
+  256-entry colour table, gray mode and VBL interrupts. Its declaration ROM
+  and display driver (`src/core/videodrv.s`) are original, so no Apple video
+  card ROM is needed.
+- Apple Desktop Bus keyboard (extended layout: function keys, Escape,
+  Control, Home/End/Page keys, forward delete) and mouse, with autopolling.
+- Apple Sound Chip: FIFO and wavetable sound.
+- Shut Down really turns the Mac off. The Pi then waits for a key to start it
+  again.
+
+**Machine**
 - Accurate bus timing (7.8336 MHz, 370 lines × 352 cycles per frame, 60.15 Hz).
 - Mac Plus (128K ROM) with 1, 2 or 4 MB of RAM. Mac 128K/512K with 64K ROMs.
 - 6522 VIA with both timers and the shift register.
@@ -55,11 +87,15 @@ Mac, and gets to the Happy Mac in about a second.
 ## What you need
 
 - A Raspberry Pi. Pi 3, Pi 3+, Zero 2 W, Pi 4 and Pi 5 run in 64-bit mode;
-  Pi 1, Zero and Pi 2 have 32-bit builds.
+  Pi 1, Zero and Pi 2 have 32-bit builds. For the Mac II, use a Pi 3 or
+  later.
 - A FAT32 SD card, a USB keyboard and mouse, and an HDMI display.
-- **A Macintosh ROM image you are entitled to use.** None is included. The Mac
-  Plus ROM (128 KB, checksum `4D1F8172` or `4D1EEEE1`) is recommended. Name it
-  `mac.rom`.
+- **A Macintosh ROM image you are entitled to use.** None is included. Name
+  it `mac.rom`. The ROM's size picks the model, or set `machine=plus|ii`:
+  - Mac Plus: 128 KB, checksum `4D1F8172` or `4D1EEEE1`.
+  - Mac II: 256 KB, checksum `97851DB6` or `9779D2C4`.
+  - The later 256 KB "universal" ROM (IIx, IIcx, SE/30) and 512 KB/1 MB ROMs
+    (IIci, Quadra) need machines that are not emulated yet.
 - System software disk images. Apple distributed System 6 and earlier for free.
 
 ## Setting up the SD card
@@ -88,8 +124,10 @@ flashing question-mark disk. Press F12 to choose one.
 
 | PC key                        | Mac key                                      |
 |-------------------------------|----------------------------------------------|
-| Ctrl, Alt                     | Command (⌘)                                  |
+| Left Ctrl, Alt                | Command (⌘)                                  |
 | Windows key, Right Alt        | Option                                       |
+| Right Ctrl                    | Control (Mac II)                             |
+| Esc, F1–F8, Home, End, Page Up/Down, Insert (Help), Delete | the same keys on the Mac II's extended keyboard |
 | Caps Lock                     | Caps Lock (latching)                         |
 | Backspace / Delete            | Delete                                       |
 | Arrows, keypad                | Mac Plus arrows and keypad                   |
@@ -161,7 +199,25 @@ sdcard/        files that go on the SD card
 
 ## Status and limitations
 
-What has been verified:
+What has been verified for the Mac II and the 68020+/FPU:
+- 216 hand-written 68020/68030/68040 and FPU cases (`tests/cpu020_cases.h`).
+  Their expected values come from the Motorola manuals and are generated with
+  GNU as. The maths library is within a few ulp of an 80-bit `libm`.
+- The video card's declaration ROM is parsed and checksummed the way the Slot
+  Manager does it. The 68k display driver runs on the emulated 68020 against a
+  minimal fake Mac OS (Open, SetMode, SetEntries, GetEntries, GetGamma, VBL
+  interrupt, Close).
+- Mac II hardware tests cover the memory map, 24/32-bit switching, slot bus
+  errors, ADB transactions and autopoll, the ASC and the interrupt wiring.
+- `tools/mktestrom.py --macii` builds a colour self-test ROM. It renders
+  identically in the host build and in the Pi 3 kernel under QEMU.
+
+The ADB and ASC behaviour follows QEMU's Quadra 800 model, which is known to
+boot Mac OS. The rest of the Mac II wiring is from Apple's hardware
+documentation. **Booting a real Mac II ROM has not been tried yet**, so expect
+fixes there.
+
+What has been verified for the Mac Plus:
 - The 68000 core against the SingleStepTests vectors.
 - Every peripheral against unit tests that drive it the way the Mac ROM does:
   floppy GCR read/write, the SCSI command/data/status cycle, RTC and PRAM,
@@ -177,11 +233,14 @@ What has **not** been verified:
   build, but did not produce output under QEMU's `raspi2b` machine (Circle
   normally needs its `--qemu` option for that).
 
-Not emulated:
+Not emulated yet:
+- The 68030/68040 MMUs, and with them the IIx/IIcx/SE/30/IIci/Quadra
+  machines.
+- Video modes with thousands or millions of colours.
 - 68000 address errors.
 - The serial ports: no modem, printer or LocalTalk. The SCC is modelled only
   far enough for the ROM.
-- Mac SE, Mac II and colour.
+- Mac SE.
 
 The mouse is fed to the OS through its own low-memory mouse variables, the
 same way the ROM's mouse interrupt handler does, rather than as SCC
