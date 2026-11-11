@@ -15,7 +15,7 @@ SST_PER_INSTRUCTION ?= 1000
 
 .PHONY: all test cputest clean
 
-all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cputest $(BUILD)/macemu-host
+all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/cputest $(BUILD)/macemu-host
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -26,15 +26,23 @@ $(BUILD)/hwtest: tests/hwtest.cpp $(CORE) $(HEADERS) | $(BUILD)
 $(BUILD)/fetest: tests/fetest.cpp $(CORE) $(FRONTEND) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/fetest.cpp $(CORE) $(FRONTEND)
 
+$(BUILD)/cpu020test: tests/cpu020test.cpp tests/cpu020_cases.h src/core/m68k.cpp src/core/m68k.h | $(BUILD)
+	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/cpu020test.cpp src/core/m68k.cpp
+
+# Regenerate the 68020+ cases (needs binutils-m68k-linux-gnu).
+tests/cpu020_cases.h: tools/gen_cpu020_tests.py
+	python3 tools/gen_cpu020_tests.py > $@.tmp && mv $@.tmp $@
+
 $(BUILD)/cputest: tests/cputest.cpp src/core/m68k.cpp src/core/m68k.h | $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ tests/cputest.cpp src/core/m68k.cpp
 
 $(BUILD)/macemu-host: src/host/main.cpp $(CORE) $(FRONTEND) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ src/host/main.cpp $(CORE) $(FRONTEND)
 
-test: $(BUILD)/hwtest $(BUILD)/fetest
+test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test
 	$(BUILD)/hwtest
 	$(BUILD)/fetest
+	$(BUILD)/cpu020test
 
 $(BUILD)/vectors.txt: tools/sst2txt.py | $(BUILD)
 	python3 tools/sst2txt.py $(SST) $(SST_PER_INSTRUCTION) > $@

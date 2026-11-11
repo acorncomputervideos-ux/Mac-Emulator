@@ -1,4 +1,4 @@
-// Motorola 68000 interpreter.
+// Motorola 68000 / 68020 / 68030 / 68040 interpreter.
 
 #ifndef MACEMU_M68K_H
 #define MACEMU_M68K_H
@@ -14,15 +14,58 @@ public:
     virtual u16 read16(u32 addr) = 0;
     virtual void write8(u32 addr, u8 v) = 0;
     virtual void write16(u32 addr, u16 v) = 0;
+    // 32-bit accesses; the default splits them into two word accesses.
+    virtual u32 read32(u32 addr) { u32 h = read16(addr); return (h << 16) | read16(addr + 2); }
+    virtual void write32(u32 addr, u32 v) { write16(addr, (u16)(v >> 16)); write16(addr + 2, (u16)v); }
     // Called when the CPU acknowledges an interrupt of the given level.
     virtual void irqAck(int level) { (void)level; }
     // Called when the CPU executes RESET.
     virtual void resetLine() {}
+
+    // A device calls this during an access that should end in a bus error
+    // (an empty NuBus slot, say).  The CPU finishes the instruction and then
+    // takes the bus error exception.
+    bool busError = false;
+    u32 busErrorAddr = 0;
+    bool busErrorWrite = false;
+    void signalBusError(u32 addr, bool write)
+    {
+        if (!busError) { busError = true; busErrorAddr = addr; busErrorWrite = write; }
+    }
+};
+
+// Coprocessor hooks (floating point unit, MMU).  The CPU hands F-line
+// instructions to them; they use the CPU's public helpers for operands.
+class M68K;
+class Coprocessor {
+public:
+    virtual ~Coprocessor() {}
+    // Returns false if the instruction is not recognised (F-line exception).
+    virtual bool execute(M68K &cpu, u16 op) = 0;
+    virtual void reset() {}
+    // 68040 MOVEC access to MMU registers; returns false if unknown.
+    virtual bool control(int reg, u32 &value, bool write) { (void)reg; (void)value; (void)write; return false; }
+};
+
+// Address translation for 68030/68040 MMUs.  translate() returns the
+// physical address, or sets `fault` for a bus error.
+class Translator {
+public:
+    virtual ~Translator() {}
+    virtual bool enabled() const = 0;
+    virtual u32 translate(u32 logical, bool write, bool supervisor, bool code, bool &fault) = 0;
 };
 
 class M68K {
 public:
+    enum Model { MC68000 = 0, MC68020 = 2, MC68030 = 3, MC68040 = 4 };
+
     explicit M68K(Bus *bus);
+
+    void setModel(int m) { model = m; }
+    int getModel() const { return model; }
+    void attachFpu(Coprocessor *f) { fpu = f; }
+    void attachMmu(Coprocessor *unit, Translator *t) { mmuUnit = unit; mmu = t; }
 
     void hardReset();           // zero everything, load SSP/PC from vectors 0/1
     int step();                 // execute one instruction, returns CPU clock cycles used
@@ -30,10 +73,12 @@ public:
 
     u16 getSR() const;
     void setSR(u16 v);
-    u32 getUSP() const { return fS ? otherSP : a[7]; }
-    u32 getSSP() const { return fS ? a[7] : otherSP; }
-    void setUSP(u32 v) { if (fS) otherSP = v; else a[7] = v; }
-    void setSSP(u32 v) { if (fS) a[7] = v; else otherSP = v; }
+    u32 getUSP() const { return fS ? usp : a[7]; }
+    u32 getSSP() const { return fS ? a[7] : (fM ? msp : isp); }
+    void setUSP(u32 v) { if (fS) usp = v; else a[7] = v; }
+    void setSSP(u32 v) { if (fS) a[7] = v; else if (fM) msp = v; else isp = v; }
+    u32 getISP() const { return fS && !fM ? a[7] : isp; }
+    u32 getMSP() const { return fS && fM ? a[7] : msp; }
 
     u32 d[8];
     u32 a[8];
@@ -41,34 +86,49 @@ public:
     bool stopped;
     u64 totalCycles;
 
-private:
-    Bus *bus;
-    u32 otherSP;                // the stack pointer that is not currently A7
-    u32 fC, fV, fZ, fN, fX;     // condition codes, each 0 or 1
-    u32 fS, fT, imask;
-    int irq;
-    int cyc;
+    // 68010+ control registers
+    u32 vbr, sfc, dfc, cacr, caar;
     u32 instPC;
-    u16 opcode;
-    bool traceNext;
+    int cyc;
 
-    u16 fetch16() { u16 v = bus->read16(pc); pc += 2; cyc += 4; return v; }
-    u32 fetch32() { u32 h = fetch16(); return (h << 16) | fetch16(); }
-    u32 rd(u32 addr, int sz);
+    // Helpers, public so that coprocessors can use them.
+    u32 rd(u32 addr, int sz);                   // sz: 0 byte, 1 word, 2 long
     void wr(u32 addr, int sz, u32 v);
-    void push16(u16 v) { a[7] -= 2; wr(a[7], 1, v); }
-    void push32(u32 v) { a[7] -= 4; wr(a[7], 2, v); }
-    u16 pop16() { u16 v = (u16)rd(a[7], 1); a[7] += 2; return v; }
-    u32 pop32() { u32 v = rd(a[7], 2); a[7] += 4; return v; }
-
-    u32 index(u32 base);
+    u16 fetch16();
+    u32 fetch32() { u32 h = fetch16(); return (h << 16) | fetch16(); }
     u32 ea(int mode, int reg, int sz, bool noPenalty = false);
     u32 readEA(int mode, int reg, int sz);
     void setD(int reg, int sz, u32 v);
     bool cond(int c) const;
-    void exception(int vec, u32 pushPC, int extraCycles);
+    void exception(int vec, u32 pushPC, int extraCycles, int format = 0);
     void illegal();
     void privilege() { exception(8, instPC, 10); }
+    bool supervisor() const { return fS != 0; }
+    u16 currentOpcode() const { return opcode; }
+    u32 physical(u32 addr, bool write, bool code);
+    u32 *addressRegs() { return a; }
+
+private:
+    Bus *bus;
+    Coprocessor *fpu, *mmuUnit;
+    Translator *mmu;
+    int model;
+    u32 usp, isp, msp;          // stack pointers not currently in A7
+    u32 fC, fV, fZ, fN, fX;     // condition codes, each 0 or 1
+    u32 fS, fM, fT, imask;
+    int irq;
+    bool nmiSeen;               // level 7 is edge triggered
+    u16 opcode;
+    bool traceNext;
+
+    void push16(u16 v) { a[7] -= 2; wr(a[7], 1, v); }
+    void push32(u32 v) { a[7] -= 4; wr(a[7], 2, v); }
+    u16 pop16() { u16 v = (u16)rd(a[7], 1); a[7] += 2; return v; }
+    u32 pop32() { u32 v = rd(a[7], 2); a[7] += 4; return v; }
+    void switchStack(u32 newS, u32 newM);
+    void busErrorException();
+
+    u32 index(u32 base);
 
     void setNZ(u32 v, int sz);
     void logicFlags(u32 v, int sz) { setNZ(v, sz); fV = fC = 0; }
@@ -84,6 +144,22 @@ private:
     void movem(u16 op);
     void arith(u16 op);         // groups 8, 9, B, C, D
     void groupE(u16 op);
+    void lineF(u16 op);
+
+    // 68020+ instructions
+    void movec(u16 op);
+    void moves(u16 op);
+    void mulLong(u16 op);
+    void divLong(u16 op);
+    void chk2(u16 op);
+    void cas(u16 op);
+    void cas2(u16 op);
+    void bitfield(u16 op);
+    void packUnpk(u16 op);
+    void trapcc(u16 op);
+    void move16(u16 op);
+    void rte();
+    bool mmuControl(int cr, u32 &v, bool write);
 };
 
 } // namespace macemu
