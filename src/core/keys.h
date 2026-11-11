@@ -1,8 +1,6 @@
-// Macintosh virtual key codes as understood by Machine::keyEvent().
-//
-// Codes below 0x40 are main-block keys.  Codes 0x40 and up live on the
-// numeric keypad of the Macintosh Plus keyboard, which is also where its
-// four arrow keys are wired.
+// Apple Desktop Bus key codes, used for every model.  The Mac Plus keyboard
+// uses the same codes for the main block; its machine translates arrows and
+// drops keys the Plus keyboard does not have.
 
 #ifndef MACEMU_KEYS_H
 #define MACEMU_KEYS_H
@@ -18,12 +16,19 @@ enum MacKey {
     MK_Return = 0x24, MK_L = 0x25, MK_J = 0x26, MK_Quote = 0x27, MK_K = 0x28, MK_Semicolon = 0x29,
     MK_Backslash = 0x2A, MK_Comma = 0x2B, MK_Slash = 0x2C, MK_N = 0x2D, MK_M = 0x2E, MK_Period = 0x2F,
     MK_Tab = 0x30, MK_Space = 0x31, MK_Grave = 0x32, MK_Backspace = 0x33, MK_Enter = 0x34,
-    MK_Command = 0x37, MK_Shift = 0x38, MK_CapsLock = 0x39, MK_Option = 0x3A,
+    MK_Escape = 0x35, MK_Control = 0x36, MK_Command = 0x37, MK_Shift = 0x38, MK_CapsLock = 0x39,
+    MK_Option = 0x3A, MK_Left = 0x3B, MK_Right = 0x3C, MK_Down = 0x3D, MK_Up = 0x3E,
 
-    MK_KpDecimal = 0x41, MK_Right = 0x42, MK_Left = 0x46, MK_KpClear = 0x47, MK_Down = 0x48,
-    MK_KpEnter = 0x4C, MK_Up = 0x4D, MK_KpMinus = 0x4E,
+    MK_KpDecimal = 0x41, MK_KpMultiply = 0x43, MK_KpPlus = 0x45, MK_KpClear = 0x47, MK_KpDivide = 0x4B,
+    MK_KpEnter = 0x4C, MK_KpMinus = 0x4E, MK_KpEqual = 0x51,
     MK_Kp0 = 0x52, MK_Kp1 = 0x53, MK_Kp2 = 0x54, MK_Kp3 = 0x55, MK_Kp4 = 0x56, MK_Kp5 = 0x57,
     MK_Kp6 = 0x58, MK_Kp7 = 0x59, MK_Kp8 = 0x5B, MK_Kp9 = 0x5C,
+
+    MK_F5 = 0x60, MK_F6 = 0x61, MK_F7 = 0x62, MK_F3 = 0x63, MK_F8 = 0x64, MK_F9 = 0x65,
+    MK_F11 = 0x67, MK_F13 = 0x69, MK_F14 = 0x6B, MK_F10 = 0x6D, MK_F12 = 0x6F, MK_F15 = 0x71,
+    MK_Help = 0x72, MK_Home = 0x73, MK_PageUp = 0x74, MK_ForwardDelete = 0x75, MK_F4 = 0x76,
+    MK_End = 0x77, MK_F2 = 0x78, MK_PageDown = 0x79, MK_F1 = 0x7A,
+    MK_Power = 0x7F,
 
     MK_None = 0xFF
 };

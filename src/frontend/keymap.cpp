@@ -19,6 +19,7 @@ int usbToMacKey(u8 u)
     if (u >= 0x59 && u <= 0x62) return kKeypadDigits[u - 0x59];
     switch (u) {
     case 0x28: return MK_Return;
+    case 0x29: return MK_Escape;
     case 0x2A: return MK_Backspace;
     case 0x2B: return MK_Tab;
     case 0x2C: return MK_Space;
@@ -34,16 +35,32 @@ int usbToMacKey(u8 u)
     case 0x37: return MK_Period;
     case 0x38: return MK_Slash;
     case 0x39: return MK_CapsLock;
-    case 0x4C: return MK_Backspace;                     // forward delete
+    case 0x3A: return MK_F1;
+    case 0x3B: return MK_F2;
+    case 0x3C: return MK_F3;
+    case 0x3D: return MK_F4;
+    case 0x3E: return MK_F5;
+    case 0x3F: return MK_F6;
+    case 0x40: return MK_F7;
+    case 0x41: return MK_F8;
+    case 0x49: return MK_Help;                          // Insert sits where Help does
+    case 0x4A: return MK_Home;
+    case 0x4B: return MK_PageUp;
+    case 0x4C: return MK_ForwardDelete;
+    case 0x4D: return MK_End;
+    case 0x4E: return MK_PageDown;
     case 0x4F: return MK_Right;
     case 0x50: return MK_Left;
     case 0x51: return MK_Down;
     case 0x52: return MK_Up;
     case 0x53: return MK_KpClear;                       // Num Lock sits where Clear does
-    case 0x54: return MK_Slash;
+    case 0x54: return MK_KpDivide;
+    case 0x55: return MK_KpMultiply;
     case 0x56: return MK_KpMinus;
+    case 0x57: return MK_KpPlus;
     case 0x58: return MK_KpEnter;
     case 0x63: return MK_KpDecimal;
+    case 0x67: return MK_KpEqual;
     default: return MK_None;
     }
 }
@@ -52,7 +69,8 @@ int usbModifierToMacKey(u8 bit, bool altIsOption)
 {
     switch (bit) {
     case HIDMOD_LSHIFT: case HIDMOD_RSHIFT: return MK_Shift;
-    case HIDMOD_LCTRL: case HIDMOD_RCTRL: return MK_Command;
+    case HIDMOD_LCTRL: return MK_Command;
+    case HIDMOD_RCTRL: return MK_Control;
     case HIDMOD_LALT: return altIsOption ? MK_Option : MK_Command;
     case HIDMOD_LGUI: case HIDMOD_RGUI: return altIsOption ? MK_Command : MK_Option;
     case HIDMOD_RALT: return MK_Option;

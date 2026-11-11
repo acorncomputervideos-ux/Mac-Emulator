@@ -21,13 +21,6 @@ Machine::Machine() : cpu(this), via(this)
     lineStart = nextLine = 0;
     viaFrac = 0;
     frameCount = 0;
-    rtcSeconds = 0;
-    memFill(pram, 0, sizeof pram);
-    pramDirty = false;
-    rtcEnabledLow = false; rtcClk = false; rtcWriteProtect = false;
-    rtcShift = rtcCmd = rtcExtAddr = 0;
-    rtcBits = rtcState = 0;
-    rtcOutput = false; rtcDataOut = true;
     kbdState = KbdIdle; kbdTimer = kbdInquiryTimer = 0;
     kbdCommand = 0; kbdInstant = 0x7B; kbdResult = 0; kbdHaveResult = false;
     keyHead = keyTail = 0;
@@ -188,7 +181,7 @@ u8 Machine::viaInputB()
 {
     u8 v = 0xFF;
     if (mouseDown) v &= (u8)~0x08;
-    if (rtcOutput && !rtcDataOut) v &= (u8)~0x01;
+    if (!rtc.dataLine()) v &= (u8)~0x01;
     if (cpu.totalCycles - lineStart >= 288) v &= (u8)~0x40;   // horizontal blanking
     return v;
 }
@@ -203,86 +196,40 @@ void Machine::viaOutputA(u8 pins)
 void Machine::viaOutputB(u8 pins)
 {
     portB = pins;
-    rtcLines(pins);
-}
-
-// ---------------------------------------------------------------- real-time clock
-
-void Machine::rtcLines(u8 pins)
-{
-    bool enabled = !(pins & 0x04);
-    bool clk = (pins & 0x02) != 0;
-    if (!enabled) {
-        rtcBits = 0; rtcState = 0; rtcOutput = false; rtcDataOut = true;
-        rtcClk = clk;
-        return;
-    }
-    if (clk && !rtcClk) {                               // rising edge: sample input
-        if (!rtcOutput) {
-            rtcShift = (u8)((rtcShift << 1) | (pins & 1));
-            if (++rtcBits == 8) { rtcBits = 0; rtcByte(rtcShift); }
-        }                                               // output: last bit stays until disabled
-    } else if (!clk && rtcClk) {                        // falling edge: present output
-        if (rtcOutput && rtcBits < 8) {
-            rtcDataOut = (rtcShift & 0x80) != 0;
-            rtcShift = (u8)(rtcShift << 1);
-            rtcBits++;
-        }
-    }
-    rtcClk = clk;
-}
-
-void Machine::rtcByte(u8 v)
-{
-    switch (rtcState) {
-    case 0:
-        if ((v & 0x78) == 0x38) { rtcCmd = v; rtcState = 2; }          // extended command
-        else if (v & 0x80) { rtcShift = rtcRead(v); rtcOutput = true; rtcBits = 0; }
-        else { rtcCmd = v; rtcState = 1; }
-        break;
-    case 1:
-        rtcWrite(rtcCmd, v);
-        rtcState = 0;
-        break;
-    case 2:
-        rtcExtAddr = (u8)(((rtcCmd & 7) << 5) | ((v >> 2) & 0x1F));
-        if (rtcCmd & 0x80) { rtcShift = pram[rtcExtAddr]; rtcOutput = true; rtcBits = 0; }
-        else rtcState = 3;
-        break;
-    default:
-        if (!rtcWriteProtect && pram[rtcExtAddr] != v) { pram[rtcExtAddr] = v; pramDirty = true; }
-        rtcState = 0;
-        break;
-    }
-}
-
-u8 Machine::rtcRead(u8 cmd)
-{
-    int idx = (cmd >> 2) & 0x1F;
-    if (idx < 8) return (u8)(rtcSeconds >> (8 * (idx & 3)));
-    if (idx < 12) return pram[0x10 + (idx & 3)];
-    if (idx >= 16) return pram[idx & 15];
-    return 0;
-}
-
-void Machine::rtcWrite(u8 cmd, u8 v)
-{
-    int idx = (cmd >> 2) & 0x1F;
-    if (idx == 13) { rtcWriteProtect = (v & 0x80) != 0; return; }
-    if (idx == 12 || rtcWriteProtect) return;           // test register
-    if (idx < 8) {
-        int sh = 8 * (idx & 3);
-        rtcSeconds = (rtcSeconds & ~(0xFFu << sh)) | ((u32)v << sh);
-        return;
-    }
-    int a = idx < 12 ? 0x10 + (idx & 3) : idx >= 16 ? (idx & 15) : -1;
-    if (a >= 0 && pram[a] != v) { pram[a] = v; pramDirty = true; }
+    rtc.lines(pins);
 }
 
 // ---------------------------------------------------------------- keyboard
 
-void Machine::keyEvent(int macKey, bool down)
+bool Machine::video(VideoFrame &f)
 {
+    f.width = kScreenWidth;
+    f.height = kScreenHeight;
+    f.depth = 1;
+    f.rowBytes = kScreenWidth / 8;
+    f.base = screen();
+    f.clut = 0;
+    f.clutVersion = 0;
+    return true;
+}
+
+// ADB codes to Mac Plus keyboard codes.  The Plus keyboard has its arrow
+// keys on the keypad and no Escape, Control or function keys.
+static int plusKeyCode(int adb)
+{
+    switch (adb) {
+    case 0x3B: return 0x46;                             // left
+    case 0x3C: return 0x42;                             // right
+    case 0x3D: return 0x48;                             // down
+    case 0x3E: return 0x4D;                             // up
+    case 0x35: case 0x36: return -1;                    // escape, control
+    default: return adb < 0x60 ? adb : -1;
+    }
+}
+
+void Machine::keyEvent(int adbKey, bool down)
+{
+    int macKey = plusKeyCode(adbKey);
     if (macKey < 0 || macKey > 0x7F) return;
     int next = (keyHead + 1) & 63;
     if (next == keyTail) return;                        // queue full: drop
@@ -464,7 +411,7 @@ void Machine::runFrame()
     }
     frameCount++;
     if (frameCount % 60 == 0) {
-        rtcSeconds++;
+        rtc.tickSecond();
         via.raise(Via::IRQ_CA2);
     }
     if (nmiFrames > 0) { nmiFrames--; updateIrq(); }

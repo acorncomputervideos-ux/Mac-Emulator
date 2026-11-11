@@ -9,10 +9,12 @@
 #include "via.h"
 #include "iwm.h"
 #include "scsi.h"
+#include "rtc.h"
+#include "emulator.h"
 
 namespace macemu {
 
-class Machine : public Bus, public Via::Host {
+class Machine : public Bus, public Via::Host, public Emulator {
 public:
     enum {
         kScreenWidth = 512, kScreenHeight = 342, kScreenBytes = 512 * 342 / 8,
@@ -26,26 +28,33 @@ public:
     // `rom` is a 64K or 128K ROM image; `ram` is ramSize bytes (128K, 512K,
     // 1M, 2M or 4M).  Both buffers stay owned by the caller.
     bool init(const u8 *rom, u32 romSize, u8 *ram, u32 ramSize);
-    void reset();
-    void runFrame();                                    // emulate 1/60.15 s
+    void reset() override;
+    void runFrame() override;                           // emulate 1/60.15 s
 
     // Video: 512x342, 1 bit per pixel, MSB first, 1 = black.
     const u8 *screen() const;
 
     // Sound: signed 16-bit mono samples produced by the last runFrame().
-    const s16 *sound() const { return soundBuf; }
+    const s16 *soundBuffer() const { return soundBuf; }
 
-    // Input.  Key codes are Macintosh virtual key codes (see keys.h).
-    void keyEvent(int macKey, bool down);
-    void mouseMove(int dx, int dy);
-    void mouseButton(bool down) { mouseDown = down; }
-    void interruptButton() { nmiFrames = 6; }
+    // Emulator
+    const char *modelName() const override { return rom && romMask >= 0x1FFFF ? "Macintosh Plus" : "Macintosh 512K"; }
+    bool video(VideoFrame &f) override;
+    const s16 *sound(u32 &count, u32 &rate) override { count = kSoundSamplesPerFrame; rate = 22255; return soundBuf; }
+    void keyEvent(int macKey, bool down) override;      // ADB key codes (keys.h)
+    void mouseMove(int dx, int dy) override;
+    void mouseButton(bool down) override { mouseDown = down; }
+    void interruptButton() override { nmiFrames = 6; }
+    Iwm &floppy() override { return iwm; }
+    Scsi &scsiBus() override { return scsi; }
+    Rtc &clockChip() override { return rtc; }
+    u64 cycles() const override { return cpu.totalCycles; }
+    u32 diskActivity() const override { return iwm.activityCounter + scsi.activityCounter; }
 
     // Real-time clock and parameter RAM.
-    void setClock(u32 secondsSince1904) { rtcSeconds = secondsSince1904; }
-    u32 clock() const { return rtcSeconds; }
-    u8 pram[256];
-    bool pramDirty;
+    void setClock(u32 secondsSince1904) { rtc.seconds = secondsSince1904; }
+    u32 clock() const { return rtc.seconds; }
+    Rtc rtc;
 
     M68K cpu;
     Via via;
@@ -83,16 +92,6 @@ private:
     u64 lineStart, nextLine;
     int viaFrac;
 
-    // RTC
-    u32 rtcSeconds;
-    bool rtcEnabledLow, rtcClk, rtcWriteProtect;
-    u8 rtcShift, rtcCmd, rtcExtAddr;
-    int rtcBits, rtcState;
-    bool rtcOutput, rtcDataOut;
-    void rtcLines(u8 pins);
-    void rtcByte(u8 v);
-    u8 rtcRead(u8 cmd);
-    void rtcWrite(u8 cmd, u8 v);
 
     // Keyboard
     enum { KbdIdle, KbdReceiving, KbdReceived, KbdEnding };

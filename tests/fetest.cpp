@@ -77,54 +77,108 @@ static void testKeymap()
     CHECK(usbToMacKey(0x28) == MK_Return && usbToMacKey(0x2C) == MK_Space);
     CHECK(usbToMacKey(0x50) == MK_Left && usbToMacKey(0x52) == MK_Up);
     CHECK(usbToMacKey(0x62) == MK_Kp0 && usbToMacKey(0x59) == MK_Kp1);
-    CHECK(usbToMacKey(HID_F12) == MK_None && usbToMacKey(0xE0) == MK_None);
+    CHECK(usbToMacKey(HID_F12) == MK_None && usbToMacKey(0xE0) == MK_None && usbToMacKey(0x3A) == MK_F1);
+    CHECK(usbToMacKey(0x29) == MK_Escape && usbToMacKey(0x4C) == MK_ForwardDelete && usbToMacKey(0x55) == MK_KpMultiply);
     CHECK(usbModifierToMacKey(HIDMOD_LALT, false) == MK_Command && usbModifierToMacKey(HIDMOD_LALT, true) == MK_Option);
     CHECK(usbModifierToMacKey(HIDMOD_LGUI, false) == MK_Option && usbModifierToMacKey(HIDMOD_RSHIFT, false) == MK_Shift);
+    CHECK(usbModifierToMacKey(HIDMOD_RCTRL, false) == MK_Control);
     // Every mapped key must be a valid 7-bit Mac key code, and no two letters collide.
     bool seen[128] = {false};
-    for (int u = 0x04; u <= 0x27; u++) { int k = usbToMacKey((u8)u); CHECK(k >= 0 && k < 0x40 && !seen[k]); seen[k] = true; }
+    for (int u = 0x04; u <= 0x67; u++) { int k = usbToMacKey((u8)u); if (k == MK_None) continue; CHECK(k >= 0 && k < 0x80 && (!seen[k] || k == MK_Backslash || k == MK_Grave)); seen[k] = true; }
+}
+
+static Surface makeSurface(std::vector<u32> &px, int w, int h, u32 fill)
+{
+    px.assign((size_t)w * h + 64, fill);
+    Surface s{px.data(), w, h, w, {}};
+    paletteColors(0, s.palette);
+    return s;
 }
 
 static void testVideo()
 {
-    std::vector<u8> px(800 * 600, 0xEE);
-    Surface s{px.data(), 800, 600, 800};
-    Layout l = layoutFor(s, 0);
+    std::vector<u32> px;
+    Surface s = makeSurface(px, 800, 600, 0xEEEEEE);
+    Layout l = layoutFor(s, 512, 342, 0);
     CHECK(l.scale == 1 && l.x0 == 144 && l.y0 == 129);
-    std::vector<u8> big(1920 * 1080, 0xEE);
-    Surface b{big.data(), 1920, 1080, 1920};
-    Layout lb = layoutFor(b, 0);
+    std::vector<u32> bigPx;
+    Surface b = makeSurface(bigPx, 1920, 1080, 0xEEEEEE);
+    Layout lb = layoutFor(b, 512, 342, 0);
     CHECK(lb.scale == 3 && lb.x0 == 192 && lb.y0 == 27);
-    CHECK(layoutFor(b, 2).scale == 2 && layoutFor(b, 7).scale == 3);
+    CHECK(layoutFor(b, 512, 342, 2).scale == 2 && layoutFor(b, 512, 342, 7).scale == 3);
+    CHECK(layoutFor(b, 640, 480, 0).scale == 2);
 
     std::vector<u8> mac(Machine::kScreenBytes, 0), prev(Machine::kScreenBytes, 0xFF);
     mac[0] = 0x80;                                      // top-left pixel black
     mac[64 * 341 + 63] = 0x01;                          // bottom-right pixel black
-    CHECK(blitMacScreen(b, lb, mac.data(), prev.data(), false) == 342);
-    CHECK(big[27 * 1920 + 192] == ColInk && big[29 * 1920 + 194] == ColInk && big[27 * 1920 + 195] == ColPaper);
-    CHECK(big[(27 + 1025) * 1920 + 192 + 1535] == ColInk && big[(27 + 1022) * 1920 + 192 + 1532] == ColPaper);
-    CHECK(big[26 * 1920 + 192] == 0xEE && big[27 * 1920 + 191] == 0xEE && big[(27 + 1026) * 1920 + 192] == 0xEE);
-    CHECK(blitMacScreen(b, lb, mac.data(), prev.data(), false) == 0);     // nothing changed
+    VideoFrame f{512, 342, 1, 64, mac.data(), nullptr, 0};
+    CHECK(blitScreen(b, lb, f, prev.data(), false) == 342);
+    CHECK(bigPx[27 * 1920 + 192] == 0x000000 && bigPx[29 * 1920 + 194] == 0x000000 && bigPx[27 * 1920 + 195] == 0xFFFFFF);
+    CHECK(bigPx[(27 + 1025) * 1920 + 192 + 1535] == 0 && bigPx[(27 + 1022) * 1920 + 192 + 1532] == 0xFFFFFF);
+    CHECK(bigPx[26 * 1920 + 192] == 0xEEEEEE && bigPx[27 * 1920 + 191] == 0xEEEEEE && bigPx[(27 + 1026) * 1920 + 192] == 0xEEEEEE);
+    CHECK(blitScreen(b, lb, f, prev.data(), false) == 0);     // nothing changed
     mac[64 * 10] = 0xFF;
-    CHECK(blitMacScreen(b, lb, mac.data(), prev.data(), false) == 1);
-    CHECK(blitMacScreen(b, lb, mac.data(), prev.data(), true) == 342);
+    CHECK(blitScreen(b, lb, f, prev.data(), false) == 1);
+    CHECK(blitScreen(b, lb, f, prev.data(), true) == 342);
+
+    // Colour schemes recolour one-bit screens.
+    paletteColors(2, b.palette);
+    blitScreen(b, lb, f, prev.data(), true);
+    CHECK(bigPx[27 * 1920 + 192] == 0x04180A && bigPx[27 * 1920 + 195] == 0x4AFF7A);
+
+    // 8-bit indexed through a colour table, with a row pitch wider than the image.
+    u32 clut[256];
+    for (int i = 0; i < 256; i++) clut[i] = (u32)i * 0x010101;
+    std::vector<u8> fb8(1024 * 480, 0);
+    fb8[0] = 7; fb8[1024 * 479 + 639] = 200;
+    VideoFrame f8{640, 480, 8, 1024, fb8.data(), clut, 1};
+    Layout l8 = layoutFor(b, 640, 480, 0);
+    std::vector<u8> prev8(640 * 480);
+    CHECK(blitScreen(b, l8, f8, prev8.data(), true) == 480);
+    CHECK(bigPx[l8.y0 * 1920 + l8.x0] == 0x070707);
+    CHECK(bigPx[(l8.y0 + 959) * 1920 + l8.x0 + 1279] == 0xC8C8C8);
+    // 2- and 4-bit packing, 16-bit x555 and 32-bit direct colour.
+    u8 p2[1] = {0x1B}, p4[1] = {0xA5}, p16[2] = {0x7C, 0x00}, p32[4] = {0, 0x12, 0x34, 0x56};
+    std::vector<u32> tinyPx;
+    Surface t = makeSurface(tinyPx, 8, 8, 0);
+    Layout one = layoutFor(t, 4, 1, 1);
+    VideoFrame f2{4, 1, 2, 1, p2, clut, 0};
+    blitScreen(t, one, f2, nullptr, true);
+    CHECK(tinyPx[one.y0 * 8 + one.x0] == 0 && tinyPx[one.y0 * 8 + one.x0 + 3] == 0x030303);
+    VideoFrame f4{2, 1, 4, 1, p4, clut, 0};
+    Layout two = layoutFor(t, 2, 1, 1);
+    blitScreen(t, two, f4, nullptr, true);
+    CHECK(tinyPx[two.y0 * 8 + two.x0] == 0x0A0A0A && tinyPx[two.y0 * 8 + two.x0 + 1] == 0x050505);
+    VideoFrame f16{1, 1, 16, 2, p16, nullptr, 0};
+    Layout px1 = layoutFor(t, 1, 1, 1);
+    blitScreen(t, px1, f16, nullptr, true);
+    CHECK(tinyPx[px1.y0 * 8 + px1.x0] == 0xFF0000);
+    VideoFrame f32{1, 1, 32, 4, p32, nullptr, 0};
+    blitScreen(t, px1, f32, nullptr, true);
+    CHECK(tinyPx[px1.y0 * 8 + px1.x0] == 0x123456);
 
     // A surface smaller than the Mac screen must clip, not overrun.
-    std::vector<u8> tiny(320 * 200 + 64, 0x55);
-    Surface t{tiny.data(), 320, 200, 320};
-    Layout lt = layoutFor(t, 0);
-    blitMacScreen(t, lt, mac.data(), nullptr, true);
+    std::vector<u32> smallPx;
+    Surface sm = makeSurface(smallPx, 320, 200, 0x555555);
+    Layout ls = layoutFor(sm, 512, 342, 0);
+    blitScreen(sm, ls, f, nullptr, true);
     bool intact = true;
-    for (int i = 0; i < 64; i++) if (tiny[320 * 200 + i] != 0x55) intact = false;
+    for (int i = 0; i < 64; i++) if (smallPx[320 * 200 + i] != 0x555555) intact = false;
     CHECK(intact);
-    fillRect(t, -10, -10, 1000, 1000, 7);
-    for (int i = 0; i < 64; i++) if (tiny[320 * 200 + i] != 0x55) intact = false;
-    CHECK(intact && tiny[0] == 7 && tiny[320 * 200 - 1] == 7);
+    fillRect(sm, -10, -10, 1000, 1000, ColDim);
+    for (int i = 0; i < 64; i++) if (smallPx[320 * 200 + i] != 0x555555) intact = false;
+    CHECK(intact && smallPx[0] == 0x707070 && smallPx[320 * 200 - 1] == 0x707070);
 
-    std::vector<u8> bmp(kBmpSize);
-    makeBmp(mac.data(), bmp.data());
-    CHECK(bmp[0] == 'B' && bmp[1] == 'M' && bmp[18] == 0 && bmp[19] == 2 && bmp[22] == 0x56 && bmp[23] == 1);
-    CHECK(bmp[62 + 64 * 341] == 0x80 && bmp[62 + 63] == 0x01);
+    u32 mono[2] = {0xFFFFFF, 0x000000};
+    std::vector<u8> bmp(bmpSize(f));
+    CHECK(bmp.size() == 54 + 1536 * 342);
+    makeBmp(f, mono, bmp.data());
+    CHECK(bmp[0] == 'B' && bmp[1] == 'M' && bmp[18] == 0 && bmp[19] == 2 && bmp[22] == 0x56 && bmp[23] == 1 && bmp[28] == 24);
+    u32 top = 54 + 1536 * 341;                          // first Mac row is the last BMP row
+    CHECK(bmp[top] == 0 && bmp[top + 3] == 0xFF);
+    std::vector<u8> bmp8(bmpSize(f8));
+    makeBmp(f8, mono, bmp8.data());
+    CHECK(bmp8[54 + 1920 * 479] == 7);
 
     u32 rgb[kColorCount];
     for (int p = 0; p < kPaletteCount; p++) { paletteColors(p, rgb); CHECK(rgb[ColPaper] != rgb[ColInk] && paletteName(p)[0]); }
@@ -213,8 +267,9 @@ static void testOsd()
     BoxFont font;
     for (int w : {320, 640, 1920}) {
         int h = w * 3 / 4;
-        std::vector<u8> px((size_t)w * h + 256, 0x99);
-        Surface s{px.data(), w, h, w};
+        std::vector<u32> px((size_t)w * h + 256, 0x99);
+        Surface s{px.data(), w, h, w, {}};
+        paletteColors(0, s.palette);
         osd.draw(s, font);
         osd.key(Osd::NavPageUp); osd.key(Osd::NavSelect);
         osd.draw(s, font);

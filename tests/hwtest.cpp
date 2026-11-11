@@ -436,19 +436,19 @@ static void testRtc()
     c.write(0x01, 0x11);                                // seconds low byte
     CHECK(r.m.clock() == 0xA1B2C311);
     c.write(0x41 | (3 << 2), 0x5A);                     // PRAM[3]
-    CHECK(r.m.pram[3] == 0x5A && r.m.pramDirty);
+    CHECK(r.m.rtc.pram[3] == 0x5A && r.m.rtc.pramDirty);
     CHECK(c.read(0xC1 | (3 << 2)) == 0x5A);
     c.write(0x21 | (2 << 2), 0x77);                     // PRAM[0x12]
-    CHECK(r.m.pram[0x12] == 0x77);
+    CHECK(r.m.rtc.pram[0x12] == 0x77);
     CHECK(c.read(0xA1 | (2 << 2)) == 0x77);
     // Extended PRAM, address 0xB6.
     c.begin(); c.sendByte((u8)(0x38 | (0xB6 >> 5))); c.sendByte((u8)((0xB6 & 0x1F) << 2)); c.sendByte(0x99); c.end();
-    CHECK(r.m.pram[0xB6] == 0x99);
+    CHECK(r.m.rtc.pram[0xB6] == 0x99);
     c.begin(); c.sendByte((u8)(0xB8 | (0xB6 >> 5))); c.sendByte((u8)((0xB6 & 0x1F) << 2)); u8 v = c.recvByte(); c.end();
     CHECK(v == 0x99);
     c.write(0x35, 0x80);                                // write protect
     c.write(0x41 | (3 << 2), 0x00);
-    CHECK(r.m.pram[3] == 0x5A);
+    CHECK(r.m.rtc.pram[3] == 0x5A);
     // The clock ticks once per 60 frames.
     u32 before = r.m.clock();
     for (int i = 0; i < 120; i++) r.m.runFrame();
@@ -518,10 +518,10 @@ static void testMouseAndSound()
     r.m.write8(0xEFE3FE, 0x6F);                         // volume 7, main buffers
     r.m.write8(Rig::vDirB, 0x80); r.m.write8(Rig::vBufB, 0x00);
     r.m.runFrame();
-    CHECK(r.m.sound()[0] < -20000 && r.m.sound()[1] > 20000);
+    CHECK(r.m.soundBuffer()[0] < -20000 && r.m.soundBuffer()[1] > 20000);
     r.m.write8(Rig::vBufB, 0x80);                       // sound off
     r.m.runFrame();
-    CHECK(r.m.sound()[0] == 0 && r.m.sound()[1] == 0);
+    CHECK(r.m.soundBuffer()[0] == 0 && r.m.soundBuffer()[1] == 0);
 }
 
 int main()
