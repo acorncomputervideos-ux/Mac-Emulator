@@ -124,8 +124,8 @@ s16 Asc::sample()
     switch (regs[R_MODE] & 3) {
     case 1: {                                           // FIFO
         bool hadData = fifo[0].count || fifo[1].count;
-        int left = pop(fifo[0]);
-        int right = (regs[R_CONTROL] & 2) ? pop(fifo[1]) : left;
+        int left = pop(fifo[0]);                        // both FIFOs always play
+        int right = pop(fifo[1]);
         mixed = (left + right) / 2 - 128;
         // Mac OS keeps the FIFOs running when idle and waits for an
         // interrupt each time an empty FIFO would have drained.

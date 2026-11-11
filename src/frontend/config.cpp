@@ -24,7 +24,7 @@ static int clampInt(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : 
 void Config::sanitize()
 {
     if (ramKB < 128 || ramKB > 131072 || (ramKB & (ramKB - 1))) ramKB = 8192;
-    if (!strEqNoCase(machine, "plus") && !strEqNoCase(machine, "ii")) strCopy(machine, "auto", sizeof machine);
+    if (!strEqNoCase(machine, "plus") && !strEqNoCase(machine, "ii") && !strEqNoCase(machine, "quadra")) strCopy(machine, "auto", sizeof machine);
     if (videoWidth < 512 || videoHeight < 342 || videoWidth > 1024 || videoHeight > 768 || (videoWidth & 7))
         { videoWidth = 640; videoHeight = 480; }
     if (speed != 0 && speed != 1 && speed != 2 && speed != 4 && speed != 8) speed = 1;

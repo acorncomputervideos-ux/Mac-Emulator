@@ -41,7 +41,8 @@ public:
     virtual void interruptButton() = 0;
 
     virtual Iwm &floppy() = 0;
-    virtual Scsi &scsiBus() = 0;
+    virtual void attachDisk(int scsiId, Storage *disk) = 0;
+    virtual void flushDisks() = 0;
     virtual Rtc &clockChip() = 0;
     virtual u64 cycles() const = 0;
     virtual u32 diskActivity() const = 0;

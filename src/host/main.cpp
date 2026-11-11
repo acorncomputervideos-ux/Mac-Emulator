@@ -17,6 +17,7 @@
 #include <vector>
 #include "../core/mac.h"
 #include "../core/macii.h"
+#include "../core/quadra.h"
 #include "../core/keys.h"
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
@@ -105,6 +106,12 @@ struct Host : OsdHost {
     const char *infoLine(int n) override { return n == 0 ? mac.modelName() : "F12 closes this menu"; }
 };
 
+static int ioLogCount = 0;
+static void logIo(void *, const char *what, u32 addr, u32 value)
+{
+    if (ioLogCount++ < 200) printf("  %s %08X (%08X)\n", what, addr, value);
+}
+
 static void writePpm(const std::string &path, const Surface &s)
 {
     FILE *f = fopen(path.c_str(), "wb");
@@ -141,7 +148,8 @@ int main(int argc, char **argv)
     cfg.setDefaults();
     std::string out = "macemu", wavPath, typeText;
     int frames = 600, shotEvery = 0, clickX = -1, clickY = -1;
-    bool menu = false;
+    bool menu = false, traceIo = false;
+    int tracePc = 0;
     std::string floppy[2], hd[7];
     for (int i = 2; i < argc; i++) {
         std::string a = argv[i];
@@ -160,6 +168,8 @@ int main(int argc, char **argv)
         else if (a == "--type") { typeText = v; i++; }
         else if (a == "--click") { sscanf(v, "%d,%d", &clickX, &clickY); i++; }
         else if (a == "--menu") menu = true;
+        else if (a == "--trace-io") traceIo = true;
+        else if (a == "--trace-pc") { tracePc = atoi(v); i++; }
         else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
     cfg.sanitize();
@@ -167,13 +177,21 @@ int main(int argc, char **argv)
     FileStorage romFile;
     if (!romFile.load(argv[1])) { fprintf(stderr, "cannot read ROM %s\n", argv[1]); return 1; }
     std::vector<u8> ram(cfg.ramKB * 1024);
-    bool macII = strEqNoCase(cfg.machine, "ii") || (!strEqNoCase(cfg.machine, "plus") && romFile.data.size() >= 0x40000);
-    if (!macII && ram.size() > 0x400000) ram.resize(0x400000);
+    bool quadra = strEqNoCase(cfg.machine, "quadra") || (strEqNoCase(cfg.machine, "auto") && romFile.data.size() == 0x100000);
+    bool macII = !quadra && (strEqNoCase(cfg.machine, "ii") || (!strEqNoCase(cfg.machine, "plus") && romFile.data.size() >= 0x40000));
+    if (!macII && !quadra && ram.size() > 0x400000) ram.resize(0x400000);
     static Machine plus;
     static MacII *two = nullptr;
     Emulator *emu;
     bool ok;
-    if (macII) {
+    static Quadra *quad = nullptr;
+    if (quadra) {
+        if (ram.size() < 0x800000) ram.resize(0x800000);
+        quad = new Quadra;
+        ok = quad->init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
+        if (traceIo) { quad->ioLog = logIo; }
+        emu = quad;
+    } else if (macII) {
         two = new MacII(cfg.videoWidth, cfg.videoHeight);
         ok = two->init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
         emu = two;
@@ -202,7 +220,7 @@ int main(int argc, char **argv)
     for (int id = 0; id < 7; id++) {
         if (hd[id].empty()) continue;
         FileStorage *s = new FileStorage;
-        if (s->load(hd[id])) mac.scsiBus().attach(id, s);
+        if (s->load(hd[id])) mac.attachDisk(id, s);
         else fprintf(stderr, "cannot read hard disk image %s\n", hd[id].c_str());
     }
 
@@ -237,6 +255,9 @@ int main(int argc, char **argv)
     bool shiftHeld = false;
     for (int f = 0; f < frames; f++) {
         mac.runFrame();
+        if (tracePc && f % tracePc == 0 && quad) {
+            printf("frame %d: pc=%08X sr=%04X tc=%04X a7=%08X\n", f, quad->cpu.pc, quad->cpu.getSR(), quad->mmu.tc, quad->cpu.a[7]);
+        }
         if (!wavPath.empty()) { u32 n, rate; const s16 *snd = mac.sound(n, rate); wav.insert(wav.end(), snd, snd + n); }
 
         // Scripted input, starting once the machine has had time to boot.
@@ -263,8 +284,7 @@ int main(int argc, char **argv)
             writePpm(out + name, surf);
         }
     }
-    mac.floppy().flush();
-    mac.scsiBus().flush();
+    mac.flushDisks();
     writePpm(out + "-final.ppm", surf);
     VideoFrame vf;
     std::vector<u8> bmp;

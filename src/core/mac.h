@@ -46,7 +46,8 @@ public:
     void mouseButton(bool down) override { mouseDown = down; }
     void interruptButton() override { nmiFrames = 6; }
     Iwm &floppy() override { return iwm; }
-    Scsi &scsiBus() override { return scsi; }
+    void attachDisk(int id, Storage *d) override { scsi.attach(id, d); }
+    void flushDisks() override { iwm.flush(); scsi.flush(); }
     Rtc &clockChip() override { return rtc; }
     u64 cycles() const override { return cpu.totalCycles; }
     u32 diskActivity() const override { return iwm.activityCounter + scsi.activityCounter; }

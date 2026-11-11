@@ -5,7 +5,7 @@ CXX      ?= g++
 CXXFLAGS ?= -O2 -g -Wall -Wextra
 BUILD    := build
 
-CORE     := src/core/macii.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/rtc.cpp src/core/adb.cpp src/core/asc.cpp src/core/nubusvideo.cpp src/core/mmu040.cpp src/core/mac.cpp
+CORE     := src/core/macii.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/rtc.cpp src/core/adb.cpp src/core/asc.cpp src/core/nubusvideo.cpp src/core/mmu040.cpp src/core/dafb.cpp src/core/esp.cpp src/core/quadra.cpp src/core/mac.cpp
 FRONTEND := src/frontend/config.cpp src/frontend/keymap.cpp src/frontend/video.cpp src/frontend/osd.cpp
 HEADERS  := $(wildcard src/core/*.h src/frontend/*.h)
 

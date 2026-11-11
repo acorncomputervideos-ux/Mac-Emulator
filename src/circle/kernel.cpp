@@ -289,7 +289,7 @@ void CKernel::AttachDisks (void)
 		if (pDisk->Open (Path))
 		{
 			m_pHardDisk[id] = pDisk;
-			m_pMachine->scsiBus ().attach ((int) id, pDisk);
+			m_pMachine->attachDisk ((int) id, pDisk);
 			m_Logger.Write (FromKernel, LogNotice, "SCSI ID %u: %s (%u MB%s)", id, Path,
 					pDisk->size () >> 20, pDisk->readOnly () ? ", read-only" : "");
 		}
@@ -527,8 +527,7 @@ TShutdownMode CKernel::Run (void)
 		if (m_pMachine->poweredOff ())
 		{
 			// Shut Down: save everything and wait for a key to start again.
-			m_pMachine->floppy ().flush ();
-			m_pMachine->scsiBus ().flush ();
+			m_pMachine->flushDisks ();
 			SavePRAM ();
 			m_ActLED.Off ();
 			ShowMessage ("It is now safe to switch off your Macintosh.",
@@ -690,7 +689,7 @@ void CKernel::Housekeeping (void)
 			}
 		}
 
-		m_pMachine->scsiBus ().flush ();
+		m_pMachine->flushDisks ();
 		SavePRAM ();
 	}
 	else if (m_nIdleFrames % 600 == 0)
@@ -1136,8 +1135,7 @@ void CKernel::ejectDisk (int nDrive)
 
 void CKernel::resetMachine (void)
 {
-	m_pMachine->floppy ().flush ();
-	m_pMachine->scsiBus ().flush ();
+	m_pMachine->flushDisks ();
 	SavePRAM ();
 	ReleaseAllKeys ();
 	m_pMachine->reset ();
