@@ -27,6 +27,7 @@ struct Config {
     int mouseSpeed;             // 1..8, 4 = 1:1
     int altIsOption;            // 0: Alt=Command, Win=Option; 1: swapped
     int floppyReadOnly;
+    int network;                // 1: start the network and the web file manager
     char date[24];              // "YYYY-MM-DD HH:MM" start-up clock, empty = build date
 
     void setDefaults();

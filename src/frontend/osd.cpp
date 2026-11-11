@@ -3,12 +3,17 @@
 
 namespace macemu {
 
+static const u32 kRamSizes[] = {512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072};
+static const int kVideoModes[][2] = {{640, 480}, {832, 624}, {1024, 768}};
+
 Osd::Osd(Config &config, OsdHost &h) : cfg(config), host(h)
 {
-    isOpen = dirty = false;
-    sel = 0;
-    picking = false;
-    pickDrive = pickCount = pickSel = pickTop = 0;
+    isOpen = dirty = pendingReboot = disksChanged = false;
+    page = PageMain;
+    for (int i = 0; i < 6; i++) sel[i] = 0;
+    pickTarget = PickFloppy1;
+    pickId = 0;
+    pickCount = pickSel = pickTop = 0;
     message[0] = 0;
 }
 
@@ -16,8 +21,36 @@ void Osd::open()
 {
     isOpen = true;
     dirty = true;
-    picking = false;
+    page = PageMain;
     message[0] = 0;
+}
+
+void Osd::say(const char *text)
+{
+    strCopy(message, text, sizeof message);
+}
+
+int Osd::items(Page p, int *out) const
+{
+    int n = 0;
+    switch (p) {
+    case PageMain:
+        for (int i = ItFloppy1; i <= ItResume; i++) out[n++] = i;
+        break;
+    case PageDisks:
+        for (int i = ItHd0; i <= ItDisksBack; i++) out[n++] = i;
+        break;
+    case PageMachine:
+        for (int i = ItModel; i <= ItMachineBack; i++) out[n++] = i;
+        break;
+    case PagePrefs:
+        for (int i = ItSpeed; i <= ItPrefsBack; i++) out[n++] = i;
+        break;
+    default:
+        out[n++] = ItNetworkBack;
+        break;
+    }
+    return n;
 }
 
 static int cycle(int v, int dir, int lo, int hi)
@@ -26,6 +59,13 @@ static int cycle(int v, int dir, int lo, int hi)
     if (v > hi) v = lo;
     if (v < lo) v = hi;
     return v;
+}
+
+static const char *baseName(const char *path)
+{
+    const char *b = path;
+    for (const char *p = path; *p; p++) if (*p == '/') b = p + 1;
+    return b;
 }
 
 void Osd::adjust(int item, int dir)
@@ -38,7 +78,6 @@ void Osd::adjust(int item, int dir)
         cfg.speed = steps[cycle(i, dir, 0, 4)];
         break;
     }
-    case ItScale: cfg.scale = cycle(cfg.scale, dir, 0, 8); break;
     case ItPalette: cfg.palette = cycle(cfg.palette, dir, 0, kPaletteCount - 1); break;
     case ItSound: cfg.sound = !cfg.sound; break;
     case ItVolume:
@@ -52,17 +91,43 @@ void Osd::adjust(int item, int dir)
         if (cfg.mouseSpeed > 8) cfg.mouseSpeed = 8;
         break;
     case ItAlt: cfg.altIsOption = !cfg.altIsOption; break;
-    default: return;
+    case ItModel: {
+        static const char *models[] = {"auto", "plus", "ii", "quadra"};
+        int i = 0;
+        while (i < 3 && !strEqNoCase(models[i], cfg.machine)) i++;
+        strCopy(cfg.machine, models[cycle(i, dir, 0, 3)], sizeof cfg.machine);
+        pendingReboot = true;
+        return;
+    }
+    case ItRam: {
+        int i = 0, n = (int)(sizeof kRamSizes / sizeof kRamSizes[0]);
+        while (i < n - 1 && kRamSizes[i] < cfg.ramKB) i++;
+        cfg.ramKB = kRamSizes[cycle(i, dir, 0, n - 1)];
+        pendingReboot = true;
+        return;
+    }
+    case ItVideo: {
+        int i = 0;
+        while (i < 2 && kVideoModes[i][0] != cfg.videoWidth) i++;
+        i = cycle(i, dir, 0, 2);
+        cfg.videoWidth = kVideoModes[i][0];
+        cfg.videoHeight = kVideoModes[i][1];
+        pendingReboot = true;
+        return;
+    }
+    default:
+        return;
     }
     host.settingsChanged();
 }
 
-void Osd::openPicker(int drive)
+void Osd::openPicker(PickTarget target, int id)
 {
-    pickDrive = drive;
-    pickCount = host.listDisks(names, kMaxDisks);
-    // Simple insertion sort so the list reads alphabetically.
-    for (int i = 1; i < pickCount; i++) {
+    pickTarget = target;
+    pickId = id;
+    OsdHost::FileKind kind = target == PickHardDisk ? OsdHost::HardDisks : target == PickRom ? OsdHost::Roms : OsdHost::Floppies;
+    pickCount = host.listFiles(kind, names, kMaxFiles);
+    for (int i = 1; i < pickCount; i++) {               // alphabetical
         char tmp[OsdHost::kNameLen];
         strCopy(tmp, names[i], sizeof tmp);
         int j = i - 1;
@@ -76,43 +141,72 @@ void Osd::openPicker(int drive)
         strCopy(names[j + 1], tmp, sizeof names[0]);
     }
     pickSel = pickTop = 0;
-    picking = true;
+    page = PagePicker;
 }
 
 void Osd::activate(int item)
 {
     switch (item) {
-    case ItFloppy1: case ItFloppy2: openPicker(item - ItFloppy1); break;
-    case ItReset: host.resetMachine(); isOpen = false; break;
+    case ItFloppy1: openPicker(PickFloppy1, 0); break;
+    case ItFloppy2: openPicker(PickFloppy2, 1); break;
+    case ItDisksPage: page = PageDisks; break;
+    case ItMachinePage: page = PageMachine; break;
+    case ItPrefsPage: page = PagePrefs; break;
+    case ItNetworkPage: page = PageNetwork; break;
+    case ItReset:
+        host.resetMachine();
+        disksChanged = false;
+        isOpen = false;
+        break;
     case ItInterrupt: host.interruptButton(); isOpen = false; break;
-    case ItScreenshot:
-        strCopy(message, host.screenshot() ? "Screenshot saved" : "Could not save screenshot", sizeof message);
-        break;
-    case ItSave:
-        strCopy(message, host.saveSettings() ? "Settings saved to macemu.cfg" : "Could not write macemu.cfg", sizeof message);
-        break;
+    case ItScreenshot: say(host.screenshot() ? "Screenshot saved" : "Could not save the screenshot"); break;
+    case ItSave: say(host.saveSettings() ? "Settings saved to macemu.cfg" : "Could not write macemu.cfg"); break;
     case ItResume: isOpen = false; break;
-    default: adjust(item, 1); break;
+    case ItRom: openPicker(PickRom, 0); break;
+    case ItApply: host.saveAndReboot(); break;
+    case ItDisksBack: case ItMachineBack: case ItPrefsBack: case ItNetworkBack:
+        page = PageMain;
+        break;
+    default:
+        if (item >= ItHd0 && item <= ItHd6) openPicker(PickHardDisk, item - ItHd0);
+        else adjust(item, 1);
+        break;
     }
 }
 
-// Entry 0 of the picker is "eject"; disk images follow.
+// Entry 0 of the picker is "none" (eject / no disk); files follow.
 void Osd::pickerKey(Nav nav)
 {
     int total = pickCount + 1;
+    Page back = pickTarget == PickHardDisk ? PageDisks : pickTarget == PickRom ? PageMachine : PageMain;
     switch (nav) {
     case NavUp: pickSel = cycle(pickSel, -1, 0, total - 1); break;
     case NavDown: pickSel = cycle(pickSel, 1, 0, total - 1); break;
     case NavPageUp: pickSel = pickSel > kVisible ? pickSel - kVisible : 0; break;
     case NavPageDown: pickSel = pickSel + kVisible < total ? pickSel + kVisible : total - 1; break;
-    case NavBack: case NavLeft: picking = false; return;
-    case NavSelect: case NavRight:
-        host.ejectDisk(pickDrive);
+    case NavBack: case NavLeft: page = back; return;
+    case NavSelect: case NavRight: {
+        const char *name = pickSel ? names[pickSel - 1] : "";
         message[0] = 0;
-        if (pickSel > 0 && !host.insertDisk(pickDrive, names[pickSel - 1]))
-            strCopy(message, "Not a usable 400K/800K disk image", sizeof message);
-        picking = false;
+        switch (pickTarget) {
+        case PickFloppy1: case PickFloppy2:
+            host.ejectDisk(pickId);
+            if (pickSel && !host.insertDisk(pickId, name)) say("Not a usable 400K/800K disk image");
+            break;
+        case PickHardDisk:
+            strCopy(cfg.hd[pickId], pickSel ? name : "none", Config::kPath);
+            disksChanged = true;
+            say("Restart the Mac to use the new disks");
+            break;
+        case PickRom:
+            if (!pickSel) break;
+            strCopy(cfg.rom, name, Config::kPath);
+            pendingReboot = true;
+            break;
+        }
+        page = back;
         return;
+    }
     }
     if (pickSel < pickTop) pickTop = pickSel;
     if (pickSel >= pickTop + kVisible) pickTop = pickSel - kVisible + 1;
@@ -122,74 +216,110 @@ void Osd::key(Nav nav)
 {
     if (!isOpen) return;
     dirty = true;
-    if (picking) { pickerKey(nav); return; }
+    if (page == PagePicker) { pickerKey(nav); return; }
+    int list[kMaxItems];
+    int n = items(page, list);
+    int &s = sel[page];
+    if (s >= n) s = n - 1;
     switch (nav) {
-    case NavUp: sel = cycle(sel, -1, 0, kItems - 1); message[0] = 0; break;
-    case NavDown: sel = cycle(sel, 1, 0, kItems - 1); message[0] = 0; break;
-    case NavPageUp: sel = 0; break;
-    case NavPageDown: sel = kItems - 1; break;
-    case NavLeft: adjust(sel, -1); break;
-    case NavRight: adjust(sel, 1); break;
-    case NavSelect: activate(sel); break;
-    case NavBack: isOpen = false; break;
+    case NavUp: s = cycle(s, -1, 0, n - 1); message[0] = 0; break;
+    case NavDown: s = cycle(s, 1, 0, n - 1); message[0] = 0; break;
+    case NavPageUp: s = 0; break;
+    case NavPageDown: s = n - 1; break;
+    case NavLeft: adjust(list[s], -1); break;
+    case NavRight: adjust(list[s], 1); break;
+    case NavSelect: activate(list[s]); break;
+    case NavBack:
+        if (page == PageMain) isOpen = false;
+        else page = PageMain;
+        break;
     }
 }
 
 void Osd::label(int item, char *out, u32 max)
 {
     out[0] = 0;
+    auto field = [&](const char *name, const char *value) {
+        strAppend(out, name, max);
+        for (u32 n = strLen(name); n < 18; n++) strAppend(out, " ", max);
+        strAppend(out, value, max);
+    };
+    char v[64];
+    v[0] = 0;
     switch (item) {
     case ItFloppy1: case ItFloppy2: {
         const char *n = host.diskName(item - ItFloppy1);
-        strAppend(out, item == ItFloppy1 ? "Internal floppy   " : "External floppy   ", max);
-        strAppend(out, n[0] ? n : "(empty)", max);
+        field(item == ItFloppy1 ? "Floppy drive 1" : "Floppy drive 2", n[0] ? baseName(n) : "(empty)");
         break;
     }
-    case ItSpeed:
-        strAppend(out, "Speed             ", max);
-        if (cfg.speed) { appendUint(out, (u32)cfg.speed, max); strAppend(out, "x", max); }
-        else strAppend(out, "Unlimited", max);
-        break;
-    case ItScale:
-        strAppend(out, "Screen zoom       ", max);
-        if (cfg.scale) { appendUint(out, (u32)cfg.scale, max); strAppend(out, "x", max); }
-        else strAppend(out, "Largest that fits", max);
-        break;
-    case ItPalette:
-        strAppend(out, "Colours           ", max);
-        strAppend(out, paletteName(cfg.palette), max);
-        break;
-    case ItSound:
-        strAppend(out, "Sound             ", max);
-        strAppend(out, cfg.sound ? "On" : "Off", max);
-        break;
-    case ItVolume:
-        strAppend(out, "Volume            ", max);
-        appendUint(out, (u32)cfg.volume, max);
-        break;
-    case ItMouse:
-        strAppend(out, "Mouse speed       ", max);
-        appendUint(out, (u32)cfg.mouseSpeed, max);
-        break;
-    case ItAlt:
-        strAppend(out, "Alt key           ", max);
-        strAppend(out, cfg.altIsOption ? "Option (Win = Command)" : "Command (Win = Option)", max);
-        break;
-    case ItReset: strAppend(out, "Restart the Macintosh", max); break;
+    case ItDisksPage: strAppend(out, "Hard disks  >", max); break;
+    case ItMachinePage: strAppend(out, "Machine, ROM and memory  >", max); break;
+    case ItPrefsPage: strAppend(out, "Display, sound and input  >", max); break;
+    case ItNetworkPage: strAppend(out, "Network file transfer  >", max); break;
+    case ItReset: strAppend(out, disksChanged ? "Restart the Mac (attach new disks)" : "Restart the Mac", max); break;
     case ItInterrupt: strAppend(out, "Press the interrupt switch", max); break;
     case ItScreenshot: strAppend(out, "Save a screenshot", max); break;
     case ItSave: strAppend(out, "Save settings", max); break;
     case ItResume: strAppend(out, "Resume", max); break;
+    case ItModel: {
+        const char *m = strEqNoCase(cfg.machine, "plus") ? "Macintosh Plus" : strEqNoCase(cfg.machine, "ii") ? "Macintosh II"
+                      : strEqNoCase(cfg.machine, "quadra") ? "Quadra 800" : "From the ROM";
+        field("Model", m);
+        break;
+    }
+    case ItRom: field("ROM file", cfg.rom[0] ? baseName(cfg.rom) : "(mac.rom or similar)"); break;
+    case ItRam:
+        if (cfg.ramKB >= 1024) { appendUint(v, cfg.ramKB / 1024, sizeof v); strAppend(v, " MB", sizeof v); }
+        else { appendUint(v, cfg.ramKB, sizeof v); strAppend(v, " KB", sizeof v); }
+        field("Memory", v);
+        break;
+    case ItVideo:
+        appendUint(v, (u32)cfg.videoWidth, sizeof v);
+        strAppend(v, " x ", sizeof v);
+        appendUint(v, (u32)cfg.videoHeight, sizeof v);
+        field("Mac II screen", v);
+        break;
+    case ItApply: strAppend(out, pendingReboot ? "Apply: save and restart now" : "Save and restart", max); break;
+    case ItSpeed:
+        if (cfg.speed) { appendUint(v, (u32)cfg.speed, sizeof v); strAppend(v, "x", sizeof v); }
+        else strAppend(v, "Unlimited", sizeof v);
+        field("Speed", v);
+        break;
+    case ItPalette: field("B&W colours", paletteName(cfg.palette)); break;
+    case ItSound: field("Sound", cfg.sound ? "On" : "Off"); break;
+    case ItVolume: appendUint(v, (u32)cfg.volume, sizeof v); field("Volume", v); break;
+    case ItMouse: appendUint(v, (u32)cfg.mouseSpeed, sizeof v); field("Mouse speed", v); break;
+    case ItAlt: field("Alt key", cfg.altIsOption ? "Option (Win = Cmd)" : "Command (Win = Opt)"); break;
+    case ItDisksBack: case ItMachineBack: case ItPrefsBack: case ItNetworkBack:
+        strAppend(out, "<  Back", max);
+        break;
+    default:
+        if (item >= ItHd0 && item <= ItHd6) {
+            char name[16] = "SCSI ID ";
+            appendUint(name, (u32)(item - ItHd0), sizeof name);
+            const char *d = cfg.hd[item - ItHd0];
+            char def[24] = "(hd";
+            appendUint(def, (u32)(item - ItHd0), sizeof def);
+            strAppend(def, ".img if present)", sizeof def);
+            field(name, strEqNoCase(d, "none") ? "(none)" : d[0] ? baseName(d) : def);
+        }
+        break;
     }
 }
 
 void Osd::draw(Surface &s, const Font &f)
 {
     if (!isOpen) return;
-    enum { kCols = 46 };
     int fw = f.width(), fh = f.height();
-    int rowsWanted = picking ? kVisible + 5 : kItems + 7;
-    int w = (kCols + 4) * fw, h = (rowsWanted + 2) * fh;
+    int cols = s.width / fw - 4;
+    if (cols > 50) cols = 50;
+    if (cols < 20) cols = 20;
+    int list[kMaxItems];
+    int n = page == PagePicker ? 0 : items(page, list);
+    int rows = page == PagePicker ? kVisible + 2 : (page == PageNetwork ? 4 : n);
+    int w = (cols + 2) * fw;
+    int h = (rows + 6) * fh;
+    if (h > s.height) h = s.height;
     int x = (s.width - w) / 2, y = (s.height - h) / 2;
     if (x < 0) x = 0;
     if (y < 0) y = 0;
@@ -197,49 +327,66 @@ void Osd::draw(Surface &s, const Font &f)
     fillRect(s, x - 2, y - 2, w + 4, h + 4, ColFrame);
     fillRect(s, x, y, w, h, ColMenuBg);
     fillRect(s, x, y, w, fh + fh / 2, ColFrame);
-    int tx = x + 2 * fw, ty = y + fh / 4;
-    char line[80];
+    int tx = x + fw, ty = y + fh / 4;
+    char line[96];
 
-    if (picking) {
-        line[0] = 0;
-        strAppend(line, pickDrive ? "External floppy: choose a disk" : "Internal floppy: choose a disk", sizeof line);
-        drawText(s, f, tx, ty, line, ColSelFg);
-        ty = y + 2 * fh + fh / 2;
+    static const char *titles[] = {"Mac Emulator", "Hard disks", "Machine, ROM and memory", "Display, sound and input",
+                                   "Network file transfer", ""};
+    if (page == PagePicker) {
+        const char *t = pickTarget == PickHardDisk ? "Choose a hard disk image" : pickTarget == PickRom ? "Choose a ROM"
+                      : "Choose a floppy disk";
+        drawText(s, f, tx, ty, t, ColSelFg);
+    } else {
+        drawText(s, f, tx, ty, titles[page], ColSelFg);
+    }
+    ty = y + 2 * fh;
+
+    if (page == PagePicker) {
         int total = pickCount + 1;
         for (int i = 0; i < kVisible && pickTop + i < total; i++) {
             int idx = pickTop + i;
             bool hot = idx == pickSel;
-            if (hot) fillRect(s, x + fw, ty, w - 2 * fw, fh, ColSelBg);
-            char name[kCols + 1];
-            strCopy(name, idx == 0 ? "(Eject / leave empty)" : names[idx - 1], sizeof name);
-            drawText(s, f, tx, ty, name, hot ? ColSelFg : idx == 0 ? ColDim : ColMenuFg);
+            if (hot) fillRect(s, x + fw / 2, ty, w - fw, fh, ColSelBg);
+            strCopy(line, idx == 0 ? (pickTarget == PickRom ? "(keep the current ROM)" : "(none / eject)") : names[idx - 1], (u32)cols + 1);
+            drawText(s, f, tx, ty, line, hot ? ColSelFg : idx == 0 ? ColDim : ColMenuFg);
             ty += fh;
         }
-        if (pickCount == 0) drawText(s, f, tx, ty + fh, "No disk images in the disk folder", ColDim);
+        if (pickCount == 0) drawText(s, f, tx, ty + fh, "No matching files on the SD card", ColDim);
         line[0] = 0;
         appendUint(line, (u32)pickCount, sizeof line);
-        strAppend(line, " images   Enter: insert   Esc: back", sizeof line);
-        drawText(s, f, tx, y + h - fh - fh / 2, line, ColDim);
+        strAppend(line, " files   Enter: choose   Esc: back", sizeof line);
+        drawText(s, f, tx, y + h - fh - fh / 4, line, ColDim);
         return;
     }
 
-    drawText(s, f, tx, ty, "Mac Emulator", ColSelFg);
-    ty = y + 2 * fh + fh / 2;
-    for (int i = 0; i < kItems; i++) {
-        bool hot = i == sel;
-        if (hot) fillRect(s, x + fw, ty, w - 2 * fw, fh, ColSelBg);
-        label(i, line, kCols + 1);
+    if (page == PageNetwork) {
+        for (int i = 0; i < 3; i++) {
+            strCopy(line, host.networkLine(i), (u32)cols + 1);
+            drawText(s, f, tx, ty, line, i == 0 ? ColMenuFg : ColDim);
+            ty += fh;
+        }
+        ty += fh / 2;
+    }
+
+    int &cur = sel[page];
+    if (cur >= n) cur = n - 1;
+    for (int i = 0; i < n; i++) {
+        bool hot = i == cur;
+        if (hot) fillRect(s, x + fw / 2, ty, w - fw, fh, ColSelBg);
+        label(list[i], line, (u32)cols + 1);
         drawText(s, f, tx, ty, line, hot ? ColSelFg : ColMenuFg);
         ty += fh;
-        if (i == ItFloppy2 || i == ItAlt) ty += fh / 2;
     }
     ty += fh / 2;
-    if (message[0]) drawText(s, f, tx, ty, message, ColSelBg);
-    ty += fh + fh / 4;
-    for (int n = 0; n < 2; n++) {
-        strCopy(line, host.infoLine(n), kCols + 1);
-        drawText(s, f, tx, ty, line, ColDim);
-        ty += fh;
+    const char *msg = message[0] ? message : (page == PageMachine && pendingReboot) ? "Changes apply after a restart" : 0;
+    if (msg) drawText(s, f, tx, ty, msg, ColSelBg);
+    if (page == PageMain) {
+        ty = y + h - 2 * fh - fh / 4;
+        for (int i = 0; i < 2; i++) {
+            strCopy(line, host.infoLine(i), (u32)cols + 1);
+            drawText(s, f, tx, ty, line, ColDim);
+            ty += fh;
+        }
     }
 }
 

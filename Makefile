@@ -15,7 +15,7 @@ SST_PER_INSTRUCTION ?= 1000
 
 .PHONY: all test cputest clean
 
-all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/cputest $(BUILD)/macemu-host
+all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest $(BUILD)/cputest $(BUILD)/macemu-host
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -35,6 +35,9 @@ $(BUILD)/videotest: tests/videotest.cpp $(CORE) $(HEADERS) | $(BUILD)
 $(BUILD)/maciitest: tests/maciitest.cpp $(CORE) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/maciitest.cpp $(CORE)
 
+$(BUILD)/webtest: tests/webtest.cpp src/circle/webserver.cpp src/circle/webserver.h $(wildcard tests/webshim/*/*.h tests/webshim/*/*/*.h) | $(BUILD)
+	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -I tests/webshim -o $@ tests/webtest.cpp src/circle/webserver.cpp -lpthread
+
 $(BUILD)/mmutest: tests/mmutest.cpp src/core/m68k.cpp src/core/mmu040.cpp $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/mmutest.cpp src/core/m68k.cpp src/core/mmu040.cpp
 
@@ -52,13 +55,14 @@ $(BUILD)/cputest: tests/cputest.cpp src/core/m68k.cpp src/core/m68k.h | $(BUILD)
 $(BUILD)/macemu-host: src/host/main.cpp $(CORE) $(FRONTEND) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ src/host/main.cpp $(CORE) $(FRONTEND)
 
-test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/mmutest
+test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest
 	$(BUILD)/hwtest
 	$(BUILD)/fetest
 	$(BUILD)/cpu020test
 	$(BUILD)/videotest
 	$(BUILD)/maciitest
 	$(BUILD)/mmutest
+	$(BUILD)/webtest
 
 $(BUILD)/vectors.txt: tools/sst2txt.py | $(BUILD)
 	python3 tools/sst2txt.py $(SST) $(SST_PER_INSTRUCTION) > $@

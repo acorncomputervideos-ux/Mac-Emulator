@@ -81,10 +81,13 @@ struct Host : OsdHost {
     FileStorage *floppy[2] = {nullptr, nullptr};
     std::string floppyName[2];
     Host(Emulator &m, Config &c) : mac(m), cfg(c) {}
-    int listDisks(char (*names)[kNameLen], int max) override {
-        static const char *demo[] = {"System 6.0.8.dsk", "MacPaint.dsk", "Utilities.img"};
-        int n = 0;
-        for (const char *d : demo) if (n < max) strCopy(names[n++], d, kNameLen);
+    int listFiles(FileKind kind, char (*names)[kNameLen], int max) override {
+        static const char *floppies[] = {"System 6.0.8.dsk", "MacPaint.dsk", "Utilities.img"};
+        static const char *hds[] = {"hd0.img", "disks/Games.hda"};
+        static const char *roms[] = {"Quadra-650.ROM", "MacPlus.rom"};
+        const char **list = kind == Floppies ? floppies : kind == HardDisks ? hds : roms;
+        int count = kind == Floppies ? 3 : 2, n = 0;
+        for (int i = 0; i < count && n < max; i++) strCopy(names[n++], list[i], kNameLen);
         return n;
     }
     bool insertDisk(int drive, const char *name) override {
@@ -102,6 +105,8 @@ struct Host : OsdHost {
     void interruptButton() override { mac.interruptButton(); }
     void settingsChanged() override {}
     bool saveSettings() override { return true; }
+    void saveAndReboot() override {}
+    const char *networkLine(int n) override { return n == 0 ? "Web file manager: http://192.168.1.20/" : n == 1 ? "Open it from a browser on your network" : ""; }
     bool screenshot() override { return true; }
     const char *infoLine(int n) override { return n == 0 ? mac.modelName() : "F12 closes this menu"; }
 };
@@ -340,6 +345,18 @@ int main(int argc, char **argv)
         draw(true);
         osd.draw(surf, font);
         writePpm(out + "-picker.ppm", surf);
+        osd.key(Osd::NavBack);
+        const char *pages[] = {"-disks.ppm", "-machine.ppm", "-prefs.ppm", "-network.ppm"};
+        for (int pg = 0; pg < 4; pg++) {                // the four sub-pages, items 3..6
+            osd.close();
+            osd.open();
+            for (int k = 0; k < 2 + pg; k++) osd.key(Osd::NavDown);
+            osd.key(Osd::NavSelect);
+            draw(true);
+            osd.draw(surf, font);
+            writePpm(out + pages[pg], surf);
+            osd.key(Osd::NavBack);
+        }
     }
 
     if (!wavPath.empty()) {

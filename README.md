@@ -83,15 +83,47 @@ Three models are emulated:
 - Hot-plugging of keyboard and mouse.
 
 **Emulator controls**
-- **F12** on-screen menu: swap floppies, set speed (1×, 2×, 4×, 8×,
-  unlimited), zoom, colours, sound, volume, mouse speed and key layout.
-  Restart the Mac, press the interrupt switch, take a screenshot, save
-  settings.
+- **F12** (or Pause, Scroll Lock, the Menu key) opens the on-screen menu.
+  The Mac pauses while it is open.
+  - *Floppy 1 / Floppy 2*: insert or eject a floppy from the `disks` folder.
+  - *Hard disks*: choose the image for each SCSI ID 0–6 (from the top of the
+    card or the `disks` folder), then *Restart the Mac* to use them.
+  - *Machine, ROM and memory*: model (auto, Plus, II, Quadra), ROM file,
+    memory size and the Mac II screen size. *Apply* saves the settings and
+    restarts the Pi with them.
+  - *Display, sound and input*: speed (1×–8×, unlimited), colour scheme,
+    sound, volume, mouse speed and key layout.
+  - *Network file transfer*: the address of the web file manager and what it
+    is doing.
+  - Restart the Mac, interrupt switch, screenshot, save settings.
 - **F11** toggles unlimited speed (turbo).
 - **F10** saves a screenshot to `screenshots/macNNN.bmp` on the SD card.
 - **F9** presses the interrupt switch.
 - The ACT LED shows disk activity.
 - Settings live in a plain-text `macemu.cfg`.
+
+**Network file transfer**
+- Plug the Pi into your network with an Ethernet cable. It gets an address
+  by DHCP while the Mac starts up (nothing waits for it).
+- Open `http://macemu.local/` in a browser (or the address shown on the
+  menu's *Network file transfer* page). The page lists the ROMs and disk
+  images on the card and lets you **upload** (drag and drop, any size up to
+  4 GB), **download** and **delete** them, and restart the Mac.
+- Disks the Mac is using cannot be replaced or deleted, and the Pi's own
+  start-up files are hidden and protected. Uploads go to a temporary file
+  first, so a broken transfer never leaves half a disk behind.
+- Transfers run alongside the Mac; they are fastest while the F12 menu is
+  open, because the Mac is paused then.
+- Wired Ethernet only (Pi 3/3+ via USB, Pi 4 and Pi 5 built in); Wi-Fi is not
+  supported. `network=0` in `macemu.cfg` turns it off.
+
+**Fast start-up**
+- The Pi's rainbow splash, the boot delay and the firmware's warning
+  overlays are switched off in `config.txt`, and the ARM runs at full speed
+  from the first instruction (`initial_turbo`).
+- The emulator does not wait for USB or the network: keyboard, mouse and
+  Ethernet are found while the Mac is already starting, and the screen stays
+  dark until the Mac draws its first picture.
 
 ## What you need
 
@@ -201,9 +233,10 @@ src/core/      machine emulation: 68000, VIA, IWM + GCR floppy, NCR 5380 SCSI,
 src/frontend/  platform-independent frontend: config file, USB→Mac key map,
                display scaling/palettes/BMP, F12 menu
 src/circle/    the Raspberry Pi kernel: framebuffer, USB HID, HDMI/PWM sound,
-               SD card (FatFs), pacing, hot keys
+               SD card (FatFs), pacing, hot keys, web file manager
 src/host/      headless PC runner
-tests/         unit tests and the SingleStepTests driver
+tests/         unit tests and the SingleStepTests driver; webtest runs the
+               web file manager against real sockets and files
 tools/         test-vector converter, self-test ROM generator
 sdcard/        files that go on the SD card
 ```
@@ -258,8 +291,9 @@ What has **not** been verified:
 Not emulated yet:
 - The 68030 MMU, and with it the IIx/IIcx/SE/30/IIci.
 - Floppies on the Quadra beyond the SWIM's IWM mode (no 1.44 MB MFM disks).
-- Ethernet (stubbed). The serial ports' SCC works, but nothing is
-  connected to it: AppleTalk finds no network.
+- Ethernet for the Mac itself (the Pi's Ethernet is used for the web file
+  manager). The serial ports' SCC works, but nothing is connected to it:
+  AppleTalk finds no network.
 - Restartable access faults: a faulting instruction completes before the
   exception, so virtual memory should stay off.
 - Video modes with thousands or millions of colours.

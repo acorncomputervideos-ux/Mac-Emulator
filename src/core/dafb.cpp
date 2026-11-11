@@ -37,9 +37,7 @@ void Dafb::reset()
     }
     lutIndex = 0;
     clutVersion = 1;
-    mode = 0;
-    for (const Mode &m : kModes)                        // 8 bits at the smallest size until the ROM picks one
-        if (m.display == display && m.depth == 8) { mode = &m; break; }
+    mode = 0;                                           // dark until the ROM's driver picks a mode
 }
 
 // Monitor sense lines (Apple Technical Note HW26), following QEMU's macfb.

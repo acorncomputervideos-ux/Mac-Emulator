@@ -7,6 +7,8 @@
 #include <circle/sound/pwmsoundbasedevice.h>
 #include <circle/sound/hdmisoundbasedevice.h>
 #include <circle/bcmpropertytags.h>
+#include <circle/startup.h>
+#include <circle/net/mdnsdaemon.h>
 
 #include "../core/keys.h"
 #include "../frontend/keymap.h"
@@ -69,7 +71,11 @@ CKernel::CKernel (void)
 	m_nScreenshot (0),
 	m_nEmulatedFrames (0),
 	m_nStatsTime (0),
-	m_nSpeedPercent (100)
+	m_nSpeedPercent (100),
+	m_pNet (0),
+	m_pWebServer (0),
+	m_bNetRunning (FALSE),
+	m_nNetTicks (0)
 {
 	s_pThis = this;
 
@@ -81,7 +87,6 @@ CKernel::CKernel (void)
 	m_Surface.dirtyTop = m_Surface.dirtyBottom = 0;
 	m_Surface.swapRB = false;
 
-	m_ActLED.Blink (3);
 
 	memset (m_LastKeys, 0, sizeof m_LastKeys);
 	memset (m_bMacKeyDown, 0, sizeof m_bMacKeyDown);
@@ -90,8 +95,11 @@ CKernel::CKernel (void)
 	for (unsigned i = 0; i < Scsi::kTargets; i++)
 	{
 		m_pHardDisk[i] = 0;
+		m_HardDiskPath[i][0] = '\0';
 	}
 	m_InfoLine[0][0] = m_InfoLine[1][0] = '\0';
+	strCopy (m_NetLine[0], "Network: off (network=0 in macemu.cfg)", sizeof m_NetLine[0]);
+	m_NetLine[1][0] = m_NetLine[2][0] = '\0';
 	m_ROMName[0] = '\0';
 	m_Config.setDefaults ();
 }
@@ -128,7 +136,7 @@ boolean CKernel::Initialize (void)
 
 	if (bOK)
 	{
-		bOK = m_USBHCI.Initialize ();
+		bOK = m_USBHCI.Initialize (FALSE);	// devices are found later, while the Mac starts up
 	}
 
 	return bOK;
@@ -333,8 +341,29 @@ void CKernel::AttachDisks (void)
 		}
 	}
 
+	AttachHardDisks ();
+}
+
+// (Re)attach the SCSI disks named in the settings.  "none" means no disk;
+// an empty setting means hdN.img if it exists.
+void CKernel::AttachHardDisks (void)
+{
+	m_pMachine->flushDisks ();
 	for (unsigned id = 0; id < Scsi::kTargets; id++)
 	{
+		if (m_pHardDisk[id] != 0)
+		{
+			m_pMachine->attachDisk ((int) id, 0);
+			delete m_pHardDisk[id];
+			m_pHardDisk[id] = 0;
+			m_HardDiskPath[id][0] = '\0';
+		}
+
+		if (strEqNoCase (m_Config.hd[id], "none"))
+		{
+			continue;
+		}
+
 		char Path[160] = DRIVE "/";
 		if (m_Config.hd[id][0] != '\0')
 		{
@@ -351,6 +380,7 @@ void CKernel::AttachDisks (void)
 		if (pDisk->Open (Path))
 		{
 			m_pHardDisk[id] = pDisk;
+			strCopy (m_HardDiskPath[id], Path + sizeof DRIVE, sizeof m_HardDiskPath[id]);
 			m_pMachine->attachDisk ((int) id, pDisk);
 			m_Logger.Write (FromKernel, LogNotice, "SCSI ID %u: %s (%u MB%s)", id, Path,
 					pDisk->size () >> 20, pDisk->readOnly () ? ", read-only" : "");
@@ -528,6 +558,7 @@ TShutdownMode CKernel::Run (void)
 	AttachDisks ();
 
 	m_pOsd = new Osd (m_Config, *this);
+	StartNetwork ();
 
 	if (m_Config.sound)
 	{
@@ -544,6 +575,7 @@ TShutdownMode CKernel::Run (void)
 	while (1)
 	{
 		UpdateUSB ();
+		UpdateNetwork ();
 		ProcessInput ();
 
 		unsigned nSpeed = m_bTurbo ? 0 : (unsigned) m_Config.speed;
@@ -552,6 +584,8 @@ TShutdownMode CKernel::Run (void)
 			// The Mac is paused while the menu is open.
 			if (m_pOsd->needsRedraw ())
 			{
+				// Pages differ in size: clear what the last one covered.
+				fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 				DrawMac (TRUE);
 				m_pOsd->draw (m_Surface, m_Font);
 				Present ();
@@ -563,7 +597,7 @@ TShutdownMode CKernel::Run (void)
 				m_bForceRedraw = TRUE;
 			}
 
-			m_Timer.MsDelay (10);
+			WaitUntil (CTimer::GetClockTicks64 () + 10000);
 			nNextFrame = CTimer::GetClockTicks64 ();
 			continue;
 		}
@@ -577,6 +611,7 @@ TShutdownMode CKernel::Run (void)
 				m_pMachine->runFrame ();
 				m_nEmulatedFrames++;
 				Housekeeping ();
+				m_Scheduler.Yield ();		// let the network run
 			}
 			while (CTimer::GetClockTicks64 () < nUntil);
 
@@ -603,10 +638,7 @@ TShutdownMode CKernel::Run (void)
 				nNextFrame = nNow;	// fell far behind (or clock jumped): resync
 			}
 
-			while (CTimer::GetClockTicks64 () < nNextFrame)
-			{
-				// wait for the next frame slot
-			}
+			WaitUntil (nNextFrame);			// the network runs meanwhile
 		}
 
 		UpdateScreen ();
@@ -628,7 +660,8 @@ TShutdownMode CKernel::Run (void)
 			while (m_nKeyOut == m_nKeyIn)
 			{
 				UpdateUSB ();
-				m_Timer.MsDelay (20);
+				UpdateNetwork ();
+				WaitUntil (CTimer::GetClockTicks64 () + 20000);
 			}
 			m_nKeyOut = m_nKeyIn;
 			ReleaseAllKeys ();
@@ -888,6 +921,145 @@ void CKernel::UpdateInfo (void)
 }
 
 // ----------------------------------------------------------------- input
+
+// ----------------------------------------------------------------- network
+
+// Wired Ethernet with DHCP, and the web file manager on port 80.  Nothing
+// waits for the network: it comes up in the background while the Mac starts.
+void CKernel::StartNetwork (void)
+{
+	if (!m_Config.network)
+	{
+		return;
+	}
+
+	strCopy (m_NetLine[0], "Network: waiting for a connection...", sizeof m_NetLine[0]);
+	strCopy (m_NetLine[1], "Plug in an Ethernet cable (Wi-Fi is not supported).", sizeof m_NetLine[1]);
+
+	m_pNet = new CNetSubSystem (0, 0, 0, 0, "macemu");
+	if (m_pNet == 0 || !m_pNet->Initialize (FALSE))
+	{
+		m_Logger.Write (FromKernel, LogWarning, "No network");
+		strCopy (m_NetLine[0], "Network: no Ethernet adapter found", sizeof m_NetLine[0]);
+		m_NetLine[1][0] = '\0';
+		return;
+	}
+
+	m_pWebServer = new CWebServer (m_pNet, DRIVE, this);
+}
+
+void CKernel::UpdateNetwork (void)
+{
+	if (m_pNet == 0)
+	{
+		return;
+	}
+
+	m_Scheduler.Yield ();
+
+	if (m_pWebServer != 0)
+	{
+		if (m_pWebServer->FlushRequested ())
+		{
+			for (unsigned d = 0; d < 2; d++)
+			{
+				if (m_pFloppy[d] != 0)
+				{
+					m_pFloppy[d]->flush ();
+				}
+			}
+			m_pMachine->flushDisks ();
+			m_pWebServer->FlushDone ();
+		}
+
+		if (m_pWebServer->RestartRequested ())
+		{
+			resetMachine ();
+			m_pWebServer->RestartDone ();
+		}
+	}
+
+	// Status for the menu, about twice a second.
+	unsigned nTicks = m_Timer.GetTicks ();
+	if (nTicks - m_nNetTicks < HZ / 2)
+	{
+		return;
+	}
+	m_nNetTicks = nTicks;
+
+	if (!m_bNetRunning && m_pNet->IsRunning ())
+	{
+		m_bNetRunning = TRUE;
+		CmDNSDaemon::Get ();			// answers to macemu.local
+
+		CString IPString;
+		m_pNet->GetConfig ()->GetIPAddress ()->Format (&IPString);
+		strCopy (m_NetLine[0], "Web file manager: http://", sizeof m_NetLine[0]);
+		strAppend (m_NetLine[0], (const char *) IPString, sizeof m_NetLine[0]);
+		strAppend (m_NetLine[0], "/", sizeof m_NetLine[0]);
+		strCopy (m_NetLine[1], "or http://macemu.local/ - open it in a browser", sizeof m_NetLine[1]);
+		m_Logger.Write (FromKernel, LogNotice, "Web file manager at http://%s/",
+				(const char *) IPString);
+	}
+
+	if (m_bNetRunning && m_pWebServer != 0)
+	{
+		const char *pActivity = m_pWebServer->Activity ();
+		strCopy (m_NetLine[2], pActivity[0] ? pActivity : "Idle.", sizeof m_NetLine[2]);
+	}
+
+	m_pOsd->refresh ();
+}
+
+// Wait for a moment in time, letting the network tasks run meanwhile.
+void CKernel::WaitUntil (hostu64 nUntil)
+{
+	while (CTimer::GetClockTicks64 () < nUntil)
+	{
+		if (m_pNet != 0)
+		{
+			m_Scheduler.Yield ();
+		}
+	}
+}
+
+boolean CKernel::FileInUse (const char *pPath)
+{
+	for (unsigned id = 0; id < Scsi::kTargets; id++)
+	{
+		if (m_pHardDisk[id] != 0 && strEqNoCase (m_HardDiskPath[id], pPath))
+		{
+			return TRUE;
+		}
+	}
+
+	for (unsigned d = 0; d < 2; d++)
+	{
+		if (m_pFloppy[d] == 0)
+		{
+			continue;
+		}
+
+		char Path[160] = "";
+		boolean bHasFolder = FALSE;
+		for (const char *p = m_FloppyName[d]; *p; p++)
+		{
+			bHasFolder |= *p == '/';
+		}
+		if (!bHasFolder)
+		{
+			strCopy (Path, m_Config.diskDir, sizeof Path);
+			strAppend (Path, "/", sizeof Path);
+		}
+		strAppend (Path, m_FloppyName[d], sizeof Path);
+		if (strEqNoCase (Path, pPath))
+		{
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
 
 void CKernel::UpdateUSB (void)
 {
@@ -1217,30 +1389,63 @@ void CKernel::HandleKey (u8 ucUsage, boolean bDown)
 
 // ----------------------------------------------------------------- OsdHost
 
-int CKernel::listDisks (char (*ppNames)[kNameLen], int nMax)
+// Files on the card for the menu's pickers.  Floppies come from disk_dir;
+// hard disk images from the card's root and disk_dir (anything larger than a
+// floppy); ROMs from the root (64 KB to 1 MB).
+int CKernel::listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax)
 {
-	char Path[160] = DRIVE "/";
-	strAppend (Path, m_Config.diskDir, sizeof Path);
-
-	DIR Directory;
-	FILINFO Info;
 	int n = 0;
-	FRESULT Result = f_findfirst (&Directory, &Info, Path, "*");
-	while (Result == FR_OK && Info.fname[0] != '\0' && n < nMax)
+	for (int nPass = 0; nPass < 2 && n < nMax; nPass++)
 	{
-		if (   !(Info.fattrib & (AM_DIR | AM_HID | AM_SYS))
-		    && Info.fname[0] != '.'
-		    && (   Info.fsize == 409600 || Info.fsize == 819200
-			|| (Info.fsize > 409600 + 84 && Info.fsize <= MaxFloppyBytes))
-		    && strLen (Info.fname) < kNameLen)
+		boolean bDiskDir = nPass == 1;
+		if (Kind == Floppies && !bDiskDir) continue;
+		if (Kind == Roms && bDiskDir) continue;
+
+		char Path[160] = DRIVE "/";
+		if (bDiskDir)
 		{
-			strCopy (ppNames[n++], Info.fname, kNameLen);
+			strAppend (Path, m_Config.diskDir, sizeof Path);
 		}
 
-		Result = f_findnext (&Directory, &Info);
-	}
+		DIR Directory;
+		FILINFO Info;
+		FRESULT Result = f_findfirst (&Directory, &Info, Path, "*");
+		while (Result == FR_OK && Info.fname[0] != '\0' && n < nMax)
+		{
+			u32 nSize = (u32) Info.fsize;
+			boolean bUse = !(Info.fattrib & (AM_DIR | AM_HID | AM_SYS)) && Info.fname[0] != '.';
+			switch (Kind)
+			{
+			case Floppies:
+				bUse = bUse && (nSize == 409600 || nSize == 819200
+						|| (nSize > 409600 + 84 && nSize <= MaxFloppyBytes));
+				break;
+			case HardDisks:
+				bUse = bUse && nSize > 2 * 1024 * 1024 && !endsWithNoCase (Info.fname, ".zip");
+				break;
+			default:
+				bUse = bUse && (nSize == 0x10000 || nSize == 0x20000 || nSize == 0x40000
+						|| nSize == 0x80000 || nSize == 0x100000);
+				break;
+			}
 
-	f_closedir (&Directory);
+			char Name[kNameLen] = "";
+			if (bDiskDir && Kind != Floppies)
+			{
+				strAppend (Name, m_Config.diskDir, sizeof Name);
+				strAppend (Name, "/", sizeof Name);
+			}
+			strAppend (Name, Info.fname, sizeof Name);
+			if (bUse && strLen (Name) < kNameLen - 1)
+			{
+				strCopy (ppNames[n++], Name, kNameLen);
+			}
+
+			Result = f_findnext (&Directory, &Info);
+		}
+
+		f_closedir (&Directory);
+	}
 
 	return n;
 }
@@ -1297,8 +1502,22 @@ void CKernel::resetMachine (void)
 	m_pMachine->flushDisks ();
 	SavePRAM ();
 	ReleaseAllKeys ();
+	AttachHardDisks ();				// the menu may have changed them
 	m_pMachine->reset ();
 	m_bForceRedraw = TRUE;
+}
+
+// Model, ROM, memory and video changes need a fresh start of the whole
+// emulator: save everything and reboot the Pi (it is quick).
+void CKernel::saveAndReboot (void)
+{
+	saveSettings ();
+	m_pMachine->flushDisks ();
+	SavePRAM ();
+	ShowMessage ("Restarting with the new settings...", "");
+	Present ();
+	m_Timer.MsDelay (200);
+	reboot ();
 }
 
 void CKernel::interruptButton (void)

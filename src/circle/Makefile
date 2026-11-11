@@ -7,13 +7,15 @@
 
 CIRCLEHOME ?= ../../circle
 
-OBJS	= main.o kernel.o storage.o \
+OBJS	= main.o kernel.o storage.o webserver.o \
 	  ../core/m68k.o ../core/fpu.o ../core/fmath.o ../core/via.o ../core/iwm.o ../core/scsi.o ../core/rtc.o \
 	  ../core/adb.o ../core/asc.o ../core/nubusvideo.o ../core/mmu040.o ../core/dafb.o ../core/esp.o ../core/quadra.o ../core/scc.o \
 	  ../core/mac.o ../core/macii.o \
 	  ../frontend/config.o ../frontend/keymap.o ../frontend/video.o ../frontend/osd.o
 
 LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \
+	  $(CIRCLEHOME)/lib/net/libnet.a \
+	  $(CIRCLEHOME)/lib/sched/libsched.a \
 	  $(CIRCLEHOME)/addon/SDCard/libsdcard.a \
 	  $(CIRCLEHOME)/lib/sound/libsound.a \
 	  $(CIRCLEHOME)/lib/usb/libusb.a \

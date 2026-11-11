@@ -17,6 +17,7 @@ void Config::setDefaults()
     volume = 8;
     strCopy(soundDevice, "hdmi", sizeof soundDevice);
     mouseSpeed = 4;
+    network = 1;
 }
 
 static int clampInt(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -35,6 +36,7 @@ void Config::sanitize()
     sound = sound ? 1 : 0;
     altIsOption = altIsOption ? 1 : 0;
     floppyReadOnly = floppyReadOnly ? 1 : 0;
+    network = network ? 1 : 0;
     if (width < 0 || width > 4096) width = 0;
     if (height < 0 || height > 4096) height = 0;
     if (!strEqNoCase(soundDevice, "pwm")) strCopy(soundDevice, "hdmi", sizeof soundDevice);
@@ -101,6 +103,7 @@ void Config::parse(const char *text, u32 len)
         else if (strEqNoCase(p, "mouse_speed")) mouseSpeed = toInt(val);
         else if (strEqNoCase(p, "alt_is_option")) altIsOption = toInt(val);
         else if (strEqNoCase(p, "floppy_readonly")) floppyReadOnly = toInt(val);
+        else if (strEqNoCase(p, "network")) network = toInt(val);
         else if (strEqNoCase(p, "date")) strCopy(date, val, sizeof date);
     }
     sanitize();
@@ -155,6 +158,7 @@ u32 Config::serialize(char *out, u32 max) const
     lineInt(out, max, "mouse_speed", mouseSpeed);
     lineInt(out, max, "alt_is_option", altIsOption);
     lineInt(out, max, "floppy_readonly", floppyReadOnly);
+    lineInt(out, max, "network", network);
     line(out, max, "date", date);
     return strLen(out);
 }

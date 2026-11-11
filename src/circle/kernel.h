@@ -14,6 +14,8 @@
 #include <circle/timer.h>
 #include <circle/cputhrottle.h>
 #include <circle/logger.h>
+#include <circle/sched/scheduler.h>
+#include <circle/net/netsubsystem.h>
 #include <circle/usb/usbhcidevice.h>
 #include <circle/usb/usbkeyboard.h>
 #include <circle/input/mouse.h>
@@ -23,6 +25,7 @@
 #include <fatfs/ff.h>
 
 #include "storage.h"
+#include "webserver.h"
 #include "../core/mac.h"
 #include "../core/macii.h"
 #include "../core/quadra.h"
@@ -51,7 +54,7 @@ private:
 	CCharGenerator m_Generator;
 };
 
-class CKernel : public macemu::OsdHost
+class CKernel : public macemu::OsdHost, public CWebServerHost
 {
 public:
 	CKernel (void);
@@ -62,7 +65,9 @@ public:
 	TShutdownMode Run (void);
 
 	// macemu::OsdHost
-	int listDisks (char (*ppNames)[kNameLen], int nMax) override;
+	int listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax) override;
+	void saveAndReboot (void) override;
+	const char *networkLine (int nLine) override	{ return m_NetLine[nLine < 0 || nLine > 2 ? 0 : nLine]; }
 	bool insertDisk (int nDrive, const char *pName) override;
 	void ejectDisk (int nDrive) override;
 	const char *diskName (int nDrive) override	{ return m_FloppyName[nDrive]; }
@@ -73,12 +78,17 @@ public:
 	bool screenshot (void) override;
 	const char *infoLine (int nLine) override	{ return m_InfoLine[nLine ? 1 : 0]; }
 
+	// CWebServerHost
+	boolean FileInUse (const char *pPath) override;
+	const char *DiskDir (void) override		{ return m_Config.diskDir; }
+
 private:
 	boolean LoadConfig (void);
 	boolean LoadROM (void);
 	boolean SetupDisplay (int nMacWidth, int nMacHeight);
 	void SetupSound (void);
 	void AttachDisks (void);
+	void AttachHardDisks (void);
 	void LoadPRAM (void);
 	void SavePRAM (void);
 	void ApplyPalette (void);
@@ -98,6 +108,9 @@ private:
 	void ShowMessage (const char *pLine1, const char *pLine2);
 	void Housekeeping (void);
 	void UpdateInfo (void);
+	void StartNetwork (void);
+	void UpdateNetwork (void);
+	void WaitUntil (::u64 nUntil);
 
 	static void KeyStatusHandlerRaw (unsigned char ucModifiers, const unsigned char RawKeys[6]);
 	static void KeyboardRemovedHandler (CDevice *pDevice, void *pContext);
@@ -115,6 +128,7 @@ private:
 	CInterruptSystem	m_Interrupt;
 	CTimer			m_Timer;
 	CLogger			m_Logger;
+	CScheduler		m_Scheduler;
 	CUSBHCIDevice		m_USBHCI;
 	CEMMCDevice		m_EMMC;
 	CCPUThrottle		m_CPUThrottle;
@@ -151,6 +165,8 @@ private:
 	CMemoryStorage		*m_pFloppy[2];
 	char			m_FloppyName[2][kNameLen];
 	CFileStorage		*m_pHardDisk[macemu::Scsi::kTargets];
+	char			m_HardDiskPath[macemu::Scsi::kTargets][160];	// without the drive
+
 
 	// input, filled in interrupt context
 	enum { KeyQueueSize = 64 };
@@ -181,7 +197,14 @@ private:
 	u64			m_nStatsTime;
 	unsigned		m_nSpeedPercent;
 	char			m_InfoLine[2][64];
+	char			m_NetLine[3][64];
 	char			m_ROMName[32];
+
+	// network
+	CNetSubSystem		*m_pNet;
+	CWebServer		*m_pWebServer;
+	boolean			m_bNetRunning;
+	unsigned		m_nNetTicks;
 
 	static CKernel *s_pThis;
 };

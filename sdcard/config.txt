@@ -6,8 +6,14 @@
 
 arm_64bit=1
 kernel_address=0x80000
-initial_turbo=0
 disable_overscan=1
+
+# Start quickly: no rainbow splash, no boot delay, full speed while the
+# firmware loads the kernel.
+disable_splash=1
+boot_delay=0
+initial_turbo=30
+avoid_warnings=1
 
 # Send audio over HDMI even to monitors that report themselves as DVI.
 hdmi_drive=2

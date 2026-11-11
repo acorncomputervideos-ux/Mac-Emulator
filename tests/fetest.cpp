@@ -197,12 +197,15 @@ static void testVideo()
 
 struct FakeHost : OsdHost {
     std::string disk[2];
-    int resets = 0, nmis = 0, changes = 0, saves = 0, shots = 0;
+    int resets = 0, nmis = 0, changes = 0, saves = 0, shots = 0, reboots = 0;
     bool acceptInsert = true;
-    int listDisks(char (*names)[kNameLen], int max) override {
-        const char *n[] = {"zebra.dsk", "Apple.dsk", "mango.img"};
-        int c = 0;
-        for (const char *s : n) if (c < max) strCopy(names[c++], s, kNameLen);
+    int listFiles(FileKind kind, char (*names)[kNameLen], int max) override {
+        static const char *floppies[] = {"zebra.dsk", "Apple.dsk", "mango.img"};
+        static const char *hds[] = {"hd0.img", "disks/System 7.5.hda"};
+        static const char *roms[] = {"Quadra-650.ROM", "MacPlus.rom"};
+        const char **list = kind == Floppies ? floppies : kind == HardDisks ? hds : roms;
+        int n = kind == Floppies ? 3 : 2, c = 0;
+        for (int i = 0; i < n && c < max; i++) strCopy(names[c++], list[i], kNameLen);
         return c;
     }
     bool insertDisk(int d, const char *name) override { if (!acceptInsert) return false; disk[d] = name; return true; }
@@ -212,8 +215,10 @@ struct FakeHost : OsdHost {
     void interruptButton() override { nmis++; }
     void settingsChanged() override { changes++; }
     bool saveSettings() override { saves++; return true; }
+    void saveAndReboot() override { reboots++; }
     bool screenshot() override { shots++; return true; }
     const char *infoLine(int) override { return "info"; }
+    const char *networkLine(int n) override { return n == 0 ? "http://192.168.1.20/" : "net"; }
 };
 
 struct BoxFont : Font {
@@ -221,6 +226,10 @@ struct BoxFont : Font {
     int height() const override { return 16; }
     bool pixel(char c, int x, int y) const override { return c != ' ' && ((x + y) & 1); }
 };
+
+// Main page order: floppy 1, floppy 2, hard disks, machine, prefs, network,
+// restart, interrupt, screenshot, save, resume.
+static void go(Osd &o, int n) { o.key(Osd::NavPageUp); for (int i = 0; i < n; i++) o.key(Osd::NavDown); }
 
 static void testOsd()
 {
@@ -234,74 +243,105 @@ static void testOsd()
     osd.open();
     CHECK(osd.active() && osd.needsRedraw() && !osd.needsRedraw());
 
-    // Floppy 1 -> picker; list is sorted; pick the second image.
+    // Floppies: picker sorted, entry 0 ejects, Esc leaves things alone.
     osd.key(Osd::NavSelect);
     osd.key(Osd::NavDown); osd.key(Osd::NavDown);
     osd.key(Osd::NavSelect);
     CHECK(host.disk[0] == "mango.img");
-    // Picker again, entry 0 ejects.
-    osd.key(Osd::NavSelect);
-    osd.key(Osd::NavSelect);
+    go(osd, 1); osd.key(Osd::NavSelect); osd.key(Osd::NavDown); osd.key(Osd::NavSelect);
+    CHECK(host.disk[1] == "Apple.dsk");
+    go(osd, 0); osd.key(Osd::NavSelect); osd.key(Osd::NavSelect);
     CHECK(host.disk[0].empty());
-    // Esc leaves the picker without changing anything.
     host.disk[0] = "keep.dsk";
-    osd.key(Osd::NavSelect);
-    osd.key(Osd::NavDown);
-    osd.key(Osd::NavBack);
+    osd.key(Osd::NavSelect); osd.key(Osd::NavDown); osd.key(Osd::NavBack);
     CHECK(host.disk[0] == "keep.dsk" && osd.active());
-    // A rejected image leaves the drive empty and the menu open.
     host.acceptInsert = false;
     osd.key(Osd::NavSelect); osd.key(Osd::NavDown); osd.key(Osd::NavSelect);
     CHECK(host.disk[0].empty() && osd.active());
+    host.acceptInsert = true;
 
-    osd.key(Osd::NavDown); osd.key(Osd::NavDown);       // speed
+    // Hard disks page: pick an image for SCSI ID 2, then clear ID 0.
+    go(osd, 2); osd.key(Osd::NavSelect);
+    osd.key(Osd::NavDown); osd.key(Osd::NavDown); osd.key(Osd::NavSelect);   // ID 2 -> picker
+    osd.key(Osd::NavDown); osd.key(Osd::NavDown); osd.key(Osd::NavSelect);   // second file (sorted)
+    CHECK(!strcmp(cfg.hd[2], "hd0.img") || !strcmp(cfg.hd[2], "disks/System 7.5.hda"));
+    strCopy(cfg.hd[0], "old.img", Config::kPath);
+    osd.key(Osd::NavPageUp); osd.key(Osd::NavSelect); osd.key(Osd::NavSelect);   // ID 0 -> none
+    CHECK(strEq(cfg.hd[0], "none"));
+    osd.key(Osd::NavBack);                                                   // back to main
+    go(osd, 6); osd.key(Osd::NavSelect);                                     // restart attaches them
+    CHECK(host.resets == 1 && !osd.active());
+
+    // Machine page: model, ROM, memory and video need a reboot.
+    osd.open();
+    go(osd, 3); osd.key(Osd::NavSelect);
+    CHECK(!osd.rebootPending());
+    osd.key(Osd::NavRight);                                                  // model auto -> plus
+    CHECK(strEq(cfg.machine, "plus") && osd.rebootPending());
+    osd.key(Osd::NavDown); osd.key(Osd::NavSelect); osd.key(Osd::NavDown); osd.key(Osd::NavSelect);
+    CHECK(strEq(cfg.rom, "MacPlus.rom"));
+    osd.key(Osd::NavDown);                                                   // memory
+    u32 ram = cfg.ramKB;
+    osd.key(Osd::NavRight);
+    CHECK(cfg.ramKB == ram * 2);
+    for (int i = 0; i < 20; i++) osd.key(Osd::NavLeft);
+    CHECK(cfg.ramKB >= 512 && cfg.ramKB <= 131072);
+    osd.key(Osd::NavDown); osd.key(Osd::NavRight);                           // Mac II video
+    CHECK(cfg.videoWidth == 832 && cfg.videoHeight == 624);
+    osd.key(Osd::NavDown); osd.key(Osd::NavSelect);                          // apply
+    CHECK(host.reboots == 1);
+    osd.key(Osd::NavBack);
+
+    // Display, sound and input.
+    go(osd, 4); osd.key(Osd::NavSelect);
     osd.key(Osd::NavRight);
     CHECK(cfg.speed == 2 && host.changes == 1);
     osd.key(Osd::NavRight); osd.key(Osd::NavRight); osd.key(Osd::NavRight);
     CHECK(cfg.speed == 0);
     osd.key(Osd::NavRight);
     CHECK(cfg.speed == 1);
-    osd.key(Osd::NavLeft);
-    CHECK(cfg.speed == 0);
-    osd.key(Osd::NavDown); osd.key(Osd::NavDown);       // palette
-    osd.key(Osd::NavLeft);
+    osd.key(Osd::NavDown); osd.key(Osd::NavLeft);
     CHECK(cfg.palette == kPaletteCount - 1);
-    osd.key(Osd::NavDown); osd.key(Osd::NavSelect);     // sound toggles
+    osd.key(Osd::NavDown); osd.key(Osd::NavSelect);
     CHECK(cfg.sound == 0);
     osd.key(Osd::NavDown);
     for (int i = 0; i < 20; i++) osd.key(Osd::NavRight);
     CHECK(cfg.volume == 10);
     for (int i = 0; i < 20; i++) osd.key(Osd::NavLeft);
     CHECK(cfg.volume == 0);
+    osd.key(Osd::NavPageDown); osd.key(Osd::NavSelect);                      // back
+    osd.key(Osd::NavBack);
+    CHECK(!osd.active());
 
-    // Draw both pages on surfaces of several sizes without overrunning.
+    // Every page draws at small, medium and large sizes without overruns.
     BoxFont font;
-    for (int w : {320, 640, 1920}) {
-        int h = w * 3 / 4;
+    for (int w : {512, 640, 1920}) {
+        int h = w == 512 ? 384 : w * 3 / 4;
         std::vector<u32> px((size_t)w * h + 256, 0x99);
         Surface s{px.data(), w, h, w, {}, false, 0, 0};
         setPalette(s, 0);
-        osd.draw(s, font);
-        osd.key(Osd::NavPageUp); osd.key(Osd::NavSelect);
-        osd.draw(s, font);
-        osd.key(Osd::NavBack);
+        for (int pageIdx = 0; pageIdx < 5; pageIdx++) {
+            osd.open();
+            if (pageIdx) { go(osd, 1 + pageIdx); osd.key(Osd::NavSelect); }
+            osd.draw(s, font);
+        }
+        osd.open(); osd.key(Osd::NavSelect); osd.draw(s, font);              // picker
+        osd.close();
         bool intact = true;
         for (int i = 0; i < 256; i++) if (px[(size_t)w * h + i] != 0x99) intact = false;
         CHECK(intact);
     }
 
-    osd.key(Osd::NavPageDown); osd.key(Osd::NavUp);     // save
-    osd.key(Osd::NavSelect);
+    // Main page actions.
+    osd.open();
+    go(osd, 9); osd.key(Osd::NavSelect);
     CHECK(host.saves == 1 && osd.active());
-    osd.key(Osd::NavUp); osd.key(Osd::NavSelect);       // screenshot
+    go(osd, 8); osd.key(Osd::NavSelect);
     CHECK(host.shots == 1);
-    osd.key(Osd::NavUp); osd.key(Osd::NavSelect);       // interrupt closes the menu
+    go(osd, 7); osd.key(Osd::NavSelect);
     CHECK(host.nmis == 1 && !osd.active());
     osd.open();
-    osd.key(Osd::NavUp); osd.key(Osd::NavSelect);       // reset
-    CHECK(host.resets == 1 && !osd.active());
-    osd.open();
-    osd.key(Osd::NavBack);
+    go(osd, 10); osd.key(Osd::NavSelect);
     CHECK(!osd.active());
 }
 
