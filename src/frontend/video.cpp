@@ -33,6 +33,14 @@ void paletteColors(int index, u32 *rgb)
     rgb[ColFrame] = 0x101010;
 }
 
+static inline u32 swapRB(u32 c) { return ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF); }
+
+void setPalette(Surface &s, int scheme)
+{
+    paletteColors(scheme, s.palette);
+    if (s.swapRB) for (int i = 0; i < kColorCount; i++) s.palette[i] = swapRB(s.palette[i]);
+}
+
 Layout layoutFor(const Surface &s, int macWidth, int macHeight, int requestedScale)
 {
     Layout l;
@@ -119,8 +127,10 @@ int blitScreen(Surface &s, const Layout &l, const VideoFrame &f, u8 *previous, b
         drawn++;
         u32 *dst = s.pixels + (l.y0 + row * scale) * s.pitch + l.x0;
         u32 *p = dst;
+        bool swap = s.swapRB && !(f.depth == 1 && !f.clut);   // the mono palette is in device order already
         for (int x = 0; x < visW; x++) {
             u32 c = pixelAt(src, x, f.depth, f.clut, mono);
+            if (swap) c = swapRB(c);
             for (int k = 0; k < scale; k++) *p++ = c;
         }
         for (int k = 1; k < scale; k++) memCopy(dst + k * s.pitch, dst, (u32)(visW * scale) * 4);

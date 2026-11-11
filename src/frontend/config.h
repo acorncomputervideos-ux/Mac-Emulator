@@ -11,7 +11,9 @@ struct Config {
     enum { kPath = 96, kHardDisks = 7 };
 
     char rom[kPath];            // ROM file; empty = search the usual names
-    u32 ramKB;                  // 128, 512, 1024, 2048 or 4096
+    char machine[8];            // "auto", "plus" or "ii"
+    u32 ramKB;                  // 128 KB .. 128 MB (Plus: at most 4096)
+    int videoWidth, videoHeight;   // Mac II video card resolution
     char floppy[2][kPath];      // images inserted at power-on
     char hd[kHardDisks][kPath]; // SCSI IDs 0..6; empty = hdN.img if present
     char diskDir[kPath];        // folder the disk picker browses

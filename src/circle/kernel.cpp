@@ -6,6 +6,7 @@
 #include <circle/synchronize.h>
 #include <circle/sound/pwmsoundbasedevice.h>
 #include <circle/sound/hdmisoundbasedevice.h>
+#include <circle/bcmpropertytags.h>
 
 #include "../core/keys.h"
 #include "../frontend/keymap.h"
@@ -37,12 +38,18 @@ CKernel::CKernel (void)
 	m_pKeyboard (0),
 	m_pMouse (0),
 	m_pMachine (0),
+	m_pPlus (0),
+	m_pMacII (0),
 	m_pOsd (0),
 	m_pROM (0),
 	m_nROMSize (0),
 	m_pRAM (0),
 	m_pPrevScreen (0),
 	m_bForceRedraw (TRUE),
+	m_bHaveVideo (FALSE),
+	m_nVideoWidth (0),
+	m_nVideoHeight (0),
+	m_nClutVersion (0),
 	m_nKeyIn (0),
 	m_nKeyOut (0),
 	m_LastModifiers (0),
@@ -164,7 +171,7 @@ boolean CKernel::LoadROM (void)
 		}
 
 		u32 nSize = (u32) f_size (&File);
-		if (nSize != 0x10000 && nSize != 0x20000)
+		if (nSize != 0x10000 && nSize != 0x20000 && nSize != 0x40000 && nSize != 0x80000 && nSize != 0x100000)
 		{
 			m_Logger.Write (FromKernel, LogWarning, "%s: unsupported size %u", pName, nSize);
 			f_close (&File);
@@ -197,20 +204,25 @@ boolean CKernel::SetupDisplay (void)
 {
 	m_pFrameBuffer = new CBcmFrameBuffer (m_Config.width ? m_Config.width : m_Options.GetWidth (),
 					      m_Config.height ? m_Config.height : m_Options.GetHeight (),
-					      8);
-	ApplyPalette ();
+					      32);
 	if (!m_pFrameBuffer->Initialize ())
 	{
 		return FALSE;
 	}
 
-	m_Surface.pixels = (u8 *) (uintptr) m_pFrameBuffer->GetBuffer ();
+	m_Surface.pixels = (macemu::u32 *) (uintptr) m_pFrameBuffer->GetBuffer ();
 	m_Surface.width = (int) m_pFrameBuffer->GetWidth ();
 	m_Surface.height = (int) m_pFrameBuffer->GetHeight ();
-	m_Surface.pitch = (int) m_pFrameBuffer->GetPitch ();
+	m_Surface.pitch = (int) m_pFrameBuffer->GetPitch () / 4;
+
+	// Pixel order: 1 = RGB in memory (0xBBGGRR as a word), 0 = BGR.
+	CBcmPropertyTags Tags;
+	TPropertyTagSimple Order;
+	m_Surface.swapRB = Tags.GetTag (0x00040006, &Order, sizeof Order) && Order.nValue == 1;
+	ApplyPalette ();
 
 	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
-	m_Layout = layoutFor (m_Surface, m_Config.scale);
+	m_Layout = layoutFor (m_Surface, 512, 342, m_Config.scale);
 	m_bForceRedraw = TRUE;
 
 	return TRUE;
@@ -218,22 +230,8 @@ boolean CKernel::SetupDisplay (void)
 
 void CKernel::ApplyPalette (void)
 {
-	if (m_pFrameBuffer == 0)
-	{
-		return;
-	}
-
-	u32 RGB[kColorCount];
-	paletteColors (m_Config.palette, RGB);
-	for (unsigned i = 0; i < kColorCount; i++)
-	{
-		// The firmware wants 0xAABBGGRR.
-		u32 c = RGB[i];
-		m_pFrameBuffer->SetPalette32 ((u8) i, 0xFF000000 | (c & 0x00FF00)
-							| ((c >> 16) & 0xFF) | ((c & 0xFF) << 16));
-	}
-
-	m_pFrameBuffer->UpdatePalette ();
+	setPalette (m_Surface, m_Config.palette);
+	m_bForceRedraw = TRUE;
 }
 
 void CKernel::SetupSound (void)
@@ -291,7 +289,7 @@ void CKernel::AttachDisks (void)
 		if (pDisk->Open (Path))
 		{
 			m_pHardDisk[id] = pDisk;
-			m_pMachine->scsi.attach ((int) id, pDisk);
+			m_pMachine->scsiBus ().attach ((int) id, pDisk);
 			m_Logger.Write (FromKernel, LogNotice, "SCSI ID %u: %s (%u MB%s)", id, Path,
 					pDisk->size () >> 20, pDisk->readOnly () ? ", read-only" : "");
 		}
@@ -312,16 +310,16 @@ void CKernel::LoadPRAM (void)
 	if (f_open (&File, PRAM_FILE, FA_READ | FA_OPEN_EXISTING) == FR_OK)
 	{
 		UINT nRead;
-		f_read (&File, m_pMachine->pram, sizeof m_pMachine->pram, &nRead);
+		f_read (&File, m_pMachine->clockChip ().pram, sizeof m_pMachine->clockChip ().pram, &nRead);
 		f_close (&File);
 	}
 
-	m_pMachine->pramDirty = false;
+	m_pMachine->clockChip ().pramDirty = false;
 }
 
 void CKernel::SavePRAM (void)
 {
-	if (!m_pMachine->pramDirty)
+	if (!m_pMachine->clockChip ().pramDirty)
 	{
 		return;
 	}
@@ -330,9 +328,9 @@ void CKernel::SavePRAM (void)
 	if (f_open (&File, PRAM_FILE, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK)
 	{
 		UINT nWritten;
-		f_write (&File, m_pMachine->pram, sizeof m_pMachine->pram, &nWritten);
+		f_write (&File, m_pMachine->clockChip ().pram, sizeof m_pMachine->clockChip ().pram, &nWritten);
 		f_close (&File);
-		m_pMachine->pramDirty = false;
+		m_pMachine->clockChip ().pramDirty = false;
 	}
 }
 
@@ -387,23 +385,58 @@ TShutdownMode CKernel::Run (void)
 		       "and name it mac.rom, or set rom= in macemu.cfg.");
 	}
 
-	if (m_nROMSize == 0x10000 && m_Config.ramKB > 512)
+	// Pick the model: 64K/128K ROMs are the compact Macs, 256K is the Mac II.
+	boolean bMacII = strEqNoCase (m_Config.machine, "ii")
+			 || (!strEqNoCase (m_Config.machine, "plus") && m_nROMSize >= 0x40000);
+	if (bMacII)
 	{
-		m_Config.ramKB = 512;		// the 64K ROMs cannot use more
+		if (m_nROMSize != 0x40000)
+		{
+			Fatal ("This ROM belongs to a Macintosh model that is",
+			       "not emulated yet (IIci, IIfx, Quadra ...).",
+			       "Use a Mac II (256K) or Mac Plus (128K) ROM.");
+		}
+		if (m_Config.ramKB < 1024)
+		{
+			m_Config.ramKB = 1024;
+		}
+		m_pMacII = new MacII (m_Config.videoWidth, m_Config.videoHeight);
+	}
+	else
+	{
+		if (m_Config.ramKB > 4096)
+		{
+			m_Config.ramKB = 4096;		// the Plus addresses at most 4 MB
+		}
+		if (m_nROMSize == 0x10000 && m_Config.ramKB > 512)
+		{
+			m_Config.ramKB = 512;		// the 64K ROMs cannot use more
+		}
 	}
 
 	m_pRAM = new u8[m_Config.ramKB * 1024];
-	m_pPrevScreen = new u8[Machine::kScreenBytes];
-	m_pMachine = new Machine;
-	if (   m_pRAM == 0
-	    || m_pPrevScreen == 0
-	    || m_pMachine == 0
-	    || !m_pMachine->init (m_pROM, m_nROMSize, m_pRAM, m_Config.ramKB * 1024))
+	m_pPrevScreen = new u8[0x100000];
+	boolean bOK = FALSE;
+	if (m_pRAM != 0 && m_pPrevScreen != 0)
+	{
+		if (m_pMacII != 0)
+		{
+			bOK = m_pMacII->init (m_pROM, m_nROMSize, m_pRAM, m_Config.ramKB * 1024);
+			m_pMachine = m_pMacII;
+		}
+		else
+		{
+			m_pPlus = new Machine;
+			bOK = m_pPlus != 0 && m_pPlus->init (m_pROM, m_nROMSize, m_pRAM, m_Config.ramKB * 1024);
+			m_pMachine = m_pPlus;
+		}
+	}
+	if (!bOK)
 	{
 		Fatal ("Out of memory, or unusable ROM image.");
 	}
 
-	m_pMachine->setClock (m_Config.clockSeconds (__DATE__, __TIME__));
+	m_pMachine->clockChip ().seconds = m_Config.clockSeconds (__DATE__, __TIME__);
 	LoadPRAM ();
 	AttachDisks ();
 
@@ -432,7 +465,7 @@ TShutdownMode CKernel::Run (void)
 			// The Mac is paused while the menu is open.
 			if (m_pOsd->needsRedraw ())
 			{
-				blitMacScreen (m_Surface, m_Layout, m_pMachine->screen (), m_pPrevScreen, TRUE);
+				DrawMac (TRUE);
 				m_pOsd->draw (m_Surface, m_Font);
 			}
 
@@ -491,6 +524,29 @@ TShutdownMode CKernel::Run (void)
 		UpdateScreen ();
 		m_nFrames++;
 
+		if (m_pMachine->poweredOff ())
+		{
+			// Shut Down: save everything and wait for a key to start again.
+			m_pMachine->floppy ().flush ();
+			m_pMachine->scsiBus ().flush ();
+			SavePRAM ();
+			m_ActLED.Off ();
+			ShowMessage ("It is now safe to switch off your Macintosh.",
+				     "Press any key to start it again.");
+			m_nKeyOut = m_nKeyIn;
+			while (m_nKeyOut == m_nKeyIn)
+			{
+				UpdateUSB ();
+				m_Timer.MsDelay (20);
+			}
+			m_nKeyOut = m_nKeyIn;
+			ReleaseAllKeys ();
+			resetMachine ();
+			m_bHaveVideo = FALSE;
+			fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+			nNextFrame = CTimer::GetClockTicks64 ();
+		}
+
 		hostu64 nNow = CTimer::GetClockTicks64 ();
 		if (nNow - m_nStatsTime >= 2000000)
 		{
@@ -509,8 +565,52 @@ TShutdownMode CKernel::Run (void)
 
 void CKernel::UpdateScreen (void)
 {
-	blitMacScreen (m_Surface, m_Layout, m_pMachine->screen (), m_pPrevScreen, m_bForceRedraw);
+	DrawMac (m_bForceRedraw);
 	m_bForceRedraw = FALSE;
+}
+
+void CKernel::DrawMac (boolean bForce)
+{
+	VideoFrame Frame;
+	if (!m_pMachine->video (Frame))
+	{
+		if (m_bHaveVideo)
+		{
+			fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+			m_bHaveVideo = FALSE;
+		}
+		return;
+	}
+
+	if (   !m_bHaveVideo
+	    || Frame.width != m_nVideoWidth
+	    || Frame.height != m_nVideoHeight)
+	{
+		m_bHaveVideo = TRUE;
+		m_nVideoWidth = Frame.width;
+		m_nVideoHeight = Frame.height;
+		m_Layout = layoutFor (m_Surface, Frame.width, Frame.height, m_Config.scale);
+		fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+		bForce = TRUE;
+	}
+
+	if (Frame.clutVersion != m_nClutVersion)
+	{
+		m_nClutVersion = Frame.clutVersion;
+		bForce = TRUE;
+	}
+
+	blitScreen (m_Surface, m_Layout, Frame, m_pPrevScreen, bForce);
+}
+
+void CKernel::ShowMessage (const char *pLine1, const char *pLine2)
+{
+	int fh = m_Font.height ();
+	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+	int x = (m_Surface.width - (int) strlen (pLine1) * m_Font.width ()) / 2;
+	drawText (m_Surface, m_Font, x, m_Surface.height / 2 - fh, pLine1, ColSelFg);
+	x = (m_Surface.width - (int) strlen (pLine2) * m_Font.width ()) / 2;
+	drawText (m_Surface, m_Font, x, m_Surface.height / 2 + fh, pLine2, ColDim);
 }
 
 void CKernel::QueueSound (void)
@@ -522,16 +622,16 @@ void CKernel::QueueSound (void)
 
 	// Resample 370 samples/frame (22254.5 Hz) to the device rate.
 	static s16 Buffer[2 * 1200];
-	const s16 *pIn = m_pMachine->sound ();
-	unsigned nInRate = 22255;
+	u32 nInCount, nInRate;
+	const s16 *pIn = m_pMachine->sound (nInCount, nInRate);
 	unsigned nOut = 0;
 	int nVolume = m_Config.volume;
 	while (nOut < 1200)
 	{
 		unsigned nIndex = m_nSoundFraction / m_nSampleRate;
-		if (nIndex >= Machine::kSoundSamplesPerFrame)
+		if (nIndex >= nInCount)
 		{
-			m_nSoundFraction -= Machine::kSoundSamplesPerFrame * m_nSampleRate;
+			m_nSoundFraction -= nInCount * m_nSampleRate;
 			break;
 		}
 
@@ -559,15 +659,15 @@ void CKernel::Housekeeping (void)
 	// Disks the Mac ejected by itself.
 	for (unsigned d = 0; d < 2; d++)
 	{
-		if (m_pMachine->iwm.ejectedByGuest[d])
+		if (m_pMachine->floppy ().ejectedByGuest[d])
 		{
-			m_pMachine->iwm.ejectedByGuest[d] = false;
+			m_pMachine->floppy ().ejectedByGuest[d] = false;
 			ejectDisk ((int) d);
 		}
 	}
 
 	// Activity LED, and write-back once the disks have been idle for a while.
-	u32 nActivity = m_pMachine->iwm.activityCounter + m_pMachine->scsi.activityCounter;
+	u32 nActivity = m_pMachine->diskActivity ();
 	if (nActivity != m_nLastActivity)
 	{
 		m_nLastActivity = nActivity;
@@ -590,7 +690,7 @@ void CKernel::Housekeeping (void)
 			}
 		}
 
-		m_pMachine->scsi.flush ();
+		m_pMachine->scsiBus ().flush ();
 		SavePRAM ();
 	}
 	else if (m_nIdleFrames % 600 == 0)
@@ -603,7 +703,8 @@ void CKernel::UpdateInfo (void)
 {
 	char *p = m_InfoLine[0];
 	p[0] = '\0';
-	strAppend (p, m_nROMSize == 0x20000 ? "Macintosh Plus, " : "Macintosh 128K/512K, ", 64);
+	strAppend (p, m_pMachine->modelName (), 64);
+	strAppend (p, ", ", 64);
 	appendUint (p, m_Config.ramKB, 64);
 	strAppend (p, "K RAM, ROM ", 64);
 	strAppend (p, m_ROMName, 64);
@@ -1010,7 +1111,7 @@ bool CKernel::insertDisk (int nDrive, const char *pName)
 
 	CMemoryStorage *pDisk = new CMemoryStorage;
 	if (   !pDisk->Load (Path, MaxFloppyBytes)
-	    || !m_pMachine->iwm.insert (nDrive, pDisk, m_Config.floppyReadOnly != 0))
+	    || !m_pMachine->floppy ().insert (nDrive, pDisk, m_Config.floppyReadOnly != 0))
 	{
 		delete pDisk;
 		return false;
@@ -1026,7 +1127,7 @@ bool CKernel::insertDisk (int nDrive, const char *pName)
 
 void CKernel::ejectDisk (int nDrive)
 {
-	m_pMachine->iwm.eject (nDrive);			// flushes the image
+	m_pMachine->floppy ().eject (nDrive);		// flushes the image
 	delete m_pFloppy[nDrive];
 	m_pFloppy[nDrive] = 0;
 	m_FloppyName[nDrive][0] = '\0';
@@ -1035,8 +1136,8 @@ void CKernel::ejectDisk (int nDrive)
 
 void CKernel::resetMachine (void)
 {
-	m_pMachine->iwm.flush ();
-	m_pMachine->scsi.flush ();
+	m_pMachine->floppy ().flush ();
+	m_pMachine->scsiBus ().flush ();
 	SavePRAM ();
 	ReleaseAllKeys ();
 	m_pMachine->reset ();
@@ -1051,7 +1152,7 @@ void CKernel::interruptButton (void)
 void CKernel::settingsChanged (void)
 {
 	ApplyPalette ();
-	m_Layout = layoutFor (m_Surface, m_Config.scale);
+	m_Layout = layoutFor (m_Surface, m_nVideoWidth ? m_nVideoWidth : 512, m_nVideoHeight ? m_nVideoHeight : 342, m_Config.scale);
 	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 	m_bForceRedraw = TRUE;
 
@@ -1080,8 +1181,18 @@ bool CKernel::saveSettings (void)
 
 bool CKernel::screenshot (void)
 {
-	static u8 Bitmap[kBmpSize];
-	makeBmp (m_pMachine->screen (), Bitmap);
+	VideoFrame Frame;
+	if (!m_pMachine->video (Frame))
+	{
+		return false;
+	}
+	static u8 *pBitmap = 0;
+	if (pBitmap == 0)
+	{
+		pBitmap = new u8[54 + 1024 * 3 * 768];		// largest screen
+	}
+	u32 nBmpSize = bmpSize (Frame);
+	makeBmp (Frame, m_Surface.palette, pBitmap);
 
 	f_mkdir (SHOT_DIR);
 
@@ -1099,7 +1210,7 @@ bool CKernel::screenshot (void)
 		}
 
 		UINT nWritten = 0;
-		boolean bOK = f_write (&File, Bitmap, kBmpSize, &nWritten) == FR_OK && nWritten == kBmpSize;
+		boolean bOK = f_write (&File, pBitmap, nBmpSize, &nWritten) == FR_OK && nWritten == nBmpSize;
 		f_close (&File);
 		m_Logger.Write (FromKernel, LogNotice, "Screenshot %s", Path);
 

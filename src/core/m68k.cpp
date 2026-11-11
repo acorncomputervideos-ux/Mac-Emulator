@@ -405,7 +405,7 @@ int M68K::step()
 {
     cyc = 0;
     if (irq != 7) nmiSeen = false;
-    if (irq > (int)imask || (irq == 7 && !nmiSeen)) {
+    if ((irq < 7 && irq > (int)imask) || (irq == 7 && !nmiSeen)) {
         int level = irq;
         if (level == 7) nmiSeen = true;
         stopped = false;

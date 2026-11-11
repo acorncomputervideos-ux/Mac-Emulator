@@ -1,16 +1,35 @@
 #!/usr/bin/env python3
-"""Build a tiny 128K self-test ROM (no Apple code).
+"""Build a tiny self-test ROM (no Apple code).
 
-It switches the ROM overlay off, paints a checkerboard on the Macintosh
-screen and then counts vertical-blank interrupts in low memory.  Use it to
-check the video, timing and build pipeline without a real Macintosh ROM:
+    tools/mktestrom.py selftest.rom           128K Mac Plus ROM
+    tools/mktestrom.py --macii colour.rom     256K Mac II ROM
 
-    tools/mktestrom.py selftest.rom
+The Plus ROM switches the overlay off, paints a checkerboard and counts
+vertical-blank interrupts.  The Mac II ROM opens the emulator's NuBus video
+card through its driver interface, selects 8-bit colour, loads a 256-colour
+table and draws a colour pattern.  Use them to check the video, timing and
+build pipeline without a real Macintosh ROM.
 """
 import struct, sys
 
 def words(*w):
     return b"".join(struct.pack(">H", x) for x in w)
+
+# Mac II program (tools/selftest_colour.s in the commit history; assembled
+# with m68k-linux-gnu-as and linked at $40800000).
+MACII = bytes.fromhex(
+    "0001000040800010000000000000000046fc270021fcf9000000202a45f9f90ffff0257c"
+    "00002000000824bc0000000131fc0002301a21fc00003100301c31fc0083310042783106"
+    "257c00003000000424bc0000000241f84000700030c03200024100e0e14930c13200e749"
+    "024100e0e14930c13200ed49024100c0e14930c152400c40010066d431fc0003301a21fc"
+    "00003200301c21fc0000400032004278320431fc00ff320624bc0000000241f9f9000000"
+    "740076003003e4483202e249d04110c052430c43028066ec52420c4201e066e260fe")
+
+if len(sys.argv) > 1 and sys.argv[1] == "--macii":
+    rom = bytearray(b"\xff" * 0x40000)
+    rom[:len(MACII)] = MACII
+    open(sys.argv[2] if len(sys.argv) > 2 else "colour.rom", "wb").write(rom)
+    sys.exit(0)
 
 rom = bytearray(b"\xff" * 0x20000)
 rom[0:8] = words(0x0000, 0x2000, 0x0040, 0x0010)        # SSP, PC

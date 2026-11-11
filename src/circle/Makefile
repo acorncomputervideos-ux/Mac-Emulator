@@ -8,7 +8,8 @@
 CIRCLEHOME ?= ../../circle
 
 OBJS	= main.o kernel.o storage.o \
-	  ../core/m68k.o ../core/fpu.o ../core/fmath.o ../core/via.o ../core/iwm.o ../core/scsi.o ../core/mac.o \
+	  ../core/m68k.o ../core/fpu.o ../core/fmath.o ../core/via.o ../core/iwm.o ../core/scsi.o ../core/rtc.o \
+	  ../core/adb.o ../core/asc.o ../core/nubusvideo.o ../core/mac.o ../core/macii.o \
 	  ../frontend/config.o ../frontend/keymap.o ../frontend/video.o ../frontend/osd.o
 
 LIBS	= $(CIRCLEHOME)/addon/fatfs/libfatfs.a \

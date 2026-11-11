@@ -6,7 +6,10 @@ namespace macemu {
 void Config::setDefaults()
 {
     memFill(this, 0, sizeof *this);
-    ramKB = 4096;
+    ramKB = 8192;
+    strCopy(machine, "auto", sizeof machine);
+    videoWidth = 640;
+    videoHeight = 480;
     strCopy(diskDir, "disks", kPath);
     speed = 1;
     palette = 0;
@@ -20,7 +23,10 @@ static int clampInt(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : 
 
 void Config::sanitize()
 {
-    if (ramKB != 128 && ramKB != 512 && ramKB != 1024 && ramKB != 2048 && ramKB != 4096) ramKB = 4096;
+    if (ramKB < 128 || ramKB > 131072 || (ramKB & (ramKB - 1))) ramKB = 8192;
+    if (!strEqNoCase(machine, "plus") && !strEqNoCase(machine, "ii")) strCopy(machine, "auto", sizeof machine);
+    if (videoWidth < 512 || videoHeight < 342 || videoWidth > 1024 || videoHeight > 768 || (videoWidth & 7))
+        { videoWidth = 640; videoHeight = 480; }
     if (speed != 0 && speed != 1 && speed != 2 && speed != 4 && speed != 8) speed = 1;
     scale = clampInt(scale, 0, 8);
     palette = clampInt(palette, 0, 15);
@@ -72,6 +78,13 @@ void Config::parse(const char *text, u32 len)
 
         if (strEqNoCase(p, "rom")) strCopy(rom, val, kPath);
         else if (strEqNoCase(p, "ram")) ramKB = (u32)toInt(val);
+        else if (strEqNoCase(p, "machine")) strCopy(machine, val, sizeof machine);
+        else if (strEqNoCase(p, "video")) {
+            videoWidth = toInt(val);
+            const char *x = val;
+            while (*x && *x != 'x' && *x != 'X') x++;
+            videoHeight = *x ? toInt(x + 1) : 0;
+        }
         else if (strEqNoCase(p, "floppy1")) strCopy(floppy[0], val, kPath);
         else if (strEqNoCase(p, "floppy2")) strCopy(floppy[1], val, kPath);
         else if (lower(p[0]) == 'h' && lower(p[1]) == 'd' && p[2] >= '0' && p[2] <= '6' && !p[3])
@@ -114,7 +127,15 @@ u32 Config::serialize(char *out, u32 max) const
     out[0] = 0;
     strAppend(out, "# Mac Emulator settings (written by the F12 menu)\n", max);
     line(out, max, "rom", rom);
+    line(out, max, "machine", machine);
     lineInt(out, max, "ram", (int)ramKB);
+    {
+        char v[24] = "";
+        appendUint(v, (u32)videoWidth, sizeof v);
+        strAppend(v, "x", sizeof v);
+        appendUint(v, (u32)videoHeight, sizeof v);
+        line(out, max, "video", v);
+    }
     line(out, max, "floppy1", floppy[0]);
     line(out, max, "floppy2", floppy[1]);
     for (int i = 0; i < kHardDisks; i++) {

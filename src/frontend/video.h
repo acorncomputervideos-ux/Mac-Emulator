@@ -20,8 +20,12 @@ enum {
 struct Surface {
     u32 *pixels;
     int width, height, pitch;   // pitch in pixels
-    u32 palette[kColorCount];   // 0xRRGGBB for the indices above
+    u32 palette[kColorCount];   // the indices above, already in the device's byte order
+    bool swapRB;                // device stores 0xBBGGRR: swap Mac colours to match
 };
+
+// Put palette (0xRRGGBB) into the surface in device order.
+void setPalette(Surface &s, int scheme);
 
 class Font {
 public:

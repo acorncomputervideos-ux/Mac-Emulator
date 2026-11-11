@@ -4,10 +4,11 @@
 // driving real hardware.  Useful for testing a ROM/disk combination on a PC
 // and for developing the core.
 //
-//   macemu-host ROM [--ram KB] [--floppy1 IMG] [--floppy2 IMG] [--hdN IMG]
+//   macemu-host ROM [--machine plus|ii] [--ram KB] [--floppy1 IMG] [--floppy2 IMG] [--hdN IMG]
 //               [--frames N] [--shot-every K] [--out PREFIX] [--wav FILE]
 //               [--menu] [--palette N] [--scale N] [--type TEXT] [--click X,Y]
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <string>
 #include <vector>
 #include "../core/mac.h"
+#include "../core/macii.h"
 #include "../core/keys.h"
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
@@ -73,11 +75,11 @@ struct FileStorage : Storage {
 };
 
 struct Host : OsdHost {
-    Machine &mac;
+    Emulator &mac;
     Config &cfg;
     FileStorage *floppy[2] = {nullptr, nullptr};
     std::string floppyName[2];
-    Host(Machine &m, Config &c) : mac(m), cfg(c) {}
+    Host(Emulator &m, Config &c) : mac(m), cfg(c) {}
     int listDisks(char (*names)[kNameLen], int max) override {
         static const char *demo[] = {"System 6.0.8.dsk", "MacPaint.dsk", "Utilities.img"};
         int n = 0;
@@ -86,13 +88,13 @@ struct Host : OsdHost {
     }
     bool insertDisk(int drive, const char *name) override {
         FileStorage *s = new FileStorage;
-        if (!s->load(name) || !mac.iwm.insert(drive, s)) { delete s; return false; }
+        if (!s->load(name) || !mac.floppy().insert(drive, s)) { delete s; return false; }
         floppy[drive] = s;
         floppyName[drive] = name;
         return true;
     }
     void ejectDisk(int drive) override {
-        if (mac.iwm.eject(drive)) { delete floppy[drive]; floppy[drive] = nullptr; floppyName[drive].clear(); }
+        if (mac.floppy().eject(drive)) { delete floppy[drive]; floppy[drive] = nullptr; floppyName[drive].clear(); }
     }
     const char *diskName(int drive) override { return floppyName[drive].c_str(); }
     void resetMachine() override { mac.reset(); }
@@ -100,19 +102,17 @@ struct Host : OsdHost {
     void settingsChanged() override {}
     bool saveSettings() override { return true; }
     bool screenshot() override { return true; }
-    const char *infoLine(int n) override { return n == 0 ? "Macintosh Plus, 4096K RAM, host build" : "F12 closes this menu"; }
+    const char *infoLine(int n) override { return n == 0 ? mac.modelName() : "F12 closes this menu"; }
 };
 
-static void writePpm(const std::string &path, const Surface &s, int palette)
+static void writePpm(const std::string &path, const Surface &s)
 {
-    u32 rgb[kColorCount];
-    paletteColors(palette, rgb);
     FILE *f = fopen(path.c_str(), "wb");
     if (!f) return;
     fprintf(f, "P6\n%d %d\n255\n", s.width, s.height);
     for (int y = 0; y < s.height; y++)
         for (int x = 0; x < s.width; x++) {
-            u32 c = rgb[s.pixels[y * s.pitch + x] % kColorCount];
+            u32 c = s.pixels[y * s.pitch + x];
             fputc((int)(c >> 16), f); fputc((int)(c >> 8) & 255, f); fputc((int)c & 255, f);
         }
     fclose(f);
@@ -147,6 +147,7 @@ int main(int argc, char **argv)
         std::string a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : "";
         if (a == "--ram") { cfg.ramKB = (u32)atoi(v); i++; }
+        else if (a == "--machine") { strCopy(cfg.machine, v, sizeof cfg.machine); i++; }
         else if (a == "--floppy1") { floppy[0] = v; i++; }
         else if (a == "--floppy2") { floppy[1] = v; i++; }
         else if (a.size() == 5 && a.compare(0, 4, "--hd") == 0 && a[4] >= '0' && a[4] <= '6') { hd[a[4] - '0'] = v; i++; }
@@ -166,18 +167,33 @@ int main(int argc, char **argv)
     FileStorage romFile;
     if (!romFile.load(argv[1])) { fprintf(stderr, "cannot read ROM %s\n", argv[1]); return 1; }
     std::vector<u8> ram(cfg.ramKB * 1024);
-    static Machine mac;
-    if (!mac.init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size())) {
-        fprintf(stderr, "unsupported ROM size (%zu bytes; need 64K or 128K) or RAM size\n", romFile.data.size());
+    bool macII = strEqNoCase(cfg.machine, "ii") || (!strEqNoCase(cfg.machine, "plus") && romFile.data.size() >= 0x40000);
+    if (!macII && ram.size() > 0x400000) ram.resize(0x400000);
+    static Machine plus;
+    static MacII *two = nullptr;
+    Emulator *emu;
+    bool ok;
+    if (macII) {
+        two = new MacII(cfg.videoWidth, cfg.videoHeight);
+        ok = two->init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
+        emu = two;
+    } else {
+        ok = plus.init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
+        emu = &plus;
+    }
+    if (!ok) {
+        fprintf(stderr, "unsupported ROM size (%zu bytes) or RAM size\n", romFile.data.size());
         return 1;
     }
+    Emulator &mac = *emu;
+    printf("%s, %uK RAM\n", mac.modelName(), (unsigned)(ram.size() / 1024));
     u32 sum = 0;
     for (size_t i = 4; i + 1 < romFile.data.size(); i += 2) sum += (u32)((romFile.data[i] << 8) | romFile.data[i + 1]);
     printf("ROM %zuK, checksum %08X (computed %08X)\n", romFile.data.size() / 1024, be32(romFile.data.data()), sum);
 
     time_t now = time(nullptr);
     struct tm *tm = localtime(&now);
-    mac.setClock(macTime(tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec));
+    mac.clockChip().seconds = (macTime(tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec));
 
     Host host(mac, cfg);
     for (int d = 0; d < 2; d++)
@@ -186,16 +202,32 @@ int main(int argc, char **argv)
     for (int id = 0; id < 7; id++) {
         if (hd[id].empty()) continue;
         FileStorage *s = new FileStorage;
-        if (s->load(hd[id])) mac.scsi.attach(id, s);
+        if (s->load(hd[id])) mac.scsiBus().attach(id, s);
         else fprintf(stderr, "cannot read hard disk image %s\n", hd[id].c_str());
     }
 
     Surface surf;
     surf.width = 1280; surf.height = 720; surf.pitch = 1280;
-    std::vector<u8> pixels((size_t)surf.pitch * surf.height, ColBorder);
+    std::vector<u32> pixels((size_t)surf.pitch * surf.height, 0);
     surf.pixels = pixels.data();
-    Layout layout = layoutFor(surf, cfg.scale);
-    std::vector<u8> prev(Machine::kScreenBytes);
+    surf.swapRB = false;
+    setPalette(surf, cfg.palette);
+    Layout layout = layoutFor(surf, 512, 342, cfg.scale);
+    std::vector<u8> prev(0x100000);
+    int shownW = 0, shownH = 0;
+    u32 shownClut = 0;
+    auto draw = [&](bool force) {
+        VideoFrame vf;
+        if (!mac.video(vf)) return;
+        if (vf.width != shownW || vf.height != shownH) {
+            shownW = vf.width; shownH = vf.height;
+            layout = layoutFor(surf, vf.width, vf.height, cfg.scale);
+            std::fill(pixels.begin(), pixels.end(), 0);
+            force = true;
+        }
+        if (vf.clutVersion != shownClut) { shownClut = vf.clutVersion; force = true; }
+        blitScreen(surf, layout, vf, prev.data(), force);
+    };
     HostFont font;
     Osd osd(cfg, host);
 
@@ -205,7 +237,7 @@ int main(int argc, char **argv)
     bool shiftHeld = false;
     for (int f = 0; f < frames; f++) {
         mac.runFrame();
-        if (!wavPath.empty()) wav.insert(wav.end(), mac.sound(), mac.sound() + Machine::kSoundSamplesPerFrame);
+        if (!wavPath.empty()) { u32 n, rate; const s16 *snd = mac.sound(n, rate); wav.insert(wav.end(), snd, snd + n); }
 
         // Scripted input, starting once the machine has had time to boot.
         if (f >= frames / 2 && f % 4 == 0 && typed < typeText.size()) {
@@ -222,30 +254,31 @@ int main(int argc, char **argv)
         if (clickX >= 0 && f == frames / 2 + 16) mac.mouseButton(false);
 
         for (int d = 0; d < 2; d++)
-            if (mac.iwm.ejectedByGuest[d]) { mac.iwm.ejectedByGuest[d] = false; host.ejectDisk(d); printf("frame %d: guest ejected floppy %d\n", f, d + 1); }
+            if (mac.floppy().ejectedByGuest[d]) { mac.floppy().ejectedByGuest[d] = false; host.ejectDisk(d); printf("frame %d: guest ejected floppy %d\n", f, d + 1); }
 
-        blitMacScreen(surf, layout, mac.screen(), prev.data(), false);
+        draw(false);
         if (shotEvery && f % shotEvery == shotEvery - 1) {
             char name[32];
             snprintf(name, sizeof name, "-%05d.ppm", f + 1);
-            writePpm(out + name, surf, cfg.palette);
+            writePpm(out + name, surf);
         }
     }
-    mac.iwm.flush();
-    mac.scsi.flush();
-    writePpm(out + "-final.ppm", surf, cfg.palette);
-    std::vector<u8> bmp(kBmpSize);
-    makeBmp(mac.screen(), bmp.data());
+    mac.floppy().flush();
+    mac.scsiBus().flush();
+    writePpm(out + "-final.ppm", surf);
+    VideoFrame vf;
+    std::vector<u8> bmp;
+    if (mac.video(vf)) { bmp.resize(bmpSize(vf)); makeBmp(vf, surf.palette, bmp.data()); }
     if (FILE *bf = fopen((out + "-final.bmp").c_str(), "wb")) { fwrite(bmp.data(), 1, bmp.size(), bf); fclose(bf); }
 
     if (menu) {
         osd.open();
         osd.draw(surf, font);
-        writePpm(out + "-menu.ppm", surf, cfg.palette);
+        writePpm(out + "-menu.ppm", surf);
         osd.key(Osd::NavSelect);                        // disk picker
-        blitMacScreen(surf, layout, mac.screen(), prev.data(), true);
+        draw(true);
         osd.draw(surf, font);
-        writePpm(out + "-picker.ppm", surf, cfg.palette);
+        writePpm(out + "-picker.ppm", surf);
     }
 
     if (!wavPath.empty()) {
@@ -258,7 +291,7 @@ int main(int argc, char **argv)
             fwrite(h, 1, 44, w); fwrite(wav.data(), 2, wav.size(), w); fclose(w);
         }
     }
-    printf("ran %d frames, PC=%06X, %llu cycles, PRAM %s\n", frames, mac.cpu.pc & 0xFFFFFF,
-           (unsigned long long)mac.cpu.totalCycles, mac.pramDirty ? "modified" : "untouched");
+    printf("ran %d frames, %llu cycles, PRAM %s%s\n", frames, (unsigned long long)mac.cycles(),
+           mac.clockChip().pramDirty ? "modified" : "untouched", mac.poweredOff() ? ", powered off" : "");
     return 0;
 }

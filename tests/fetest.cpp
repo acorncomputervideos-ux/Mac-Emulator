@@ -21,11 +21,13 @@ static void testConfig()
 {
     Config c;
     c.setDefaults();
-    CHECK(c.ramKB == 4096 && c.speed == 1 && c.sound == 1 && c.mouseSpeed == 4);
+    CHECK(c.ramKB == 8192 && c.speed == 1 && c.sound == 1 && c.mouseSpeed == 4 && c.videoWidth == 640);
     const char *text =
         "# comment\r\n"
         "rom = MyPlus.rom\r\n"
         "ram=1024\n"
+        "machine=II\n"
+        "video=832x624\n"
         "floppy1=disks/System Tools.dsk\n"
         "hd0=hd/boot.img\n"
         "hd6 = other.img  \n"
@@ -40,7 +42,7 @@ static void testConfig()
         "unknown=1\n";
     c.parse(text, (u32)strlen(text));
     CHECK(!strcmp(c.rom, "MyPlus.rom"));
-    CHECK(c.ramKB == 1024);
+    CHECK(c.ramKB == 1024 && strEqNoCase(c.machine, "ii") && c.videoWidth == 832 && c.videoHeight == 624);
     CHECK(!strcmp(c.floppy[0], "disks/System Tools.dsk"));
     CHECK(!strcmp(c.hd[0], "hd/boot.img") && !strcmp(c.hd[6], "other.img") && !c.hd[1][0]);
     CHECK(c.speed == 0 && c.scale == 2 && c.palette == 3);
@@ -56,9 +58,9 @@ static void testConfig()
 
     Config bad;
     bad.setDefaults();
-    const char *junk = "ram=300\nspeed=3\npalette=-4\nscale=100\n";
+    const char *junk = "ram=300\nspeed=3\npalette=-4\nscale=100\nmachine=lisa\nvideo=4000x10\n";
     bad.parse(junk, (u32)strlen(junk));
-    CHECK(bad.ramKB == 4096 && bad.speed == 1 && bad.palette == 0 && bad.scale == 8);
+    CHECK(bad.ramKB == 8192 && bad.speed == 1 && bad.palette == 0 && bad.scale == 8 && strEq(bad.machine, "auto") && bad.videoWidth == 640);
 
     // Clock: 1987-03-02 09:30 is 30376 days after 1904-01-01.
     CHECK(c.clockSeconds("Jan  1 2000", "00:00:00") == 30376u * 86400 + 9 * 3600 + 30 * 60);
@@ -90,8 +92,8 @@ static void testKeymap()
 static Surface makeSurface(std::vector<u32> &px, int w, int h, u32 fill)
 {
     px.assign((size_t)w * h + 64, fill);
-    Surface s{px.data(), w, h, w, {}};
-    paletteColors(0, s.palette);
+    Surface s{px.data(), w, h, w, {}, false};
+    setPalette(s, 0);
     return s;
 }
 
@@ -122,7 +124,7 @@ static void testVideo()
     CHECK(blitScreen(b, lb, f, prev.data(), true) == 342);
 
     // Colour schemes recolour one-bit screens.
-    paletteColors(2, b.palette);
+    setPalette(b, 2);
     blitScreen(b, lb, f, prev.data(), true);
     CHECK(bigPx[27 * 1920 + 192] == 0x04180A && bigPx[27 * 1920 + 195] == 0x4AFF7A);
 
@@ -156,6 +158,15 @@ static void testVideo()
     VideoFrame f32{1, 1, 32, 4, p32, nullptr, 0};
     blitScreen(t, px1, f32, nullptr, true);
     CHECK(tinyPx[px1.y0 * 8 + px1.x0] == 0x123456);
+    // A BGR device gets swapped colours, but one-bit screens keep the scheme.
+    t.swapRB = true;
+    setPalette(t, 0);
+    blitScreen(t, px1, f32, nullptr, true);
+    CHECK(tinyPx[px1.y0 * 8 + px1.x0] == 0x563412);
+    u8 oneBit[1] = {0x80};
+    VideoFrame f1{1, 1, 1, 1, oneBit, nullptr, 0};
+    blitScreen(t, px1, f1, nullptr, true);
+    CHECK(tinyPx[px1.y0 * 8 + px1.x0] == 0x000000 && t.palette[ColSelBg] == 0xA84F2A);
 
     // A surface smaller than the Mac screen must clip, not overrun.
     std::vector<u32> smallPx;
@@ -268,8 +279,8 @@ static void testOsd()
     for (int w : {320, 640, 1920}) {
         int h = w * 3 / 4;
         std::vector<u32> px((size_t)w * h + 256, 0x99);
-        Surface s{px.data(), w, h, w, {}};
-        paletteColors(0, s.palette);
+        Surface s{px.data(), w, h, w, {}, false};
+        setPalette(s, 0);
         osd.draw(s, font);
         osd.key(Osd::NavPageUp); osd.key(Osd::NavSelect);
         osd.draw(s, font);

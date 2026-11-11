@@ -23,6 +23,7 @@
 
 #include "storage.h"
 #include "../core/mac.h"
+#include "../core/macii.h"
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
 #include "../frontend/video.h"
@@ -89,6 +90,8 @@ private:
 	void ReleaseAllKeys (void);
 	void QueueSound (void);
 	void UpdateScreen (void);
+	void DrawMac (boolean bForce);
+	void ShowMessage (const char *pLine1, const char *pLine2);
 	void Housekeeping (void);
 	void UpdateInfo (void);
 
@@ -119,7 +122,9 @@ private:
 	CCircleFont		m_Font;
 
 	macemu::Config		m_Config;
-	macemu::Machine		*m_pMachine;
+	macemu::Emulator	*m_pMachine;
+	macemu::Machine		*m_pPlus;
+	macemu::MacII		*m_pMacII;
 	macemu::Osd		*m_pOsd;
 	macemu::Surface		m_Surface;
 	macemu::Layout		m_Layout;
@@ -128,6 +133,10 @@ private:
 	u8			*m_pRAM;
 	u8			*m_pPrevScreen;
 	boolean			m_bForceRedraw;
+	boolean			m_bHaveVideo;
+	int			m_nVideoWidth;
+	int			m_nVideoHeight;
+	macemu::u32		m_nClutVersion;
 
 	CMemoryStorage		*m_pFloppy[2];
 	char			m_FloppyName[2][kNameLen];

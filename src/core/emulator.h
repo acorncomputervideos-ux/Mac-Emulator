@@ -45,6 +45,7 @@ public:
     virtual Rtc &clockChip() = 0;
     virtual u64 cycles() const = 0;
     virtual u32 diskActivity() const = 0;
+    virtual bool poweredOff() const { return false; }  // the Mac shut itself down
 };
 
 } // namespace macemu
