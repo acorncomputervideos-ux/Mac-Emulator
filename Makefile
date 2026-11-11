@@ -5,7 +5,7 @@ CXX      ?= g++
 CXXFLAGS ?= -O2 -g -Wall -Wextra
 BUILD    := build
 
-CORE     := src/core/macii.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/rtc.cpp src/core/adb.cpp src/core/asc.cpp src/core/nubusvideo.cpp src/core/mac.cpp
+CORE     := src/core/macii.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/rtc.cpp src/core/adb.cpp src/core/asc.cpp src/core/nubusvideo.cpp src/core/mmu040.cpp src/core/mac.cpp
 FRONTEND := src/frontend/config.cpp src/frontend/keymap.cpp src/frontend/video.cpp src/frontend/osd.cpp
 HEADERS  := $(wildcard src/core/*.h src/frontend/*.h)
 
@@ -15,7 +15,7 @@ SST_PER_INSTRUCTION ?= 1000
 
 .PHONY: all test cputest clean
 
-all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/cputest $(BUILD)/macemu-host
+all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/cputest $(BUILD)/macemu-host
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -35,6 +35,9 @@ $(BUILD)/videotest: tests/videotest.cpp $(CORE) $(HEADERS) | $(BUILD)
 $(BUILD)/maciitest: tests/maciitest.cpp $(CORE) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/maciitest.cpp $(CORE)
 
+$(BUILD)/mmutest: tests/mmutest.cpp src/core/m68k.cpp src/core/mmu040.cpp $(HEADERS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/mmutest.cpp src/core/m68k.cpp src/core/mmu040.cpp
+
 # Regenerate the video driver (needs binutils-m68k-linux-gnu).
 src/core/videodrv.h: src/core/videodrv.s tools/build_videodrv.py
 	python3 tools/build_videodrv.py
@@ -49,12 +52,13 @@ $(BUILD)/cputest: tests/cputest.cpp src/core/m68k.cpp src/core/m68k.h | $(BUILD)
 $(BUILD)/macemu-host: src/host/main.cpp $(CORE) $(FRONTEND) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ src/host/main.cpp $(CORE) $(FRONTEND)
 
-test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest
+test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/mmutest
 	$(BUILD)/hwtest
 	$(BUILD)/fetest
 	$(BUILD)/cpu020test
 	$(BUILD)/videotest
 	$(BUILD)/maciitest
+	$(BUILD)/mmutest
 
 $(BUILD)/vectors.txt: tools/sst2txt.py | $(BUILD)
 	python3 tools/sst2txt.py $(SST) $(SST_PER_INSTRUCTION) > $@
