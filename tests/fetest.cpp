@@ -92,7 +92,7 @@ static void testKeymap()
 static Surface makeSurface(std::vector<u32> &px, int w, int h, u32 fill)
 {
     px.assign((size_t)w * h + 64, fill);
-    Surface s{px.data(), w, h, w, {}, false};
+    Surface s{px.data(), w, h, w, {}, false, 0, 0};
     setPalette(s, 0);
     return s;
 }
@@ -279,7 +279,7 @@ static void testOsd()
     for (int w : {320, 640, 1920}) {
         int h = w * 3 / 4;
         std::vector<u32> px((size_t)w * h + 256, 0x99);
-        Surface s{px.data(), w, h, w, {}, false};
+        Surface s{px.data(), w, h, w, {}, false, 0, 0};
         setPalette(s, 0);
         osd.draw(s, font);
         osd.key(Osd::NavPageUp); osd.key(Osd::NavSelect);

@@ -54,6 +54,7 @@ void MacII::resetLine()
 void MacII::reset()
 {
     overlay = true;
+    mapGeneration++;
     powerOff = false;
     resetLine();
     cpu.hardReset();
@@ -84,7 +85,8 @@ u8 MacII::Via1Host::viaInputB()
 
 void MacII::Via2Host::viaOutputB(u8 pins)
 {
-    m.mode32 = (pins & 0x08) != 0;                      // PB3: 32-bit addressing
+    bool m32 = (pins & 0x08) != 0;                      // PB3: 32-bit addressing
+    if (m32 != m.mode32) { m.mode32 = m32; m.mapGeneration++; }
     if (!(pins & 0x04)) m.powerOff = true;              // PB2 low: soft power off
 }
 
@@ -127,6 +129,23 @@ void MacII::ioWrite8(u32 off, u8 v)
     else if (off >= 0x16000 && off < 0x18000) iwm.write((int)(off >> 9) & 15, v, cpu.totalCycles / 2);
 }
 
+u8 *MacII::hostPage(u32 addr, bool &writable)
+{
+    u32 a = translate(addr);
+    writable = false;
+    if (a < 0x40000000) {
+        if (overlay) return (u8 *)rom + (a & romMask & ~0xFFFu);
+        writable = true;
+        return ram + (a & ramMask & ~0xFFFu);
+    }
+    if ((a >> 28) == 4) return overlay ? 0 : (u8 *)rom + (a & romMask & ~0xFFFu);   // first access ends the overlay
+    if ((a >> 24) == 0xF0 + kVideoSlot && (a & 0xFFFFFF) < (NubusVideo::kRegs & ~0xFFFu)) {
+        writable = true;
+        return card.vram() + (a & 0xFFF000);
+    }
+    return 0;
+}
+
 u8 MacII::phys8(u32 a, bool sideEffects)
 {
     switch (a >> 28) {
@@ -134,7 +153,7 @@ u8 MacII::phys8(u32 a, bool sideEffects)
         if (overlay) return rom[a & romMask];
         return ram[a & ramMask];
     case 4:
-        if (sideEffects) overlay = false;
+        if (sideEffects && overlay) { overlay = false; mapGeneration++; }
         return rom[a & romMask];
     case 5:
         return sideEffects ? io8(a) : 0xFF;
@@ -157,7 +176,7 @@ void MacII::physWrite8(u32 a, u8 v)
         ram[a & ramMask] = v;
         return;
     case 4:
-        overlay = false;
+        if (overlay) { overlay = false; mapGeneration++; }
         return;
     case 5:
         ioWrite8(a, v);
@@ -287,7 +306,9 @@ void MacII::runFrame()
     u64 end = frameStart + kCyclesPerFrame;
     u64 nextSample = frameStart;
     int sample = 0;
+    bool midPoll = false;                               // ADB autopolls about every 8 ms
     while (cpu.totalCycles < end) {
+        if (!midPoll && cpu.totalCycles >= frameStart + kCyclesPerFrame / 2) { midPoll = true; adb.tick(); }
         viaFrac += cpu.step();
         if (viaFrac >= 20) {                            // VIA clock: CPU / 20
             via1.tick(viaFrac / 20);

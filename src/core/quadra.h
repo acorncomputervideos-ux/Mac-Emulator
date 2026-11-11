@@ -61,6 +61,7 @@ public:
     u64 cycles() const override { return cpu.totalCycles; }
     u32 diskActivity() const override { return iwm.activityCounter + esp.activityCounter; }
     bool poweredOff() const override { return powerOff; }
+    u32 debugPC() const override { return cpu.pc; }
 
     // Bus (physical addresses; the MMU translates before these)
     u8 read8(u32 addr) override { return (u8)access(addr, 1, false, 0); }
@@ -70,6 +71,7 @@ public:
     void write16(u32 addr, u16 v) override { access(addr, 2, true, v); }
     void write32(u32 addr, u32 v) override { access(addr, 4, true, v); }
     void resetLine() override;
+    u8 *hostPage(u32 addr, bool &writable) override;
 
     // Optional log of accesses that hit no device (for bring-up).
     void (*ioLog)(void *ctx, const char *what, u32 addr, u32 value);

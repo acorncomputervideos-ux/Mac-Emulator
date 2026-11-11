@@ -25,6 +25,13 @@ public:
     // A device calls this during an access that should end in a bus error
     // (an empty NuBus slot, say).  The CPU finishes the instruction and then
     // takes the bus error exception.
+    // Fast path for the CPU: the host address of the 4 KB physical page
+    // containing `addr` if it is plain memory (RAM, ROM, video RAM), or
+    // null.  `writable` is false for ROM.  Machines bump mapGeneration
+    // whenever this answer could change (overlays, address modes).
+    virtual u8 *hostPage(u32 addr, bool &writable) { (void)addr; writable = false; return 0; }
+    u32 mapGeneration = 0;
+
     bool busError = false;
     u32 busErrorAddr = 0;
     bool busErrorWrite = false;
@@ -52,6 +59,7 @@ public:
 class Translator {
 public:
     virtual ~Translator() {}
+    u32 generation = 0;                 // bumped whenever translations may change
     virtual bool enabled() const = 0;
     virtual u32 translate(u32 logical, bool write, bool supervisor, bool code, bool &fault) = 0;
 };
@@ -107,6 +115,7 @@ public:
     u16 currentOpcode() const { return opcode; }
     u32 physical(u32 addr, bool write, bool code);
     u32 *addressRegs() { return a; }
+    void flushTlb() { tlbGeneration = ~0u; }
 
 private:
     Bus *bus;
@@ -120,6 +129,16 @@ private:
     bool nmiSeen;               // level 7 is edge triggered
     u16 opcode;
     bool traceNext;
+
+    // Host TLB: logical 4 KB page -> host memory, for model >= 68020.
+    enum { kTlbSize = 512 };
+    struct TlbEntry { u32 tag; u8 *ptr; bool writable; };
+    TlbEntry tlb[kTlbSize];
+    TlbEntry fetchEntry;
+    u32 tlbGeneration;
+    void checkTlb();
+    u8 *tlbLookup(u32 addr, bool write, bool code);
+    u32 tlbTag(u32 addr) const { return (addr & 0xFFFFF000u) | 1u | (fS ? 2u : 0u); }
 
     void push16(u16 v) { a[7] -= 2; wr(a[7], 1, v); }
     void push32(u32 v) { a[7] -= 4; wr(a[7], 2, v); }

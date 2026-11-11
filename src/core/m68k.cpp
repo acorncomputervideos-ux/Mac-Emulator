@@ -57,6 +57,9 @@ M68K::M68K(Bus *bus) : bus(bus)
     irq = 0; nmiSeen = false; stopped = false; usp = isp = msp = 0; totalCycles = 0; cyc = 0;
     vbr = sfc = dfc = cacr = caar = 0;
     instPC = 0; opcode = 0; traceNext = false;
+    tlbGeneration = ~0u;
+    for (int i = 0; i < kTlbSize; i++) tlb[i].tag = 0;
+    fetchEntry.tag = 0;
 }
 
 void M68K::hardReset()
@@ -102,11 +105,49 @@ u32 M68K::physical(u32 addr, bool write, bool code)
     return p;
 }
 
+void M68K::checkTlb()
+{
+    u32 gen = bus->mapGeneration + (mmu ? mmu->generation * 7919u : 0);   // TC writes flush, bumping it
+    if (gen == tlbGeneration) return;
+    tlbGeneration = gen;
+    for (int i = 0; i < kTlbSize; i++) tlb[i].tag = 0;
+    fetchEntry.tag = 0;
+}
+
+// Find (or build) the host pointer for the page of `addr`.  Translation
+// faults and I/O pages return null: the caller takes the slow path, which
+// raises the bus error or performs the device access.
+u8 *M68K::tlbLookup(u32 addr, bool write, bool code)
+{
+    checkTlb();
+    u32 tag = tlbTag(addr);
+    TlbEntry &e = code ? fetchEntry : tlb[(addr >> 12) & (kTlbSize - 1)];
+    if (e.tag == tag && (!write || e.writable)) return e.ptr;
+    u32 phys = addr;
+    if (mmu && mmu->enabled()) {
+        bool fault = false;
+        phys = mmu->translate(addr, write, fS != 0, code, fault);
+        if (fault) return 0;
+    }
+    bool writable = false;
+    u8 *p = bus->hostPage(phys & 0xFFFFF000u, writable);
+    if (!p) return 0;
+    if (write && !writable) return 0;
+    e.tag = tag;
+    e.ptr = p;
+    e.writable = writable && write;                     // later writes revalidate the M bit once
+    return p;
+}
+
 u16 M68K::fetch16()
 {
     u32 addr = pc;
     pc += 2;
     cyc += 4;
+    if (model != MC68000 && (addr & 0xFFF) != 0xFFF) {
+        if (fetchEntry.tag == tlbTag(addr)) return be16(fetchEntry.ptr + (addr & 0xFFF));
+        if (u8 *p = tlbLookup(addr, false, true)) return be16(p + (addr & 0xFFF));
+    }
     if (mmu && mmu->enabled()) addr = physical(addr, false, true);
     return bus->read16(addr);
 }
@@ -123,6 +164,14 @@ u32 M68K::rd(u32 addr, int sz)
         return (h << 16) | bus->read16(addr + 2);
     }
     cyc += 4;
+    if ((addr & 0xFFF) <= 0x1000 - kSize[sz]) {
+        const TlbEntry &e = tlb[(addr >> 12) & (kTlbSize - 1)];
+        u8 *p = e.tag == tlbTag(addr) ? e.ptr : tlbLookup(addr, false, false);
+        if (p) {
+            p += addr & 0xFFF;
+            return sz == 0 ? p[0] : sz == 1 ? (u32)be16(p) : be32(p);
+        }
+    }
     bool mapped = mmu && mmu->enabled();
     // Misaligned, or crossing a page with the MMU on: assemble from bytes.
     if ((sz && (addr & 1)) || (mapped && sz && (addr & 0xFFF) > 0x1000 - kSize[sz])) {
@@ -149,6 +198,15 @@ void M68K::wr(u32 addr, int sz, u32 v)
         return;
     }
     cyc += 4;
+    if ((addr & 0xFFF) <= 0x1000 - kSize[sz]) {
+        const TlbEntry &e = tlb[(addr >> 12) & (kTlbSize - 1)];
+        u8 *p = e.tag == tlbTag(addr) && e.writable ? e.ptr : tlbLookup(addr, true, false);
+        if (p) {
+            p += addr & 0xFFF;
+            if (sz == 0) p[0] = (u8)v; else if (sz == 1) putBe16(p, (u16)v); else putBe32(p, v);
+            return;
+        }
+    }
     bool mapped = mmu && mmu->enabled();
     if ((sz && (addr & 1)) || (mapped && sz && (addr & 0xFFF) > 0x1000 - kSize[sz])) {
         for (u32 i = 0; i < kSize[sz]; i++) {
@@ -417,6 +475,7 @@ int M68K::step()
         cyc = 4;
     } else {
         traceNext = fT != 0;
+        if (model != MC68000) checkTlb();               // mappings may have changed in the last instruction
         instPC = pc;
         opcode = fetch16();
         exec(opcode);

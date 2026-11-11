@@ -24,6 +24,7 @@ void Mmu040::reset()
 
 void Mmu040::flush()
 {
+    generation++;
     for (int i = 0; i < kCacheSize; i++) cache[i].tag = 0;
 }
 
@@ -139,7 +140,7 @@ bool Mmu040::control(int reg, u32 &v, bool write)
     }
     if (write) {
         *r = v & mask;
-        if (reg == 0x003 || reg >= 0x806) flush();
+        flush();                                        // also bumps the generation for the CPU's TLB
     } else {
         v = *r;
     }

@@ -22,6 +22,7 @@ public:
     // Advance time; a byte takes `byteCycles` CPU cycles to send.
     void tick(u32 cycles);
     bool irq() const;
+    bool sending() const { return ch[0].shifting || ch[1].shifting; }
 
     u32 byteCycles;                     // set by the machine (CPU clock / 28800)
 

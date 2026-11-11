@@ -100,6 +100,16 @@ void Quadra::Via1Host::viaOutputB(u8 pins)
 
 // ---------------------------------------------------------------- memory
 
+u8 *Quadra::hostPage(u32 a, bool &writable)
+{
+    writable = true;
+    if (a < 0x40000000) return a + 0x1000 <= ramSize ? ram + a : 0;
+    if ((a >> 24) == 0xF9 && (a & 0xFFFFFF) < Dafb::kVramSize) return dafb.vram() + (a & 0xFFFFFF);
+    u32 page = a & 0xFFF00000;
+    if (page == 0x40000000 || page == 0x40800000) { writable = false; return (u8 *)rom + (a & romMask); }
+    return 0;
+}
+
 u32 Quadra::busError(u32 addr, bool write, u32 value)
 {
     if (ioLog) ioLog(ioLogCtx, write ? "bus error (write)" : "bus error (read)", addr, value);
@@ -211,7 +221,12 @@ u32 Quadra::io2(u32 off, int size, bool write, u32 v)
     if (off >= 0x0A000 && off < 0x0A100) return 0;      // SONIC Ethernet: idle
     if ((off >= 0x0C000 && off < 0x0C008) || (off >= 0x0C020 && off < 0x0C040)) {
         int ch = (int)(off >> 1) & 1, data = (int)(off >> 2) & 1;
-        if (write) { scc.write(ch, data != 0, (u8)v); return 0; }
+        if (write) {
+            scc.write(ch, data != 0, (u8)v);
+            bool si = scc.irq();
+            if (si != sccIrq) { sccIrq = si; updateIrq(); }
+            return 0;
+        }
         return scc.read(ch, data != 0);
     }
     if (off >= 0x0E000 && off < 0x10000) {              // djMEMC
@@ -250,10 +265,16 @@ void Quadra::runFrame()
     u64 end = frameStart + kCyclesPerFrame;
     u64 nextSample = frameStart;
     int sample = 0;
-    // VIA E clock: 783360 Hz from a 33.33 MHz CPU clock, kept as a fraction.
+    bool midPoll = false;                               // ADB autopolls about every 8 ms
     while (cpu.totalCycles < end) {
-        if (stepHook) { cpu.instPC = cpu.pc; stepHook(); }
-        u32 c = (u32)cpu.step();
+        // Run a short batch of instructions, then service the devices: a
+        // couple of microseconds of latency, far less overhead.
+        u32 c = 0;
+        for (int i = 0; i < 16 && cpu.totalCycles < end; i++) {
+            if (stepHook) { cpu.instPC = cpu.pc; stepHook(); }
+            c += (u32)cpu.step();
+        }
+        // VIA E clock: 783360 Hz from a 33.33 MHz CPU clock, kept as a fraction.
         viaFrac += c * 783360u;
         if (viaFrac >= (u32)kCpuHz) {
             u32 ticks = viaFrac / (u32)kCpuHz;
@@ -261,19 +282,22 @@ void Quadra::runFrame()
             via2.tick((int)ticks);
             viaFrac -= ticks * (u32)kCpuHz;
         }
-        if (cpu.totalCycles >= nextSample && sample < kSamplesPerFrame) {
+        if (scc.sending()) {
+            scc.tick(c);
+            bool si = scc.irq();
+            if (si != sccIrq) { sccIrq = si; updateIrq(); }
+        }
+        if (!midPoll && cpu.totalCycles >= frameStart + kCyclesPerFrame / 2) { midPoll = true; adb.tick(); }
+        while (cpu.totalCycles >= nextSample && sample < kSamplesPerFrame) {
             soundBuf[sample++] = asc.sample();
             nextSample += kCyclesPerFrame / kSamplesPerFrame;
         }
-        scc.tick(c);
-        bool si = scc.irq();
-        if (si != sccIrq) { sccIrq = si; updateIrq(); }
         bool e = esp.irq();                             // SCSI interrupt: VIA2 CB2
         if (e && !espIrqSeen) via2.raise(Via::IRQ_CB2);
         espIrqSeen = e;
-        bool s = asc.irq();                             // sound: VIA2 CB1 in classic mode
-        if (s && !ascIrqSeen) via2.raise(Via::IRQ_CB1);
-        ascIrqSeen = s;
+        bool sIrq = asc.irq();                          // sound: VIA2 CB1 in classic mode
+        if (sIrq && !ascIrqSeen) via2.raise(Via::IRQ_CB1);
+        ascIrqSeen = sIrq;
         bool v = dafb.irq();                            // built-in video: VIA2 CA1
         if (v && !videoIrqSeen) via2.raise(Via::IRQ_CA1);
         videoIrqSeen = v;

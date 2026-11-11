@@ -51,6 +51,7 @@ public:
     Rtc &clockChip() override { return rtc; }
     u64 cycles() const override { return cpu.totalCycles; }
     u32 diskActivity() const override { return iwm.activityCounter + scsi.activityCounter; }
+    u32 debugPC() const override { return cpu.pc; }
 
     // Real-time clock and parameter RAM.
     void setClock(u32 secondsSince1904) { rtc.seconds = secondsSince1904; }

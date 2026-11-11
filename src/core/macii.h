@@ -64,12 +64,14 @@ public:
     void write16(u32 addr, u16 v) override;
     void write32(u32 addr, u32 v) override;
     void resetLine() override;
+    u8 *hostPage(u32 addr, bool &writable) override;
 
     // GuestMemory (logical addresses in the current addressing mode)
     u8 peek(u32 addr) override;
     void poke(u32 addr, u8 v) override;
 
     bool poweredOff() const override { return powerOff; }
+    u32 debugPC() const override { return cpu.pc; }
     bool addressing32() const { return mode32; }
 
     M68K cpu;

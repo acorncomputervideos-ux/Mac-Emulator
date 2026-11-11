@@ -12,6 +12,7 @@
 #include <circle/exceptionhandler.h>
 #include <circle/interrupt.h>
 #include <circle/timer.h>
+#include <circle/cputhrottle.h>
 #include <circle/logger.h>
 #include <circle/usb/usbhcidevice.h>
 #include <circle/usb/usbkeyboard.h>
@@ -75,7 +76,7 @@ public:
 private:
 	boolean LoadConfig (void);
 	boolean LoadROM (void);
-	boolean SetupDisplay (void);
+	boolean SetupDisplay (int nMacWidth, int nMacHeight);
 	void SetupSound (void);
 	void AttachDisks (void);
 	void LoadPRAM (void);
@@ -91,6 +92,8 @@ private:
 	void ReleaseAllKeys (void);
 	void QueueSound (void);
 	void UpdateScreen (void);
+	void Present (void);
+	void BootLog (void);
 	void DrawMac (boolean bForce);
 	void ShowMessage (const char *pLine1, const char *pLine2);
 	void Housekeeping (void);
@@ -114,9 +117,14 @@ private:
 	CLogger			m_Logger;
 	CUSBHCIDevice		m_USBHCI;
 	CEMMCDevice		m_EMMC;
+	CCPUThrottle		m_CPUThrottle;
 	FATFS			m_FileSystem;
 
 	CBcmFrameBuffer		*m_pFrameBuffer;
+	volatile u32		*m_pFrameBufferPixels;	// device memory: aligned 32-bit stores only
+	unsigned		m_nFrameBufferPitch;	// in pixels
+	unsigned		m_nDisplayWidth;	// the monitor's mode
+	unsigned		m_nDisplayHeight;
 	CSoundBaseDevice	*m_pSound;
 	CUSBKeyboardDevice * volatile m_pKeyboard;
 	CMouseDevice * volatile	m_pMouse;

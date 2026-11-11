@@ -64,6 +64,7 @@ void fillRect(Surface &s, int x, int y, int w, int h, u8 color)
     if (x + w > s.width) w = s.width - x;
     if (y + h > s.height) h = s.height - y;
     if (w <= 0 || h <= 0) return;
+    markDirty(s, y, y + h);
     u32 c = s.palette[color % kColorCount];
     for (int r = 0; r < h; r++) {
         u32 *p = s.pixels + (y + r) * s.pitch + x;
@@ -75,6 +76,7 @@ void drawText(Surface &s, const Font &f, int x, int y, const char *text, u8 fg, 
 {
     int fw = f.width(), fh = f.height();
     u32 fc = s.palette[fg % kColorCount], bc = bg >= 0 ? s.palette[bg % kColorCount] : 0;
+    markDirty(s, y, y + fh);
     for (; *text; text++, x += fw) {
         if (x < 0 || y < 0 || x + fw > s.width || y + fh > s.height) continue;
         for (int r = 0; r < fh; r++) {
@@ -125,6 +127,7 @@ int blitScreen(Surface &s, const Layout &l, const VideoFrame &f, u8 *previous, b
             memCopy(prev, src, usedBytes);
         }
         drawn++;
+        markDirty(s, l.y0 + row * scale, l.y0 + (row + 1) * scale);
         u32 *dst = s.pixels + (l.y0 + row * scale) * s.pitch + l.x0;
         u32 *p = dst;
         bool swap = s.swapRB && !(f.depth == 1 && !f.clut);   // the mono palette is in device order already

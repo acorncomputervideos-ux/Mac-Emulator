@@ -22,7 +22,14 @@ struct Surface {
     int width, height, pitch;   // pitch in pixels
     u32 palette[kColorCount];   // the indices above, already in the device's byte order
     bool swapRB;                // device stores 0xBBGGRR: swap Mac colours to match
+    int dirtyTop, dirtyBottom;  // rows changed since the frontend last presented them
 };
+
+inline void markDirty(Surface &s, int top, int bottom)
+{
+    if (top < s.dirtyTop) s.dirtyTop = top;
+    if (bottom > s.dirtyBottom) s.dirtyBottom = bottom;
+}
 
 // Put palette (0xRRGGBB) into the surface in device order.
 void setPalette(Surface &s, int scheme);

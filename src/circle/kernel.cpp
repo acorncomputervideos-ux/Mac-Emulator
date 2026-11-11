@@ -73,6 +73,14 @@ CKernel::CKernel (void)
 {
 	s_pThis = this;
 
+	m_pFrameBufferPixels = 0;
+	m_nFrameBufferPitch = 0;
+	m_nDisplayWidth = m_nDisplayHeight = 0;
+	m_Surface.pixels = 0;
+	m_Surface.width = m_Surface.height = m_Surface.pitch = 0;
+	m_Surface.dirtyTop = m_Surface.dirtyBottom = 0;
+	m_Surface.swapRB = false;
+
 	m_ActLED.Blink (3);
 
 	memset (m_LastKeys, 0, sizeof m_LastKeys);
@@ -201,20 +209,73 @@ boolean CKernel::LoadROM (void)
 	return FALSE;
 }
 
-boolean CKernel::SetupDisplay (void)
+// The Pi's frame buffer lives in uncached device memory, so writing it is
+// slow.  Make it only a little larger than the Mac screen, with the
+// monitor's aspect ratio, and let the GPU scale it to the display for free.
+// (width= and height= in macemu.cfg override this.)
+boolean CKernel::SetupDisplay (int nMacWidth, int nMacHeight)
 {
-	m_pFrameBuffer = new CBcmFrameBuffer (m_Config.width ? m_Config.width : m_Options.GetWidth (),
-					      m_Config.height ? m_Config.height : m_Options.GetHeight (),
-					      32);
+	if (m_nDisplayWidth == 0)
+	{
+		CBcmPropertyTags Tags;
+		TPropertyTagDisplayDimensions Dim;
+		if (   Tags.GetTag (PROPTAG_GET_DISPLAY_DIMENSIONS, &Dim, sizeof Dim)
+		    && Dim.nWidth >= 320 && Dim.nHeight >= 200)
+		{
+			m_nDisplayWidth = Dim.nWidth;
+			m_nDisplayHeight = Dim.nHeight;
+		}
+		else
+		{
+			m_nDisplayWidth = 1920;
+			m_nDisplayHeight = 1080;
+		}
+	}
+
+	unsigned nWidth = m_Config.width, nHeight = m_Config.height;
+	if (nWidth == 0 || nHeight == 0)
+	{
+		nHeight = nMacHeight < 384 ? 384 : nMacHeight;	// room for the menu
+		nWidth = (nHeight * m_nDisplayWidth / m_nDisplayHeight + 15) & ~15u;
+		if (nWidth < (unsigned) nMacWidth)
+		{
+			nWidth = (nMacWidth + 15) & ~15u;
+			nHeight = nWidth * m_nDisplayHeight / m_nDisplayWidth;
+			if (nHeight < (unsigned) nMacHeight)
+			{
+				nHeight = nMacHeight;
+			}
+		}
+	}
+
+	if (m_pFrameBuffer != 0)
+	{
+		delete m_pFrameBuffer;
+		m_pFrameBuffer = 0;
+	}
+	delete [] m_Surface.pixels;
+	m_Surface.pixels = 0;
+	m_pFrameBufferPixels = 0;
+
+	m_pFrameBuffer = new CBcmFrameBuffer (nWidth, nHeight, 32);
 	if (!m_pFrameBuffer->Initialize ())
 	{
 		return FALSE;
 	}
+	m_Logger.Write (FromKernel, LogNotice, "Frame buffer %ux%u for a %dx%d Mac screen on a %ux%u display",
+			nWidth, nHeight, nMacWidth, nMacHeight, m_nDisplayWidth, m_nDisplayHeight);
 
-	m_Surface.pixels = (macemu::u32 *) (uintptr) m_pFrameBuffer->GetBuffer ();
+	// Device memory faults on the wide and unaligned stores of optimised
+	// drawing code: draw into a back buffer and copy changed rows out word
+	// by word (Present).
+	m_pFrameBufferPixels = (volatile u32 *) (uintptr) m_pFrameBuffer->GetBuffer ();
+	m_nFrameBufferPitch = m_pFrameBuffer->GetPitch () / 4;
 	m_Surface.width = (int) m_pFrameBuffer->GetWidth ();
 	m_Surface.height = (int) m_pFrameBuffer->GetHeight ();
-	m_Surface.pitch = (int) m_pFrameBuffer->GetPitch () / 4;
+	m_Surface.pitch = m_Surface.width;
+	m_Surface.pixels = new macemu::u32[m_Surface.width * m_Surface.height];
+	m_Surface.dirtyTop = 0;
+	m_Surface.dirtyBottom = m_Surface.height;
 
 	// Pixel order: 1 = RGB in memory (0xBBGGRR as a word), 0 = BGR.
 	CBcmPropertyTags Tags;
@@ -223,7 +284,7 @@ boolean CKernel::SetupDisplay (void)
 	ApplyPalette ();
 
 	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
-	m_Layout = layoutFor (m_Surface, 512, 342, m_Config.scale);
+	m_Layout = layoutFor (m_Surface, nMacWidth, nMacHeight, m_Config.scale);
 	m_bForceRedraw = TRUE;
 
 	return TRUE;
@@ -339,7 +400,7 @@ void CKernel::Fatal (const char *pLine1, const char *pLine2, const char *pLine3)
 {
 	m_Logger.Write (FromKernel, LogError, "%s %s %s", pLine1, pLine2, pLine3);
 
-	if (m_pFrameBuffer != 0)
+	if (m_Surface.pixels != 0)
 	{
 		const char *Lines[] = {"Mac Emulator cannot start", "", pLine1, pLine2, pLine3};
 		int fh = m_Font.height ();
@@ -352,6 +413,7 @@ void CKernel::Fatal (const char *pLine1, const char *pLine2, const char *pLine3)
 		}
 	}
 
+	Present ();
 	while (1)
 	{
 		m_ActLED.Blink (2, 100, 100);
@@ -362,6 +424,7 @@ void CKernel::Fatal (const char *pLine1, const char *pLine2, const char *pLine3)
 TShutdownMode CKernel::Run (void)
 {
 	m_Logger.Write (FromKernel, LogNotice, "Mac Emulator, built " __DATE__ " " __TIME__);
+	m_CPUThrottle.SetSpeed (CPUSpeedMaximum);	// the firmware starts the ARM at its lowest clock
 
 	boolean bMounted = f_mount (&m_FileSystem, DRIVE, 1) == FR_OK;
 	if (bMounted)
@@ -369,7 +432,7 @@ TShutdownMode CKernel::Run (void)
 		LoadConfig ();
 	}
 
-	if (!SetupDisplay ())
+	if (!SetupDisplay (640, 480))
 	{
 		m_Logger.Write (FromKernel, LogPanic, "Cannot initialize the framebuffer");
 	}
@@ -491,6 +554,7 @@ TShutdownMode CKernel::Run (void)
 			{
 				DrawMac (TRUE);
 				m_pOsd->draw (m_Surface, m_Font);
+				Present ();
 			}
 
 			if (!m_pOsd->active ())
@@ -546,6 +610,9 @@ TShutdownMode CKernel::Run (void)
 		}
 
 		UpdateScreen ();
+		Present ();
+		m_CPUThrottle.Update ();
+		BootLog ();
 		m_nFrames++;
 
 		if (m_pMachine->poweredOff ())
@@ -556,6 +623,7 @@ TShutdownMode CKernel::Run (void)
 			m_ActLED.Off ();
 			ShowMessage ("It is now safe to switch off your Macintosh.",
 				     "Press any key to start it again.");
+			Present ();
 			m_nKeyOut = m_nKeyIn;
 			while (m_nKeyOut == m_nKeyIn)
 			{
@@ -592,6 +660,67 @@ void CKernel::UpdateScreen (void)
 	m_bForceRedraw = FALSE;
 }
 
+void CKernel::Present (void)
+{
+	if (m_pFrameBufferPixels == 0 || m_Surface.pixels == 0)
+	{
+		return;
+	}
+	int nTop = m_Surface.dirtyTop, nBottom = m_Surface.dirtyBottom;
+	if (nTop < 0) nTop = 0;
+	if (nBottom > m_Surface.height) nBottom = m_Surface.height;
+	for (int y = nTop; y < nBottom; y++)
+	{
+		const macemu::u32 *pSrc = m_Surface.pixels + y * m_Surface.pitch;
+		volatile u32 *pDst = m_pFrameBufferPixels + y * m_nFrameBufferPitch;
+		for (int x = 0; x < m_Surface.width; x++)
+		{
+			pDst[x] = pSrc[x];
+		}
+	}
+	m_Surface.dirtyTop = m_Surface.height;
+	m_Surface.dirtyBottom = 0;
+}
+
+// For the first three minutes, note progress in SD:/macemu.log so that a
+// problem on real hardware can be diagnosed.
+void CKernel::BootLog (void)
+{
+	static unsigned nLastSecond = 0;
+	unsigned nSecond = m_Timer.GetUptime ();
+	if (nSecond == nLastSecond || nSecond % 5 != 0 || nSecond > 180)
+	{
+		return;
+	}
+	nLastSecond = nSecond;
+
+	char Line[160] = "";
+	appendUint (Line, nSecond, sizeof Line);
+	strAppend (Line, "s frames=", sizeof Line);
+	appendUint (Line, m_nFrames, sizeof Line);
+	strAppend (Line, " speed=", sizeof Line);
+	appendUint (Line, m_nSpeedPercent, sizeof Line);
+	strAppend (Line, "% pc=", sizeof Line);
+	appendHex (Line, m_pMachine->debugPC (), 8, sizeof Line);
+	strAppend (Line, " disk=", sizeof Line);
+	appendUint (Line, m_pMachine->diskActivity (), sizeof Line);
+	strAppend (Line, " clock=", sizeof Line);
+	appendUint (Line, m_CPUThrottle.GetClockRate () / 1000000, sizeof Line);
+	strAppend (Line, "MHz temp=", sizeof Line);
+	appendUint (Line, m_CPUThrottle.GetTemperature (), sizeof Line);
+	strAppend (Line, "C\r\n", sizeof Line);
+	m_Logger.Write (FromKernel, LogNotice, "%s", Line);
+
+	FIL File;
+	BYTE Mode = nSecond == 5 ? (FA_WRITE | FA_CREATE_ALWAYS) : (FA_WRITE | FA_OPEN_APPEND);
+	if (f_open (&File, DRIVE "/macemu.log", Mode) == FR_OK)
+	{
+		UINT nWritten;
+		f_write (&File, Line, strLen (Line), &nWritten);
+		f_close (&File);
+	}
+}
+
 void CKernel::DrawMac (boolean bForce)
 {
 	VideoFrame Frame;
@@ -610,8 +739,12 @@ void CKernel::DrawMac (boolean bForce)
 	    || Frame.height != m_nVideoHeight)
 	{
 		m_bHaveVideo = TRUE;
-		m_nVideoWidth = Frame.width;
-		m_nVideoHeight = Frame.height;
+		if (Frame.width != m_nVideoWidth || Frame.height != m_nVideoHeight)
+		{
+			m_nVideoWidth = Frame.width;
+			m_nVideoHeight = Frame.height;
+			SetupDisplay (Frame.width, Frame.height);
+		}
 		m_Layout = layoutFor (m_Surface, Frame.width, Frame.height, m_Config.scale);
 		fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 		bForce = TRUE;
@@ -997,7 +1130,9 @@ void CKernel::HandleModifier (u8 ucBit, boolean bDown)
 void CKernel::HandleKey (u8 ucUsage, boolean bDown)
 {
 	// Emulator hot keys.
-	if (ucUsage == HID_F12)
+	// F12, or Pause, Scroll Lock or the Menu key (for keyboards whose F12
+	// is a media key unless Fn is held).
+	if (ucUsage == HID_F12 || ucUsage == 0x48 || ucUsage == 0x47 || ucUsage == 0x65)
 	{
 		if (bDown)
 		{
