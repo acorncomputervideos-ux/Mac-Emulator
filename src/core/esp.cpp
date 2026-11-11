@@ -29,6 +29,9 @@ void Esp::reset()
     connected = false;
     target = -1;
     phase = BusFree;
+    lastCmd = 0;
+    dmaDone = false;
+    fifoFromTarget = false;
     cdbLen = 0;
     bufLen = bufPos = 0;
     lba = blocksLeft = 0;
@@ -54,6 +57,7 @@ void Esp::setTc(u32 v)
 u8 Esp::pop()
 {
     if (!fifoCount) return 0;
+    if (fifoCount == 1) fifoFromTarget = false;
     u8 v = fifo[0];
     for (int i = 1; i < fifoCount; i++) fifo[i - 1] = fifo[i];
     fifoCount--;
@@ -70,8 +74,9 @@ void Esp::raise(u8 intr)
 bool Esp::drq() const
 {
     if (!dma || !connected) return false;
+    if (fifoFromTarget && fifoCount > 0) return true;  // even after the target moved on to status
     switch (phase) {
-    case DataIn: return reading || bufPos < bufLen;
+    case DataIn: return false;
     case DataOut: case Command: return tc() != 0;
     default: return false;
     }
@@ -226,6 +231,19 @@ void Esp::targetByteOut(u8 v)
 
 // ---------------------------------------------------------------- initiator side
 
+// In the command phase the chip hands FIFO bytes to the target as they
+// arrive.  When the CDB is complete the target starts the command and the
+// chip interrupts: bus service, plus function complete after a selection.
+void Esp::commandBytes()
+{
+    if (!connected || phase != Command) return;
+    while (fifoCount && phase == Command) targetByteOut(pop());
+    if (phase == Command) return;
+    rregs[R_SEQ] = 4;
+    u8 c = lastCmd & 0x7F;
+    raise(c == 0x41 || c == 0x42 ? (INTR_BS | INTR_FC) : INTR_BS);
+}
+
 void Esp::select(bool atn, bool stop)
 {
     target = wregs[R_STAT] & 7;                         // bus ID register
@@ -248,18 +266,32 @@ void Esp::select(bool atn, bool stop)
         return;
     }
     phase = Command;
-    if (dma) return;                                    // CDB arrives through pseudo-DMA
-    while (fifoCount && phase == Command) targetByteOut(pop());
-    rregs[R_SEQ] = 4;
-    raise(INTR_BS | INTR_FC);
+    commandBytes();                                     // CDB already in the FIFO, or later via (pseudo-)DMA
+}
+
+void Esp::fillFifo()
+{
+    u8 v;
+    while (phase == DataIn && fifoCount < 16 && tc() > 0 && targetByteIn(v)) {
+        fifoFromTarget = true;
+        push(v);
+        setTc(tc() - 1);
+    }
 }
 
 void Esp::transferInfo()
 {
     if (!connected) return;
     if (dma) {
-        // Pseudo-DMA: the CPU moves the data; we interrupt when it is done.
-        if (phase == DataIn && !(reading || bufPos < bufLen)) raise(INTR_BS);
+        // Pseudo-DMA: the chip moves data between the target and its FIFO,
+        // the CPU empties or fills the FIFO; we interrupt when it is done.
+        dmaDone = false;
+        if (phase == DataIn) {
+            fillFifo();
+            if (!fifoCount) { dmaDone = true; raise(INTR_BS); }
+        }
+        if (phase == Command) commandBytes();
+        if (phase == Status || phase == MsgIn) raise(INTR_BS);
         return;
     }
     switch (phase) {
@@ -269,10 +301,11 @@ void Esp::transferInfo()
         raise(INTR_BS);
         break;
     }
-    case DataOut: case Command:
-        while (fifoCount && (phase == DataOut || phase == Command)) targetByteOut(pop());
-        if (phase == Command) break;
-        rregs[R_SEQ] = 4;
+    case Command:
+        commandBytes();
+        break;
+    case DataOut:
+        while (fifoCount && phase == DataOut) targetByteOut(pop());
         raise(INTR_BS);
         break;
     case Status:
@@ -301,7 +334,7 @@ void Esp::command(u8 cmd)
     }
     switch (cmd & 0x7F) {
     case 0x00: break;                                   // NOP
-    case 0x01: fifoCount = 0; break;                    // flush FIFO
+    case 0x01: fifoCount = 0; fifoFromTarget = false; break;   // flush FIFO
     case 0x02: {                                        // reset chip
         Storage *keep[kTargets];
         for (int i = 0; i < kTargets; i++) keep[i] = disks[i];
@@ -381,9 +414,11 @@ void Esp::write(int reg, u8 v)
         break;
     case R_FIFO:
         push(v);
+        commandBytes();
         break;
     case R_CMD:
         rregs[R_CMD] = v;
+        lastCmd = v;
         command(v);
         break;
     case R_CFG1: case 0x0B: case 0x0C: case 0x0D: case 0x0F:
@@ -397,12 +432,12 @@ void Esp::write(int reg, u8 v)
 
 u8 Esp::dmaRead()
 {
-    u8 v = 0;
     if (!connected) return 0;
-    if (fifoCount) return pop();
-    if (phase == DataIn && targetByteIn(v)) {
-        if (dma) setTc(tc() ? tc() - 1 : 0);
-        if (dma && (tc() == 0 || phase != DataIn)) raise(INTR_BS);
+    u8 v = pop();
+    fillFifo();
+    if (dma && !dmaDone && !fifoCount && (tc() == 0 || phase != DataIn)) {
+        dmaDone = true;
+        raise(INTR_BS);
     }
     return v;
 }
@@ -410,15 +445,14 @@ u8 Esp::dmaRead()
 void Esp::dmaWrite(u8 v)
 {
     if (!connected || (phase != DataOut && phase != Command)) return;
-    bool wasCommand = phase == Command;
-    targetByteOut(v);
     if (dma) setTc(tc() ? tc() - 1 : 0);
-    if (wasCommand && phase != Command) {               // CDB complete through DMA
-        rregs[R_SEQ] = 4;
-        raise(INTR_BS | INTR_FC);
-    } else if (dma && (tc() == 0 || phase != DataOut)) {
-        raise(INTR_BS);
+    if (phase == Command) {
+        push(v);
+        commandBytes();
+        return;
     }
+    targetByteOut(v);
+    if (dma && (tc() == 0 || phase != DataOut)) raise(INTR_BS);
 }
 
 } // namespace macemu

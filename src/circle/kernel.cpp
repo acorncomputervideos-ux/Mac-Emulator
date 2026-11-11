@@ -40,6 +40,7 @@ CKernel::CKernel (void)
 	m_pMachine (0),
 	m_pPlus (0),
 	m_pMacII (0),
+	m_pQuadra (0),
 	m_pOsd (0),
 	m_pROM (0),
 	m_nROMSize (0),
@@ -385,16 +386,34 @@ TShutdownMode CKernel::Run (void)
 		       "and name it mac.rom, or set rom= in macemu.cfg.");
 	}
 
-	// Pick the model: 64K/128K ROMs are the compact Macs, 256K is the Mac II.
-	boolean bMacII = strEqNoCase (m_Config.machine, "ii")
-			 || (!strEqNoCase (m_Config.machine, "plus") && m_nROMSize >= 0x40000);
-	if (bMacII)
+	// Pick the model: 64K/128K ROMs are the compact Macs, 256K is the
+	// Mac II, 1 MB the Quadra 610/650/800 family.
+	boolean bQuadra = strEqNoCase (m_Config.machine, "quadra")
+			  || (strEqNoCase (m_Config.machine, "auto") && m_nROMSize == 0x100000);
+	boolean bMacII = !bQuadra
+			 && (strEqNoCase (m_Config.machine, "ii")
+			     || (!strEqNoCase (m_Config.machine, "plus") && m_nROMSize >= 0x40000));
+	if (bQuadra)
+	{
+		if (m_nROMSize != 0x100000 || be32 (m_pROM) != 0xF1ACAD13)
+		{
+			Fatal ("The Quadra emulation needs the 1 MB ROM of the",
+			       "Quadra 610/650/800 or Centris 610/650",
+			       "(checksum F1ACAD13).");
+		}
+		if (m_Config.ramKB < 8192)
+		{
+			m_Config.ramKB = 8192;
+		}
+		m_pQuadra = new Quadra;
+	}
+	else if (bMacII)
 	{
 		if (m_nROMSize != 0x40000)
 		{
 			Fatal ("This ROM belongs to a Macintosh model that is",
-			       "not emulated yet (IIci, IIfx, Quadra ...).",
-			       "Use a Mac II (256K) or Mac Plus (128K) ROM.");
+			       "not emulated yet (IIx, IIci, IIfx, Quadra 700 ...).",
+			       "Use a Quadra 610/650/800, Mac II or Mac Plus ROM.");
 		}
 		if (m_Config.ramKB < 1024)
 		{
@@ -419,7 +438,12 @@ TShutdownMode CKernel::Run (void)
 	boolean bOK = FALSE;
 	if (m_pRAM != 0 && m_pPrevScreen != 0)
 	{
-		if (m_pMacII != 0)
+		if (m_pQuadra != 0)
+		{
+			bOK = m_pQuadra->init (m_pROM, m_nROMSize, m_pRAM, m_Config.ramKB * 1024);
+			m_pMachine = m_pQuadra;
+		}
+		else if (m_pMacII != 0)
 		{
 			bOK = m_pMacII->init (m_pROM, m_nROMSize, m_pRAM, m_Config.ramKB * 1024);
 			m_pMachine = m_pMacII;

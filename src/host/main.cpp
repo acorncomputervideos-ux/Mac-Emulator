@@ -106,10 +106,23 @@ struct Host : OsdHost {
     const char *infoLine(int n) override { return n == 0 ? mac.modelName() : "F12 closes this menu"; }
 };
 
+static u32 gWatchPc = 0;
+static M68K *gWatchCpu = nullptr;
+static int gWatchHits = 0;
 static int ioLogCount = 0;
 static void logIo(void *, const char *what, u32 addr, u32 value)
 {
     if (ioLogCount++ < 200) printf("  %s %08X (%08X)\n", what, addr, value);
+}
+
+// Called from the Quadra's bus: report CPU state when it reaches gWatchPc.
+static void watchCheck()
+{
+    if (!gWatchCpu || gWatchCpu->instPC != gWatchPc || gWatchHits >= 100000) return;
+    M68K &c = *gWatchCpu;
+    gWatchHits++;
+    printf("watch %08X: d0=%08X d1=%08X d2=%08X d5=%08X a0=%08X a1=%08X a2=%08X a3=%08X a4=%08X sr=%04X\n", c.instPC,
+           c.d[0], c.d[1], c.d[2], c.d[5], c.a[0], c.a[1], c.a[2], c.a[3], c.a[4], c.getSR());
 }
 
 static void writePpm(const std::string &path, const Surface &s)
@@ -150,6 +163,7 @@ int main(int argc, char **argv)
     int frames = 600, shotEvery = 0, clickX = -1, clickY = -1;
     bool menu = false, traceIo = false;
     int tracePc = 0;
+    u32 watchPc = 0;
     std::string floppy[2], hd[7];
     for (int i = 2; i < argc; i++) {
         std::string a = argv[i];
@@ -170,6 +184,7 @@ int main(int argc, char **argv)
         else if (a == "--menu") menu = true;
         else if (a == "--trace-io") traceIo = true;
         else if (a == "--trace-pc") { tracePc = atoi(v); i++; }
+        else if (a == "--watch-pc") { watchPc = (u32)strtoul(v, nullptr, 16); i++; }
         else { fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
     }
     cfg.sanitize();
@@ -190,6 +205,7 @@ int main(int argc, char **argv)
         quad = new Quadra;
         ok = quad->init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
         if (traceIo) { quad->ioLog = logIo; }
+        if (watchPc) { gWatchPc = watchPc; gWatchCpu = &quad->cpu; quad->stepHook = watchCheck; }
         emu = quad;
     } else if (macII) {
         two = new MacII(cfg.videoWidth, cfg.videoHeight);
@@ -256,7 +272,7 @@ int main(int argc, char **argv)
     for (int f = 0; f < frames; f++) {
         mac.runFrame();
         if (tracePc && f % tracePc == 0 && quad) {
-            printf("frame %d: pc=%08X sr=%04X tc=%04X a7=%08X\n", f, quad->cpu.pc, quad->cpu.getSR(), quad->mmu.tc, quad->cpu.a[7]);
+            printf("frame %d: pc=%08X sr=%04X tc=%04X a7=%08X disk activity %u\n", f, quad->cpu.pc, quad->cpu.getSR(), quad->mmu.tc, quad->cpu.a[7], mac.diskActivity());
         }
         if (!wavPath.empty()) { u32 n, rate; const s16 *snd = mac.sound(n, rate); wav.insert(wav.end(), snd, snd + n); }
 

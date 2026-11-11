@@ -41,6 +41,7 @@ private:
     bool connected;
     int target;
     Phase phase;
+    u8 lastCmd;
 
     // Target side of the current command.
     u8 cdb[16];
@@ -64,6 +65,10 @@ private:
     bool targetByteIn(u8 &v);           // next byte the target sends (data in)
     void targetByteOut(u8 v);           // a byte to the target (data out)
     void transferInfo();
+    void commandBytes();                // move FIFO bytes into the CDB
+    void fillFifo();                    // DMA data in: target -> FIFO, counting TC down
+    bool dmaDone;
+    bool fifoFromTarget;                // FIFO holds data-in bytes (DRQ until drained)
     bool loadBlock();
 };
 

@@ -4,15 +4,16 @@ A classic Macintosh emulator that runs **bare metal** on the Raspberry Pi
 using the [Circle](https://github.com/rsta2/circle) C++ environment. There is
 no Linux underneath: the Pi boots straight into the Mac.
 
-Two models are emulated:
+Three models are emulated:
 
 - **Macintosh Plus** (and 512Ke, 512K, 128K): black and white, 68000.
 - **Macintosh II**: colour, 68020 + 68881 FPU, ADB, Apple Sound Chip and a
-  NuBus colour video card. **Not yet tested with a real Mac II ROM; see
-  [Status](#status-and-limitations).**
-
-The 68030/68040 CPUs and FPU needed for later models (up to the Quadras) are
-already in the core. The Quadra machine itself is still to come.
+  NuBus colour video card. Not yet tested with a real Mac II ROM.
+- **Quadra 800** (one ROM covers the Quadra 610/650/800 and Centris
+  610/650): 68040 with MMU and FPU, built-in DAFB colour video, 53C96 SCSI,
+  Enhanced ASC. With a real Quadra 650 ROM it plays the startup chime and
+  reaches the disk prompt, reading SCSI disks. Booting System software is
+  the next step to test.
 
 ## Features
 
@@ -27,6 +28,15 @@ already in the core. The Quadra machine itself is still to come.
   transcendental functions, in every data format (also packed decimal). It
   computes in `long double`, which is IEEE quad precision on the 64-bit Pi
   kernels, a superset of the 68881's 80-bit extended format.
+
+**Quadra 800 / 650 / 610 (colour, 68040)**
+- 68040 with its MMU and FPU at 33 MHz.
+- DAFB built-in video: 640×480 and 800×600 at 1/2/4/8 bits and millions of
+  colours (the ROM's own driver picks the mode; the monitor reports as VGA).
+- NCR 53C96 SCSI with pseudo-DMA, up to seven disks.
+- ADB keyboard and mouse, Enhanced ASC sound, clock and PRAM, soft power off.
+- Follows QEMU's Quadra 800 model (GLUE interrupt routing, djMEMC, IOSB,
+  VIA quirks), which boots Mac OS 7.1–8.1.
 
 **Macintosh II (colour)**
 - 24-bit and 32-bit addressing (the Mac II HMMU), ROM overlay, NuBus slots
@@ -94,8 +104,10 @@ already in the core. The Quadra machine itself is still to come.
   it `mac.rom`. The ROM's size picks the model, or set `machine=plus|ii`:
   - Mac Plus: 128 KB, checksum `4D1F8172` or `4D1EEEE1`.
   - Mac II: 256 KB, checksum `97851DB6` or `9779D2C4`.
-  - The later 256 KB "universal" ROM (IIx, IIcx, SE/30) and 512 KB/1 MB ROMs
-    (IIci, Quadra) need machines that are not emulated yet.
+  - Quadra 610/650/800, Centris 610/650: 1 MB, checksum `F1ACAD13`.
+    Give it 8 MB of RAM or more (`ram=32768` is a good start).
+  - The 256 KB "universal" ROM (IIx, IIcx, SE/30) and other 512 KB/1 MB ROMs
+    (IIci, IIfx, Quadra 700/900/950) need machines that are not emulated yet.
 - System software disk images. Apple distributed System 6 and earlier for free.
 
 ## Setting up the SD card
@@ -199,6 +211,16 @@ sdcard/        files that go on the SD card
 
 ## Status and limitations
 
+What has been verified for the Quadra:
+- With the Quadra 610/650/800 ROM (`F1ACAD13`) on the host build and in the
+  Pi 3 kernel under QEMU, the ROM plays the startup chime, sizes RAM, scans
+  NuBus, turns on the 68040 MMU and shows the desktop with the disk prompt.
+  With a SCSI disk attached it selects the disk and reads it through the
+  53C96's pseudo-DMA. Booting System software has not been tried yet (no
+  bootable image was available).
+- `mmutest` covers the 68040 MMU's table walks, faults, transparent
+  translation and the translation cache.
+
 What has been verified for the Mac II and the 68020+/FPU:
 - 216 hand-written 68020/68030/68040 and FPU cases (`tests/cpu020_cases.h`).
   Their expected values come from the Motorola manuals and are generated with
@@ -234,8 +256,11 @@ What has **not** been verified:
   normally needs its `--qemu` option for that).
 
 Not emulated yet:
-- The 68030/68040 MMUs, and with them the IIx/IIcx/SE/30/IIci/Quadra
-  machines.
+- The 68030 MMU, and with it the IIx/IIcx/SE/30/IIci.
+- Floppies on the Quadra beyond the SWIM's IWM mode (no 1.44 MB MFM disks).
+- Ethernet and serial ports (the chips are stubbed).
+- Restartable access faults: a faulting instruction completes before the
+  exception, so virtual memory should stay off.
 - Video modes with thousands or millions of colours.
 - 68000 address errors.
 - The serial ports: no modem, printer or LocalTalk. The SCC is modelled only

@@ -7,6 +7,7 @@ Quadra::Quadra()
       asc(Asc::Enhanced), adb(via1), dafb(Dafb::VGA), via1Host(*this), via2Host(*this)
 {
     ioLog = 0;
+    stepHook = 0;
     ioLogCtx = 0;
     rom = 0; ram = 0;
     romMask = ramSize = 0;
@@ -268,6 +269,7 @@ void Quadra::runFrame()
     int sample = 0;
     // VIA E clock: 783360 Hz from a 33.33 MHz CPU clock, kept as a fraction.
     while (cpu.totalCycles < end) {
+        if (stepHook) { cpu.instPC = cpu.pc; stepHook(); }
         u32 c = (u32)cpu.step();
         viaFrac += c * 783360u;
         if (viaFrac >= (u32)kCpuHz) {

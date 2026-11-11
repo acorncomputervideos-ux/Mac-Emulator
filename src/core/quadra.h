@@ -72,6 +72,7 @@ public:
 
     // Optional log of accesses that hit no device (for bring-up).
     void (*ioLog)(void *ctx, const char *what, u32 addr, u32 value);
+    void (*stepHook)();                 // optional: called before every instruction
     void *ioLogCtx;
 
     M68K cpu;
