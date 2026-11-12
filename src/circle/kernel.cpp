@@ -28,6 +28,7 @@ typedef ::u64 hostu64;
 #define WPA_USER_CONFIG	DRIVE "/wpa_supplicant.conf"	// or one of your own
 #define CONFIG_FILE	DRIVE "/macemu.cfg"
 #define PRAM_FILE	DRIVE "/macemu.pram"
+#define NETADDR_FILE	DRIVE "/macemu-net.dat"		// the last IP address, for the Mac's Ethernet
 #define SHOT_DIR	DRIVE "/screenshots"
 
 static const char FromKernel[] = "macemu";
@@ -109,7 +110,8 @@ CKernel::CKernel (void)
 	m_bWrongPassword (FALSE),
 	m_nLogBytes (0),
 	m_bNetRunning (FALSE),
-	m_nNetTicks (0)
+	m_nNetTicks (0),
+	m_pEther (0)
 {
 	s_pThis = this;
 
@@ -516,6 +518,38 @@ void CKernel::LoadPRAM (void)
 	m_pMachine->clockChip ().pramDirty = false;
 }
 
+// The Mac's own Ethernet (the Quadra's), carried over the Pi's network.
+void CKernel::StartMacEthernet (void)
+{
+	if (m_Config.macEthernet == 0 || strEqNoCase (m_Config.network, "off"))
+	{
+		return;
+	}
+	m_pEther = new CEtherTunnel;
+	if (m_pEther == 0)
+	{
+		return;
+	}
+	if (!m_pMachine->attachEthernet (m_pEther))
+	{
+		delete m_pEther;		// this model has no Ethernet
+		m_pEther = 0;
+		return;
+	}
+
+	FIL File;
+	if (f_open (&File, NETADDR_FILE, FA_READ | FA_OPEN_EXISTING) == FR_OK)
+	{
+		u8 IP[4];
+		UINT nRead;
+		if (f_read (&File, IP, sizeof IP, &nRead) == FR_OK && nRead == sizeof IP)
+		{
+			m_pEther->SetLastIP (IP);
+		}
+		f_close (&File);
+	}
+}
+
 void CKernel::SavePRAM (void)
 {
 	if (!m_pMachine->clockChip ().pramDirty)
@@ -663,6 +697,7 @@ TShutdownMode CKernel::Run (void)
 	m_pMachine->clockChip ().seconds = m_Config.clockSeconds (__DATE__, __TIME__);
 	LoadPRAM ();
 	AttachDisks ();
+	StartMacEthernet ();
 
 	m_pOsd = new Osd (m_Config, *this);
 	StartNetwork ();
@@ -941,6 +976,13 @@ void CKernel::BootLog (boolean bForce)
 			strAppend (Line, CWPASupplicant::IsConnected () ? ",wpa" : ",nowpa", sizeof Line);
 		}
 		strAppend (Line, m_bNetRunning ? " ip=yes" : " ip=no", sizeof Line);
+		if (m_pEther != 0 && m_pEther->Running ())
+		{
+			strAppend (Line, " eth=", sizeof Line);	// the Mac's frames out/in
+			appendUint (Line, m_pEther->Sent (), sizeof Line);
+			strAppend (Line, "/", sizeof Line);
+			appendUint (Line, m_pEther->Received (), sizeof Line);
+		}
 		m_Logger.Write (FromKernel, LogNotice, "%s", Line);
 	}
 
@@ -1369,12 +1411,33 @@ void CKernel::StartNetwork (void)
 	m_bWiFiPending = TRUE;
 }
 
+// The network stack, with the address from the router (DHCP) or, with
+// ip_address set, a fixed one: for a Pi cabled straight to another, say.
+void CKernel::NewNetSubSystem (boolean bWiFi)
+{
+	static u8 IP[4], Mask[4] = {255, 255, 255, 0}, Gateway[4];
+	const u8 *pIP = 0, *pMask = 0, *pGateway = 0;
+	if (macemu::parseIPv4 (m_Config.ipAddress, IP))
+	{
+		pIP = IP;
+		macemu::parseIPv4 (m_Config.ipNetmask, Mask);
+		pMask = Mask;
+		if (macemu::parseIPv4 (m_Config.ipGateway, Gateway))
+		{
+			pGateway = Gateway;
+		}
+		m_Logger.Write (FromKernel, LogNotice, "Fixed IP address %s", m_Config.ipAddress);
+	}
+	m_pNet = new CNetSubSystem (pIP, pMask, pGateway, pGateway, "macemu",
+				    bWiFi ? NetDeviceTypeWLAN : NetDeviceTypeEthernet);
+}
+
 void CKernel::StartEthernet (void)
 {
 	strCopy (m_NetLine[0], "Ethernet: waiting for a connection...", sizeof m_NetLine[0]);
 	strCopy (m_NetLine[1], "Plug in a network cable.", sizeof m_NetLine[1]);
 
-	m_pNet = new CNetSubSystem (0, 0, 0, 0, "macemu");
+	NewNetSubSystem (FALSE);
 	if (m_pNet == 0 || !m_pNet->Initialize (FALSE))
 	{
 		m_Logger.Write (FromKernel, LogWarning, "No Ethernet");
@@ -1431,7 +1494,7 @@ void CKernel::StartWiFi (void)
 		return;
 	}
 
-	m_pNet = new CNetSubSystem (0, 0, 0, 0, "macemu", NetDeviceTypeWLAN);
+	NewNetSubSystem (TRUE);
 	if (m_pNet == 0 || !m_pNet->Initialize (FALSE))
 	{
 		strCopy (m_NetLine[0], "Wi-Fi: cannot start the network", sizeof m_NetLine[0]);
@@ -1503,6 +1566,10 @@ void CKernel::UpdateNetwork (void)
 	}
 
 	m_Scheduler.Yield ();
+	if (m_pEther != 0)
+	{
+		m_pEther->Update ();
+	}
 
 	if (m_pWebServer != 0)
 	{
@@ -1563,6 +1630,32 @@ void CKernel::UpdateNetwork (void)
 					       : "(cable) or http://macemu.local/ in a browser", sizeof m_NetLine[1]);
 		m_Logger.Write (FromKernel, LogNotice, "Web file manager at http://%s/",
 				(const char *) IPString);
+
+		if (m_pEther != 0)
+		{
+			if (m_pEther->Start (m_pNet, (u16) m_Config.macEthernet, m_Config.macEthernetPeer))
+			{
+				m_Logger.Write (FromKernel, LogNotice, "Mac Ethernet: UDP port %d",
+						m_Config.macEthernet);
+			}
+			// Remember the address: next time the Mac may ask for its
+			// Ethernet address before the network is up.
+			u8 IP[4], Old[4] = {0, 0, 0, 0};
+			m_pNet->GetConfig ()->GetIPAddress ()->CopyTo (IP);
+			FIL File;
+			UINT nDone = 0;
+			if (f_open (&File, NETADDR_FILE, FA_READ | FA_OPEN_EXISTING) == FR_OK)
+			{
+				f_read (&File, Old, sizeof Old, &nDone);
+				f_close (&File);
+			}
+			if (memcmp (IP, Old, sizeof IP) != 0
+			    && f_open (&File, NETADDR_FILE, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK)
+			{
+				f_write (&File, IP, sizeof IP, &nDone);
+				f_close (&File);
+			}
+		}
 	}
 
 	if (!m_bNetRunning && m_bWiFi && m_pWLAN != 0)
@@ -1599,6 +1692,16 @@ void CKernel::UpdateNetwork (void)
 	{
 		const char *pActivity = m_pWebServer->Activity ();
 		strCopy (m_NetLine[2], pActivity[0] ? pActivity : "Idle.", sizeof m_NetLine[2]);
+		if (!pActivity[0] && m_pEther != 0 && m_pEther->Running ()
+		    && (m_pEther->Sent () | m_pEther->Received ()) != 0)
+		{
+			char *p = m_NetLine[2];
+			strCopy (p, "Idle.  Mac Ethernet: ", sizeof m_NetLine[2]);
+			appendUint (p, m_pEther->Sent (), sizeof m_NetLine[2]);
+			strAppend (p, " out, ", sizeof m_NetLine[2]);
+			appendUint (p, m_pEther->Received (), sizeof m_NetLine[2]);
+			strAppend (p, " in", sizeof m_NetLine[2]);
+		}
 	}
 
 	m_pOsd->refresh ();
@@ -1614,6 +1717,10 @@ void CKernel::WaitUntil (hostu64 nUntil)
 		if (m_pNet != 0)
 		{
 			m_Scheduler.Yield ();
+			if (m_pEther != 0)
+			{
+				m_pEther->Update ();
+			}
 		}
 	}
 }

@@ -11,6 +11,7 @@ namespace macemu {
 class Iwm;
 class Scsi;
 class Rtc;
+class EtherLink;
 
 struct VideoFrame {
     int width, height;
@@ -52,6 +53,9 @@ public:
     virtual u32 diskActivity() const = 0;
     virtual bool poweredOff() const { return false; }  // the Mac shut itself down
     virtual u32 debugPC() const { return 0; }          // for logs
+    // Built-in Ethernet: frames go to and from `link`.  False if this model
+    // has none.
+    virtual bool attachEthernet(EtherLink *link) { (void)link; return false; }
 };
 
 } // namespace macemu

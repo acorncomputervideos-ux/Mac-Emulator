@@ -8,6 +8,7 @@
 #include "../src/core/keys.h"
 #include "../src/core/esp.h"
 #include "../src/core/iwm.h"
+#include "../src/core/sonic.h"
 
 using namespace macemu;
 
@@ -715,8 +716,131 @@ static void testMouseAndSound()
     CHECK(r.m.soundBuffer()[0] == 0 && r.m.soundBuffer()[1] == 0);
 }
 
+
+// ------------------------------------------------------------ SONIC Ethernet
+
+struct TestLink : EtherLink {
+    std::vector<std::vector<u8>> sent, waiting;
+    void etherAddress(u8 mac[6]) override { const u8 a[6] = {0x08, 0x00, 0x07, 0x01, 0x02, 0x03}; memcpy(mac, a, 6); }
+    void etherSend(const u8 *f, u32 n) override { sent.emplace_back(f, f + n); }
+    u32 etherReceive(u8 *f) override {
+        if (waiting.empty()) return 0;
+        u32 n = (u32)waiting[0].size();
+        memcpy(f, waiting[0].data(), n);
+        waiting.erase(waiting.begin());
+        return n;
+    }
+};
+
+// The way the Quadra's driver works the chip: 32-bit descriptors in RAM.
+static void testSonic()
+{
+    std::vector<u8> ram(0x10000);
+    auto put = [&](u32 base, int i, u16 v) { putBe32(&ram[base + 4 * i], v); };
+    auto get = [&](u32 base, int i) { return (u16)be32(&ram[base + 4 * i]); };
+    TestLink link;
+    Sonic s;
+    s.attachMemory(ram.data(), (u32)ram.size());
+    s.attachLink(&link);
+
+    // The address PROM: bit-reversed bytes and a check byte.
+    u8 p[8];
+    for (int i = 0; i < 8; i++) p[i] = s.prom((u32)i);
+    CHECK(p[0] == 0x10 && p[1] == 0x00 && p[2] == 0xE0 && p[3] == 0x80 && p[4] == 0x40 && p[5] == 0xC0);
+    u8 x = 0;
+    for (int i = 0; i < 8; i++) x ^= p[i];
+    CHECK(x == 0xFF);
+
+    CHECK(s.read(Sonic::CR) & Sonic::CR_RST);
+    s.write(Sonic::DCR, Sonic::DCR_DW);
+    s.write(Sonic::CR, 0);                              // out of reset
+    CHECK(!(s.read(Sonic::CR) & Sonic::CR_RST));
+    s.write(Sonic::RCR, Sonic::RCR_BRD);
+    s.write(Sonic::IMR, 0x7FFF);
+
+    // CAM entry 0 = our address.
+    put(0x1000, 0, 0); put(0x1000, 1, 0x0008); put(0x1000, 2, 0x0107); put(0x1000, 3, 0x0302);
+    put(0x1000, 4, 0x0001);                             // CAM enable
+    s.write(Sonic::URRA, 0); s.write(Sonic::CDP, 0x1000); s.write(Sonic::CDC, 1);
+    s.write(Sonic::CR, Sonic::CR_LCAM);
+    CHECK(!(s.read(Sonic::CR) & Sonic::CR_LCAM));
+    CHECK(s.read(Sonic::ISR) & Sonic::ISR_LCD);
+    CHECK(s.read(Sonic::CE) == 1);
+    s.write(Sonic::ISR, 0xFFFF);
+    CHECK(s.read(Sonic::ISR) == 0 && !s.irq());
+
+    // Two receive buffers, two receive descriptors.
+    put(0x2000, 0, 0x8000); put(0x2000, 1, 0); put(0x2000, 2, 0x0400); put(0x2000, 3, 0);
+    put(0x2010, 0, 0x9000); put(0x2010, 1, 0); put(0x2010, 2, 0x0400); put(0x2010, 3, 0);
+    s.write(Sonic::RSA, 0x2000); s.write(Sonic::REA, 0x2040);
+    s.write(Sonic::RRP, 0x2000); s.write(Sonic::RWP, 0x2020);
+    s.write(Sonic::CR, Sonic::CR_RRRA);
+    CHECK(s.read(Sonic::CRBA0) == 0x8000 && s.read(Sonic::RRP) == 0x2010);
+    put(0x3000, 5, 0x301C); put(0x3000, 6, 1);
+    put(0x301C, 5, 0x0001); put(0x301C, 6, 1);
+    s.write(Sonic::URDA, 0); s.write(Sonic::CRDA, 0x3000);
+    s.write(Sonic::CR, Sonic::CR_RXEN);
+    CHECK(s.receiving());
+
+    std::vector<u8> bc(42, 0x55), other(42, 0x66), mine(100, 0x77), group(42, 0x88);
+    memset(bc.data(), 0xFF, 6);
+    const u8 me[6] = {0x08, 0x00, 0x07, 0x01, 0x02, 0x03}, them[6] = {0x08, 0x00, 0x07, 0x09, 0x09, 0x09};
+    memcpy(other.data(), them, 6);
+    memcpy(mine.data(), me, 6);
+    group[0] = 0x09; group[1] = 0x00; group[2] = 0x07; group[3] = group[4] = group[5] = 0xFF;
+    link.waiting = {other, group, bc, mine};
+    s.poll();
+    CHECK(link.waiting.empty());
+    CHECK(s.framesReceived == 2);                       // not the others' or the multicast
+    CHECK(get(0x3000, 0) == (Sonic::RCR_PRX | Sonic::RCR_BC | Sonic::RCR_BRD | Sonic::RCR_CRS));
+    CHECK(get(0x3000, 1) == 64);                        // padded to 60, plus the FCS
+    CHECK(get(0x3000, 2) == 0x8000 && get(0x3000, 6) == 0);
+    CHECK(!memcmp(&ram[0x8000], bc.data(), 42) && ram[0x8000 + 42] == 0);
+    CHECK(get(0x301C, 1) == 104 && get(0x301C, 2) == 0x8040);
+    CHECK(!(get(0x301C, 0) & Sonic::RCR_BC));
+    CHECK(!memcmp(&ram[0x8040], mine.data(), 100));
+    // The FCS, low byte first, makes the CRC of frame + FCS the residue.
+    u32 c = 0xFFFFFFFFu;
+    for (u32 i = 0; i < 104; i++) { c ^= ram[0x8040 + i]; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1))); }
+    CHECK(c == 0xDEBB20E3u);
+    CHECK(s.read(Sonic::ISR) & Sonic::ISR_PKTRX);
+    CHECK(s.read(Sonic::ISR) & Sonic::ISR_RDE);         // the second was the last descriptor
+    CHECK(s.irq());
+    s.write(Sonic::ISR, 0xFFFF);
+    CHECK(!s.irq());
+
+    // Out of descriptors: dropped until the driver links in another.
+    CHECK(!s.receive(bc.data(), 42));
+    put(0x3038, 5, 0x0001); put(0x3038, 6, 1);
+    put(0x301C, 5, 0x3038);
+    CHECK(s.receive(bc.data(), 42));
+    CHECK(get(0x301C, 6) == 0 && get(0x3038, 1) == 64);
+
+    // Transmit: two fragments, then the end of the list.
+    std::vector<u8> a(14, 0x11), b(50, 0x22);
+    memcpy(&ram[0x5000], a.data(), 14);
+    memcpy(&ram[0x5100], b.data(), 50);
+    put(0x4000, 0, 0); put(0x4000, 1, 0); put(0x4000, 2, 64); put(0x4000, 3, 2);
+    put(0x4000, 4, 0x5000); put(0x4000, 5, 0); put(0x4000, 6, 14);
+    put(0x4000, 7, 0x5100); put(0x4000, 8, 0); put(0x4000, 9, 50);
+    put(0x4000, 10, 0x0001);
+    s.write(Sonic::UTDA, 0); s.write(Sonic::CTDA, 0x4000);
+    s.write(Sonic::CR, Sonic::CR_TXP);
+    CHECK(link.sent.size() == 1 && link.sent[0].size() == 64);
+    CHECK(!memcmp(link.sent[0].data(), a.data(), 14) && !memcmp(link.sent[0].data() + 14, b.data(), 50));
+    CHECK(get(0x4000, 0) & Sonic::TCR_PTX);
+    CHECK(!(s.read(Sonic::CR) & Sonic::CR_TXP));
+    CHECK(s.read(Sonic::ISR) & Sonic::ISR_TXDN);
+
+    // A reset forgets the address, so it is asked again.
+    s.reset();
+    CHECK(s.read(Sonic::CR) & Sonic::CR_RST);
+    CHECK(s.prom(0) == 0x10);
+}
+
 int main()
 {
+    testSonic();
     testSwimMfm();
     testCdrom();
     testEspUnalignedWrite();

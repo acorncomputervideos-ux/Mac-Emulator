@@ -121,6 +121,33 @@ Three models are emulated:
 - *Connection* chooses Automatic (Wi-Fi when a Wi-Fi network is set up,
   otherwise the cable), Wi-Fi, Ethernet or Off. One of them is used at a time.
 - Nothing waits for the network: it comes up while the Mac starts.
+- No router? `ip_address=` (with `ip_netmask=`, `ip_gateway=`) in
+  `macemu.cfg` gives the Pi a fixed address instead of asking DHCP: for two
+  Pis joined by one cable, say.
+
+**Ethernet for the Mac (Quadra)**
+- The Quadra's built-in SONIC Ethernet chip is emulated: descriptors and
+  buffers in the Mac's memory, the address filter (CAM), interrupts through
+  VIA2, and the address PROM. The Network control panel offers
+  *EtherTalk Built In*.
+- Its frames travel over the Pi's own network (cable or Wi-Fi) inside UDP
+  datagrams on port 6066, the same as Basilisk II's and SheepShaver's "UDP
+  tunnel". Macs on Pis on the same network, and Basilisk II or SheepShaver
+  with `udptunnel true`, see each other over AppleTalk: file sharing,
+  printers and network games through the Chooser.
+- To use it, choose *EtherTalk Built In* in the Mac's Network control panel
+  (System 7.1 includes EtherTalk). The Mac's Ethernet address is `B2`
+  followed by the Pi's IP address, as Basilisk II's tunnel expects.
+- `mac_ethernet=off` turns it off and `mac_ethernet=6067` picks another
+  port. `mac_ethernet_peer=a.b.c.d` also sends broadcasts to one host
+  that they don't reach (on another subnet, or across a VPN).
+- Checked with two emulated Macs running System 7.1: they find each other
+  with AARP, ZIP and NBP, and the second one defends its AppleTalk address
+  against the first. Not yet checked on real Pi hardware.
+- Not internet access: TCP/IP for the Mac (MacTCP, Open Transport) would
+  need a router between the tunnel and the Pi's network, which is not
+  written yet. Frames larger than 1472 bytes are dropped (AppleTalk's are
+  under 620).
 
 **1.44 MB floppies (Quadra)**
 - The Quadra's drives are SuperDrives (FDHD): 1.44 MB MFM disks as well as
@@ -340,9 +367,8 @@ What has **not** been verified:
 
 Not emulated yet:
 - The 68030 MMU, and with it the IIx/IIcx/SE/30/IIci.
-- Ethernet for the Mac itself (the Pi's Ethernet is used for the web file
-  manager). The serial ports' SCC works, but nothing is connected to it:
-  AppleTalk finds no network.
+- The serial ports' SCC works, but nothing is connected to it: LocalTalk
+  finds no network (use EtherTalk on the Quadra).
 - Restartable access faults: a faulting instruction completes before the
   exception, so virtual memory should stay off.
 - Video modes with thousands or millions of colours.

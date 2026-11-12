@@ -21,6 +21,7 @@ void Config::setDefaults()
     mouseSpeed = 4;
     strCopy(network, "auto", sizeof network);
     strCopy(wifiCountry, "GB", sizeof wifiCountry);
+    macEthernet = 6066;
     strCopy(keyboard, "uk", sizeof keyboard);
 }
 
@@ -47,6 +48,7 @@ void Config::sanitize()
     if (strEq(network, "0")) strCopy(network, "off", sizeof network);
     if (!strEqNoCase(network, "ethernet") && !strEqNoCase(network, "wifi") && !strEqNoCase(network, "off"))
         strCopy(network, "auto", sizeof network);
+    if (macEthernet < 0 || macEthernet > 65535) macEthernet = 6066;
     if (strLen(wifiCountry) != 2) strCopy(wifiCountry, "GB", sizeof wifiCountry);
     for (int i = 0; i < 2; i++) if (wifiCountry[i] >= 'a' && wifiCountry[i] <= 'z') wifiCountry[i] = (char)(wifiCountry[i] - 32);
     if (!strEqNoCase(keyboard, "us")) strCopy(keyboard, "uk", sizeof keyboard);
@@ -124,6 +126,12 @@ void Config::parse(const char *text, u32 len)
         else if (strEqNoCase(p, "wifi_name")) strCopy(wifiSsid, val, sizeof wifiSsid);
         else if (strEqNoCase(p, "wifi_password")) strCopy(wifiPassword, val, sizeof wifiPassword);
         else if (strEqNoCase(p, "wifi_country")) strCopy(wifiCountry, val, sizeof wifiCountry);
+        else if (strEqNoCase(p, "mac_ethernet"))
+            macEthernet = strEqNoCase(val, "off") ? 0 : strEqNoCase(val, "on") ? 6066 : toInt(val);
+        else if (strEqNoCase(p, "ip_address")) strCopy(ipAddress, val, sizeof ipAddress);
+        else if (strEqNoCase(p, "ip_netmask")) strCopy(ipNetmask, val, sizeof ipNetmask);
+        else if (strEqNoCase(p, "ip_gateway")) strCopy(ipGateway, val, sizeof ipGateway);
+        else if (strEqNoCase(p, "mac_ethernet_peer")) strCopy(macEthernetPeer, val, sizeof macEthernetPeer);
         else if (strEqNoCase(p, "keyboard")) strCopy(keyboard, val, sizeof keyboard);
         else if (strEqNoCase(p, "date")) strCopy(date, val, sizeof date);
     }
@@ -187,6 +195,11 @@ u32 Config::serialize(char *out, u32 max) const
     line(out, max, "wifi_name", wifiSsid);
     line(out, max, "wifi_password", wifiPassword);
     line(out, max, "wifi_country", wifiCountry);
+    line(out, max, "ip_address", ipAddress);
+    line(out, max, "ip_netmask", ipNetmask);
+    line(out, max, "ip_gateway", ipGateway);
+    if (macEthernet) lineInt(out, max, "mac_ethernet", macEthernet); else line(out, max, "mac_ethernet", "off");
+    line(out, max, "mac_ethernet_peer", macEthernetPeer);
     line(out, max, "keyboard", keyboard);
     line(out, max, "date", date);
     return strLen(out);

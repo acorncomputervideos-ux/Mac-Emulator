@@ -30,6 +30,7 @@
 
 #include "storage.h"
 #include "webserver.h"
+#include "ethertunnel.h"
 #include "usbpowerkey.h"
 #include "../core/mac.h"
 #include "../core/macii.h"
@@ -119,6 +120,8 @@ private:
 	void AttachHardDisks (void);
 	void LoadPRAM (void);
 	void SavePRAM (void);
+	void StartMacEthernet (void);
+	void NewNetSubSystem (boolean bWiFi);
 	void ApplyPalette (void);
 	void Fatal (const char *pLine1, const char *pLine2 = "", const char *pLine3 = "");
 
@@ -281,6 +284,7 @@ private:
 	unsigned		m_nLogBytes;		// written to macemu.log so far
 	boolean			m_bNetRunning;
 	unsigned		m_nNetTicks;
+	CEtherTunnel		*m_pEther;		// the Mac's Ethernet, or 0
 
 	static CKernel *s_pThis;
 };

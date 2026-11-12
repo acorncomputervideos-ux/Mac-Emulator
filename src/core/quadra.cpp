@@ -14,7 +14,8 @@ Quadra::Quadra(int monitor)
     romMask = ramSize = 0;
     powerOff = via2PowerDriven = auxMode = false;
     via1Irq = via2Irq = sccIrq = false;
-    videoIrqSeen = espIrqSeen = ascIrqSeen = false;
+    videoIrqSeen = espIrqSeen = ascIrqSeen = sonicIrqSeen = false;
+    nextNetPoll = 0;
     nmiFrames = 0;
     viaFrac = 0;
     frameStart = 0;
@@ -36,6 +37,7 @@ bool Quadra::init(const u8 *romData, u32 romSize, u8 *ramData, u32 ramBytes)
     if (ramBytes < 0x400000 || ramBytes > 0x10000000 || (ramBytes & 0xFFFFF)) return false;
     rom = romData; romMask = romSize - 1;
     ram = ramData; ramSize = ramBytes;
+    sonic.attachMemory(ram, ramSize);
     reset();
     return true;
 }
@@ -50,6 +52,8 @@ void Quadra::resetLine()
     asc.reset();
     adb.reset();
     scc.reset();
+    sonic.reset();
+    sonicIrqSeen = false;
     memFill(djmemc, 0, sizeof djmemc);
     memFill(iosb, 0, sizeof iosb);
 }
@@ -81,6 +85,16 @@ void Quadra::updateIrq()
     if (via1Irq) level = auxMode ? (level > 1 ? level : 1) : 6 > level ? 6 : level;
     if (nmiFrames > 0) level = 7;
     cpu.setIRQ(level);
+}
+
+// VIA2 port A: the NuBus slot interrupts, active low.  Bit 6 is the
+// built-in video, bit 0 (slot 9) the built-in Ethernet.
+u8 Quadra::Via2Host::viaInputA()
+{
+    u8 v = 0x7F;
+    if (m.dafb.irq()) v &= (u8)~0x40;
+    if (m.sonic.irq()) v &= (u8)~0x01;
+    return v;
 }
 
 u8 Quadra::Via1Host::viaInputB()
@@ -186,7 +200,8 @@ u32 Quadra::io2(u32 off, bool write, u32 v)
 
 u32 Quadra::io2(u32 off, int size, bool write, u32 v)
 {
-    if (size > 1 && !((off >= 0x0E000 && off < 0x10000) || (off >= 0x18000 && off < 0x1A000))) {
+    if (size > 1 && !((off >= 0x0E000 && off < 0x10000) || (off >= 0x18000 && off < 0x1A000) ||
+                      (off >= 0x0A000 && off < 0x0A100))) {
         u32 r = 0;
         for (int i = 0; i < size; i++) {
             u32 b = io(off + (u32)i, 1, write, write ? (v >> (8 * (size - 1 - i))) & 0xFF : 0);
@@ -209,17 +224,23 @@ u32 Quadra::io2(u32 off, int size, bool write, u32 v)
         if (reg == 13) r = (u8)((r & ~0x01) | (esp.drq() ? 0x01 : 0));   // SCSI DRQ is live (CA2)
         return r;
     }
-    if (off >= 0x08000 && off < 0x09000) {              // Ethernet address PROM
-        static const u8 prom[8] = {0x10, 0x00, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00};
-        u8 b = off < 0x8008 ? prom[off - 0x8000] : 0;
-        if ((off & 0xFFF) == 7) {
-            u8 sum = 0;
-            for (int i = 0; i < 6; i++) sum ^= prom[i];
-            b = (u8)(0xFF - sum);
+    if (off >= 0x08000 && off < 0x09000) return write ? 0 : sonic.prom(off - 0x8000);   // Ethernet address
+    if (off >= 0x0A000 && off < 0x0A100) {              // SONIC: 16-bit registers, 4 bytes apart
+        int reg = (int)((off - 0xA000) >> 2);
+        if (write) {
+            u16 w = (u16)v;
+            if (size == 1) {                            // one half of the register
+                u16 old = sonic.read(reg);
+                w = (off & 1) ? (u16)((old & 0xFF00) | (v & 0xFF)) : (u16)((old & 0x00FF) | ((v & 0xFF) << 8));
+            }
+            sonic.write(reg, w);
+            serviceSonic(false);
+            return 0;
         }
-        return write ? 0 : b;
+        u16 r = sonic.read(reg);
+        if (size == 1) return (off & 2) ? ((off & 1) ? (r & 0xFF) : (r >> 8)) : 0;
+        return r;
     }
-    if (off >= 0x0A000 && off < 0x0A100) return 0;      // SONIC Ethernet: idle
     if ((off >= 0x0C000 && off < 0x0C008) || (off >= 0x0C020 && off < 0x0C040)) {
         int ch = (int)(off >> 1) & 1, data = (int)(off >> 2) & 1;
         if (write) {
@@ -257,6 +278,16 @@ u32 Quadra::io2(u32 off, int size, bool write, u32 v)
         return iwm.read((int)(off >> 9) & 15, cpu.totalCycles / 4);
     }
     return busError(0x50000000 | off, write, v);
+}
+
+// The Ethernet interrupt goes through VIA2's slot interrupt (CA1).  That
+// input is an edge; on the millisecond poll (`again`), a request still
+// standing after its flag was cleared is raised once more, so none is lost.
+void Quadra::serviceSonic(bool again)
+{
+    bool s = sonic.irq();
+    if (s && (!sonicIrqSeen || (again && !via2.pending(Via::IRQ_CA1)))) via2.raise(Via::IRQ_CA1);
+    sonicIrqSeen = s;
 }
 
 // ---------------------------------------------------------------- run loop
@@ -304,6 +335,12 @@ void Quadra::runFrame()
         bool sIrq = asc.irq();                          // sound: VIA2 CB1 in classic mode
         if (sIrq && !ascIrqSeen) via2.raise(Via::IRQ_CB1);
         ascIrqSeen = sIrq;
+        if (cpu.totalCycles >= nextNetPoll) {           // Ethernet, every millisecond
+            nextNetPoll = cpu.totalCycles + kCpuHz / 1000;
+            if (sonic.receiving()) sonic.poll();
+            sonic.tick(5000);                           // its timer runs at 5 MHz
+            serviceSonic(true);
+        }
         bool v = dafb.irq();                            // built-in video: VIA2 CA1
         if (v && !videoIrqSeen) via2.raise(Via::IRQ_CA1);
         videoIrqSeen = v;

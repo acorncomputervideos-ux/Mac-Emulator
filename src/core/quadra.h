@@ -1,8 +1,8 @@
 // Macintosh Quadra 800 (and with the same ROM the Quadra 610/650 and
 // Centris 610/650): 68040 with MMU and FPU at 33 MHz, VIA1/VIA2 with ADB
 // and the RTC, the GLUE interrupt router, djMEMC and IOSB, NCR 53C96 SCSI,
-// SWIM floppy (IWM mode), Enhanced ASC, DAFB built-in video and NuBus
-// slots.  Follows QEMU's q800 machine, which boots Mac OS with this ROM.
+// SWIM floppy, Enhanced ASC, DAFB built-in video, SONIC Ethernet and
+// NuBus slots.  Follows QEMU's q800 machine, which boots Mac OS with this ROM.
 //
 // Physical map:
 //   $00000000  RAM (reads beyond the installed RAM return 0)
@@ -27,6 +27,7 @@
 #include "asc.h"
 #include "dafb.h"
 #include "scc.h"
+#include "sonic.h"
 #include "emulator.h"
 
 namespace macemu {
@@ -64,6 +65,7 @@ public:
     u32 diskActivity() const override { return iwm.activityCounter + esp.activityCounter; }
     bool poweredOff() const override { return powerOff; }
     u32 debugPC() const override { return cpu.pc; }
+    bool attachEthernet(EtherLink *l) override { sonic.attachLink(l); return true; }
 
     // Bus (physical addresses; the MMU translates before these)
     u8 read8(u32 addr) override { return (u8)access(addr, 1, false, 0); }
@@ -94,6 +96,7 @@ public:
     AdbMouse mouse;
     Dafb dafb;
     Scc scc;
+    Sonic sonic;
 
 private:
     struct Via1Host : Via::Host {
@@ -110,7 +113,7 @@ private:
     struct Via2Host : Via::Host {
         Quadra &m;
         explicit Via2Host(Quadra &q) : m(q) {}
-        u8 viaInputA() override { return m.dafb.irq() ? 0x3F : 0x7F; }    // bit 6: built-in video VBL
+        u8 viaInputA() override;                         // slot interrupts, active low
         u8 viaInputB() override { return 0x00; }
         void viaOutputA(u8) override {}
         void viaOutputB(u8 pins) override { if (!(pins & 0x04) && m.via2PowerDriven) m.powerOff = true; }
@@ -127,7 +130,8 @@ private:
     u32 ramSize;
     bool powerOff, via2PowerDriven, auxMode;
     bool via1Irq, via2Irq, sccIrq;
-    bool videoIrqSeen, espIrqSeen, ascIrqSeen;
+    bool videoIrqSeen, espIrqSeen, ascIrqSeen, sonicIrqSeen;
+    u64 nextNetPoll;
     int nmiFrames;
     u32 viaFrac;
     u64 frameStart;
@@ -141,6 +145,7 @@ private:
     u32 io2(u32 off, bool write, u32 value);
     u32 busError(u32 addr, bool write, u32 value);
     void updateIrq();
+    void serviceSonic(bool again);
 };
 
 } // namespace macemu

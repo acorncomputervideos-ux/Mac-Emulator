@@ -39,6 +39,7 @@ public:
     // Half period of the timer 1 square wave on PB7 in VIA clocks, 0 if off.
     u32 squareWaveHalfPeriod() const { return (acr & 0xC0) == 0xC0 ? (u32)t1Latch + 2 : 0; }
     u8 shiftRegister() const { return sr; }
+    bool pending(int bit) const { return (ifr & (1 << bit)) != 0; }
 
 private:
     Host *host;

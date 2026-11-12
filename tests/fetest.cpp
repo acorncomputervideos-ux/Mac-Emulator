@@ -430,6 +430,25 @@ static void testOsd()
     back.parse("network=1\n", 10);
     CHECK(strEq(back.network, "auto"));
 
+    // The Mac's Ethernet and a fixed address.
+    CHECK(back.macEthernet == 6066 && !back.macEthernetPeer[0] && !back.ipAddress[0]);
+    const char *eth = "mac_ethernet=off\nip_address=192.168.0.9\nip_gateway=192.168.0.1\nmac_ethernet_peer=10.1.2.3\n";
+    back.parse(eth, (u32)strlen(eth));
+    CHECK(back.macEthernet == 0 && strEq(back.ipAddress, "192.168.0.9") && strEq(back.macEthernetPeer, "10.1.2.3"));
+    len = back.serialize(text, sizeof text);
+    Config again;
+    again.setDefaults();
+    again.parse(text, len);
+    CHECK(again.macEthernet == 0 && strEq(again.ipGateway, "192.168.0.1") && strEq(again.macEthernetPeer, "10.1.2.3"));
+    again.parse("mac_ethernet=on\n", 16);
+    CHECK(again.macEthernet == 6066);
+    again.parse("mac_ethernet=6100\n", 18);
+    CHECK(again.macEthernet == 6100);
+    u8 ip[4] = {1, 1, 1, 1};
+    CHECK(parseIPv4("192.168.0.9", ip) && ip[0] == 192 && ip[1] == 168 && ip[2] == 0 && ip[3] == 9);
+    CHECK(!parseIPv4("192.168.0", ip) && !parseIPv4("256.1.1.1", ip) && !parseIPv4("1.2.3.4x", ip) && !parseIPv4("", ip));
+    CHECK(ip[3] == 9);                                  // untouched by the failures
+
     // Typing.
     CHECK(usbToAscii(0x04, false, true) == 'a' && usbToAscii(0x04, true, true) == 'A');
     CHECK(usbToAscii(0x1F, true, false) == '@' && usbToAscii(0x1F, true, true) == '"');

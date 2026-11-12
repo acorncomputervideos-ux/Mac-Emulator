@@ -76,6 +76,24 @@ inline u32 macTime(int year, int month, int day, int hour, int minute, int secon
     return (u32)(days * 86400 + hour * 3600 + minute * 60 + second);
 }
 
+// "a.b.c.d" -> four bytes.  False (and `ip` untouched) if it is not one.
+inline bool parseIPv4(const char *p, u8 *ip)
+{
+    u8 out[4];
+    while (*p == ' ') p++;
+    for (int i = 0; i < 4; i++) {
+        u32 v = 0, digits = 0;
+        while (*p >= '0' && *p <= '9' && digits < 4) { v = v * 10 + (u32)(*p++ - '0'); digits++; }
+        if (!digits || v > 255) return false;
+        if (i < 3 && *p++ != '.') return false;
+        out[i] = (u8)v;
+    }
+    while (*p == ' ') p++;
+    if (*p) return false;
+    for (int i = 0; i < 4; i++) ip[i] = out[i];
+    return true;
+}
+
 } // namespace macemu
 
 #endif

@@ -15,6 +15,11 @@
 #include <ctime>
 #include <string>
 #include <vector>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include "../core/mac.h"
 #include "../core/macii.h"
 #include "../core/quadra.h"
@@ -168,6 +173,52 @@ static int asciiToKey(char c, bool &shift)
     return -1;
 }
 
+// ETHER_UDP=port:peer:peerport carries the Mac's Ethernet frames in UDP
+// datagrams to one peer (another host runner, say); ETHER_LOG=1 lists them.
+struct UdpEther : EtherLink {
+    int fd = -1, port = 0;
+    sockaddr_in peer = {};
+    bool log = false;
+    bool open(const char *spec) {
+        char host[64] = {};
+        int peerPort = 0;
+        if (sscanf(spec, "%d:%63[^:]:%d", &port, host, &peerPort) != 3) return false;
+        fd = socket(AF_INET, SOCK_DGRAM, 0);
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        sockaddr_in me = {};
+        me.sin_family = AF_INET; me.sin_port = htons((u16)port); me.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (bind(fd, (sockaddr *)&me, sizeof me) < 0) return false;
+        fcntl(fd, F_SETFL, O_NONBLOCK);
+        peer.sin_family = AF_INET; peer.sin_port = htons((u16)peerPort);
+        inet_pton(AF_INET, host, &peer.sin_addr);
+        log = getenv("ETHER_LOG") != nullptr;
+        if (log) setvbuf(stdout, nullptr, _IOLBF, 0);
+        return true;
+    }
+    static void show(const char *dir, const u8 *f, u32 n) {
+        printf("ether %s %4u  %02X:%02X:%02X:%02X:%02X:%02X <- %02X:%02X:%02X:%02X:%02X:%02X  type %04X",
+               dir, n, f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], be16(f + 12));
+        if (be16(f + 12) <= 1500 && n >= 22)   // 802.2 SNAP (AppleTalk Phase 2)
+            printf("  snap %02X%02X%02X %04X", f[17], f[18], f[19], be16(f + 20));
+        printf("\n");
+    }
+    void etherAddress(u8 mac[6]) override {
+        u8 a[6] = {0x08, 0x00, 0x07, 0x5A, (u8)(port >> 8), (u8)port};
+        memcpy(mac, a, 6);
+    }
+    void etherSend(const u8 *f, u32 n) override {
+        if (log) show("out", f, n);
+        sendto(fd, f, n, 0, (sockaddr *)&peer, sizeof peer);
+    }
+    u32 etherReceive(u8 *f) override {
+        ssize_t n = recv(fd, f, 1514, 0);
+        if (n < 14) return 0;
+        if (log) show("in ", f, (u32)n);
+        return (u32)n;
+    }
+};
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -252,6 +303,10 @@ int main(int argc, char **argv)
         return 1;
     }
     Emulator &mac = *emu;
+    static UdpEther ether;
+    if (const char *spec = getenv("ETHER_UDP")) {
+        if (!ether.open(spec) || !mac.attachEthernet(&ether)) fprintf(stderr, "no Ethernet (%s)\n", spec);
+    }
     printf("%s, %uK RAM\n", mac.modelName(), (unsigned)(ram.size() / 1024));
     u32 sum = 0;
     for (size_t i = 4; i + 1 < romFile.data.size(); i += 2) sum += (u32)((romFile.data[i] << 8) | romFile.data[i + 1]);
@@ -261,6 +316,14 @@ int main(int argc, char **argv)
     struct tm *tm = gmtime(&now);
     mac.clockChip().seconds = (macTime(tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec));
 
+    // PRAM_FILE=path: parameter RAM loaded at start (if the file exists) and saved at the end.
+    const char *pramFile = getenv("PRAM_FILE");
+    if (pramFile) {
+        if (FILE *pf = fopen(pramFile, "rb")) {
+            if (fread(mac.clockChip().pram, 1, 256, pf) != 256) fprintf(stderr, "short PRAM file\n");
+            fclose(pf);
+        }
+    }
     Host host(mac, cfg);
     for (int d = 0; d < 2; d++)
         if (!floppy[d].empty() && !host.insertDisk(d, floppy[d].c_str()))
@@ -318,6 +381,14 @@ int main(int argc, char **argv)
         if (f == lateFrame && !host.insertDisk(0, lateImage.c_str()))
             fprintf(stderr, "cannot insert %s\n", lateImage.c_str());
         mac.runFrame();
+        if (getenv("REALTIME")) {                       // keep to 60.15 frames a second
+            static timespec start;
+            if (f == 0) clock_gettime(CLOCK_MONOTONIC, &start);
+            timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double ahead = (f + 1) / 60.15 - ((now.tv_sec - start.tv_sec) + (now.tv_nsec - start.tv_nsec) * 1e-9);
+            if (ahead > 0) usleep((useconds_t)(ahead * 1e6));
+        }
         if (quad && getenv("IO_FROM") && f == atoi(getenv("IO_FROM"))) { ioLogCount = 0; quad->ioLog = logIo; quad->logAllIo = true; }
         if (quad && getenv("IO_FROM") && f == atoi(getenv("IO_FROM")) + 1) { quad->logAllIo = false; quad->ioLog = nullptr; }
         if (tracePc && f % tracePc == 0 && quad) {
@@ -445,6 +516,11 @@ int main(int argc, char **argv)
             memcpy(h + 24, &rate, 4); v = rate * 2; memcpy(h + 28, &v, 4); memcpy(h + 40, &bytes, 4);
             fwrite(h, 1, 44, w); fwrite(wav.data(), 2, wav.size(), w); fclose(w);
         }
+    }
+    if (quad && getenv("ETHER_UDP"))
+        printf("ethernet: %u frames sent, %u received\n", quad->sonic.framesSent, quad->sonic.framesReceived);
+    if (pramFile) {
+        if (FILE *pf = fopen(pramFile, "wb")) { fwrite(mac.clockChip().pram, 1, 256, pf); fclose(pf); }
     }
     printf("ran %d frames, %llu cycles, PRAM %s%s\n", frames, (unsigned long long)mac.cycles(),
            mac.clockChip().pramDirty ? "modified" : "untouched", mac.poweredOff() ? ", powered off" : "");
