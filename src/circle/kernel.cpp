@@ -1527,6 +1527,12 @@ void CKernel::UpdateNetwork (void)
 			m_pWebServer->RestartDone ();
 		}
 
+		if (const char *pFloppy = m_pWebServer->InsertRequested ())
+		{
+			// A transfer floppy made on the web page: into drive 2.
+			m_pWebServer->InsertDone (insertDisk (1, pFloppy));
+		}
+
 		if (m_pWebServer->RebootRequested ())
 		{
 			// A software update has been installed: start it.

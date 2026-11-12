@@ -13,6 +13,7 @@
 #include <circle/net/netsubsystem.h>
 #include <circle/net/socket.h>
 #include <circle/types.h>
+#include "../core/types.h"
 
 class CWebServerHost
 {
@@ -22,6 +23,7 @@ public:
 	virtual boolean FileInUse (const char *pPath) = 0;	// relative to the card's root
 	virtual const char *DiskDir (void) = 0;
 	virtual const char *Version (void) = 0;			// shown on the page
+	virtual macemu::u32 MacTime (void) = 0;			// now, in the Mac's clock
 };
 
 class CWebServer : public CTask
@@ -39,6 +41,9 @@ public:
 	boolean RestartRequested (void) const	{ return m_bRestartRequest; }
 	void RestartDone (void)			{ m_bRestartRequest = FALSE; }
 	boolean RebootRequested (void) const	{ return m_bRebootRequest; }
+	// A transfer floppy to put in floppy drive 2 (a name in the disk folder), or 0.
+	const char *InsertRequested (void) const	{ return m_InsertName[0] ? m_InsertName : 0; }
+	void InsertDone (boolean bOK)		{ m_bInsertOK = bOK; m_InsertName[0] = '\0'; }
 
 	// What is happening, for the menu: "" when idle.
 	const char *Activity (void) const	{ return m_Activity; }
@@ -60,6 +65,12 @@ private:
 	void SendFile (CSocket *pSocket, const char *pPath);
 	void ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *pPath, boolean bUpdate = FALSE);
 	void Reboot (CSocket *pSocket);
+	void SendHfsFolder (CSocket *pSocket, const char *pImage, const char *pQuery);
+	void SendHfsFile (CSocket *pSocket, const char *pImage, const char *pQuery);
+	void MakeFloppy (CSocket *pSocket, const char *pQuery);
+	void ClearTransfer (void);
+	static boolean QueryValue (const char *pQuery, const char *pKey, char *pOut, unsigned nMax);
+	static boolean LooksLikeDisk (const char *pName, u64 nSize);
 	void MakeFolders (const char *pPath);
 	static boolean Private (const char *pPath);
 	boolean Updatable (const char *pPath) const;
@@ -78,6 +89,7 @@ private:
 	// Page builder
 	void Out (const char *pText);
 	void OutHtml (const char *pText);		// escaped
+	void OutMacName (const char *pText);		// Mac Roman -> UTF-8, escaped
 	void OutUrl (const char *pText);		// percent-encoded
 	void OutNumber (u64 nValue);
 	void OutSize (u64 nBytes);
@@ -89,6 +101,8 @@ private:
 	volatile boolean m_bFlushRequest;
 	volatile boolean m_bRestartRequest;
 	volatile boolean m_bRebootRequest;
+	char m_InsertName[64];
+	volatile boolean m_bInsertOK;
 	char m_Activity[64];
 
 	u8 *m_pBuffer;				// transfer buffer

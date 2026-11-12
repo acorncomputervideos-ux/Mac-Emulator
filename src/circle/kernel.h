@@ -106,6 +106,7 @@ public:
 	boolean FileInUse (const char *pPath) override;
 	const char *DiskDir (void) override		{ return m_Config.diskDir; }
 	const char *Version (void) override		{ return "built " __DATE__ " " __TIME__; }
+	macemu::u32 MacTime (void) override		{ return m_pMachine->clockChip ().seconds; }
 
 private:
 	boolean LoadConfig (void);

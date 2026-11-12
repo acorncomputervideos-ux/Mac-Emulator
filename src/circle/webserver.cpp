@@ -8,6 +8,7 @@
 #include <circle/util.h>
 #include <fatfs/ff.h>
 #include "../frontend/util.h"
+#include "../frontend/hfs.h"
 
 using macemu::strLen; using macemu::strCopy; using macemu::strAppend; using macemu::strEq;
 using macemu::endsWithNoCase; using macemu::appendUint; using macemu::lower;
@@ -30,8 +31,8 @@ static const char PageHead[] =
 "td{padding:5px 6px;border-top:1px solid #eee}td.s{text-align:right;white-space:nowrap;color:#555}"
 "td.a{text-align:right;white-space:nowrap}a{color:#0645ad;text-decoration:none}"
 "button{font-size:14px;padding:4px 10px;margin:2px}.u{color:#a60;font-size:13px}"
-"#drop,#upd{border:2px dashed #999;border-radius:6px;padding:18px;text-align:center;color:#555}"
-"#drop.on,#upd.on{border-color:#06c;background:#eef5ff}progress{width:100%}.n{color:#666;font-size:13px}"
+"#drop,#upd,#tdrop{border:2px dashed #999;border-radius:6px;padding:18px;text-align:center;color:#555}"
+"#drop.on,#upd.on,#tdrop.on{border-color:#06c;background:#eef5ff}progress{width:100%}.n{color:#666;font-size:13px}"
 "</style></head><body><header>Mac Emulator &mdash; SD card</header><main>";
 
 static const char PageUpload[] =
@@ -45,6 +46,11 @@ static const char PageUpload[] =
 "Transfers are fastest while the menu is open, because the Mac is paused.</p></section>";
 
 static const char PageTail[] =
+"<section><h2>Send files to the Mac</h2>"
+"<div id=tdrop>Drop files here, or <input type=file id=tpick multiple></div>"
+"<p class=n>They go on a new 800K floppy in the disks folder, which goes straight into floppy drive 2. "
+"MacBinary files (.bin) keep their icons and resource forks. To get files out of a disk, click [open] next to it.</p>"
+"<div id=tst></div></section>"
 "<section><h2>Mac</h2><button onclick=restart()>Restart the Mac</button>"
 " <span class=n>Saves the disks and starts the Mac again with the disks chosen in the menu.</span></section>"
 "<section><h2>Update the emulator</h2>"
@@ -101,6 +107,18 @@ static const char PageTail[] =
 "p.value=fl.length;st.textContent='Installed. The Pi is restarting; this page will come back in a minute.';"
 "await fetch('/reboot',{method:'POST'});setTimeout(function(){location.reload()},30000)}"
 "catch(x){st.textContent='Update stopped: '+x}}"
+"async function transfer(fl){var st=$('tst');try{"
+"await fetch('/makefloppy?clear=1',{method:'POST'});"
+"for(var i=0;i<fl.length;i++){st.textContent='Sending '+fl[i].name+' ...';"
+"var r=await fetch('/files/transfer/'+encodeURIComponent(fl[i].name),{method:'PUT',body:fl[i]});"
+"if(!r.ok)throw fl[i].name+': '+await r.text()}"
+"st.textContent='Making the floppy ...';var r=await fetch('/makefloppy?insert=2',{method:'POST'});"
+"st.textContent=await r.text();if(r.ok)setTimeout(function(){location.reload()},2500)}"
+"catch(x){st.textContent='Stopped: '+x}}"
+"var td=$('tdrop');$('tpick').onchange=function(){transfer(this.files)};"
+"td.ondragover=function(e){e.preventDefault();td.className='on'};"
+"td.ondragleave=function(){td.className=''};"
+"td.ondrop=function(e){e.preventDefault();td.className='';transfer(e.dataTransfer.files)};"
 "var ud=$('upd');$('updpick').onchange=function(){if(this.files[0])update(this.files[0])};"
 "ud.ondragover=function(e){e.preventDefault();ud.className='on'};"
 "ud.ondragleave=function(){ud.className=''};"
@@ -119,6 +137,7 @@ CWebServer::CWebServer (CNetSubSystem *pNet, const char *pDrive, CWebServerHost 
 	m_bFlushRequest (FALSE),
 	m_bRestartRequest (FALSE),
 	m_bRebootRequest (FALSE),
+	m_bInsertOK (FALSE),
 	m_pBuffer (new u8[BufferSize]),
 	m_pPage (new char[PageSize]),
 	m_nPageLength (0),
@@ -126,6 +145,7 @@ CWebServer::CWebServer (CNetSubSystem *pNet, const char *pDrive, CWebServerHost 
 	m_nBodyStart (0)
 {
 	m_Activity[0] = '\0';
+	m_InsertName[0] = '\0';
 	SetName ("web");
 }
 
@@ -191,6 +211,23 @@ void CWebServer::Serve (CSocket *pSocket)
 	if (strEq (Request.Method, "POST") && strEq (pPath, "reboot"))
 	{
 		Reboot (pSocket);
+		return;
+	}
+
+	// Inside Mac disk images.
+	if (bGet && strncmp (pPath, "hfs/", 4) == 0 && SafePath (pPath + 4) && !Private (pPath + 4))
+	{
+		SendHfsFolder (pSocket, pPath + 4, Request.Query);
+		return;
+	}
+	if (bGet && strncmp (pPath, "hfsget/", 7) == 0 && SafePath (pPath + 7) && !Private (pPath + 7))
+	{
+		SendHfsFile (pSocket, pPath + 7, Request.Query);
+		return;
+	}
+	if (strEq (Request.Method, "POST") && strEq (pPath, "makefloppy"))
+	{
+		MakeFloppy (pSocket, Request.Query);
 		return;
 	}
 
@@ -459,6 +496,12 @@ void CWebServer::ListFolder (const char *pFolder, boolean bDiskDir)
 			if (m_pHost->FileInUse (Name))
 			{
 				Out (" <span class=u>in use</span>");
+			}
+			if (LooksLikeDisk (Info.fname, Info.fsize))
+			{
+				Out (" <a class=n href='/hfs/");
+				OutUrl (Name);
+				Out ("'>[open]</a>");
 			}
 			Out ("</td><td class=s>");
 			OutSize (Info.fsize);
@@ -745,6 +788,467 @@ void CWebServer::FlushEmulator (void)
 	while (m_bFlushRequest && CTimer::Get ()->GetTicks () - nStart < 2 * HZ)
 	{
 		CScheduler::Get ()->MsSleep (10);
+	}
+}
+
+// ----------------------------------------------------------------- inside disk images
+
+namespace {
+
+// A file on the card, read through FatFs, as the HFS code's Storage.
+class CFatStorage : public macemu::Storage
+{
+public:
+	boolean Open (const char *pPath)
+	{
+		m_bOpen = f_open (&m_File, pPath, FA_READ) == FR_OK;
+		return m_bOpen;
+	}
+	~CFatStorage (void)		{ if (m_bOpen) f_close (&m_File); }
+	macemu::u32 size (void) override	{ return (macemu::u32) f_size (&m_File); }
+	bool read (macemu::u32 nOffset, void *pBuffer, macemu::u32 nLength) override
+	{
+		UINT nRead = 0;
+		return f_lseek (&m_File, nOffset) == FR_OK && f_read (&m_File, pBuffer, nLength, &nRead) == FR_OK
+		       && nRead == nLength;
+	}
+	bool write (macemu::u32, const void *, macemu::u32) override	{ return false; }
+	bool readOnly (void) override		{ return true; }
+
+private:
+	FIL m_File;
+	boolean m_bOpen = FALSE;
+};
+
+void TypeString (macemu::u32 nType, char *pOut)
+{
+	for (int i = 0; i < 4; i++)
+	{
+		char c = (char) (nType >> (24 - 8 * i));
+		pOut[i] = c >= ' ' && c <= '~' ? c : '?';
+	}
+	pOut[4] = '\0';
+}
+
+}
+
+boolean CWebServer::QueryValue (const char *pQuery, const char *pKey, char *pOut, unsigned nMax)
+{
+	unsigned nKey = strLen (pKey);
+	for (const char *p = pQuery; *p; )
+	{
+		if (strncmp (p, pKey, nKey) == 0 && p[nKey] == '=')
+		{
+			p += nKey + 1;
+			unsigned n = 0;
+			while (*p && *p != '&' && n + 1 < nMax)
+			{
+				char c = *p++;
+				if (c == '+') c = ' ';
+				else if (c == '%' && HexDigit (p[0]) >= 0 && HexDigit (p[1]) >= 0)
+				{
+					c = (char) (HexDigit (p[0]) * 16 + HexDigit (p[1]));
+					p += 2;
+				}
+				pOut[n++] = c;
+			}
+			pOut[n] = '\0';
+			return TRUE;
+		}
+		while (*p && *p != '&') p++;
+		if (*p) p++;
+	}
+	return FALSE;
+}
+
+boolean CWebServer::LooksLikeDisk (const char *pName, u64 nSize)
+{
+	if (nSize < 400 * 1024)
+	{
+		return FALSE;
+	}
+	static const char *Ext[] = {".dsk", ".img", ".hda", ".hfv", ".hfs", ".iso", ".toast", ".cdr", ".image", ".dc42", ".vhd", 0};
+	for (unsigned i = 0; Ext[i]; i++)
+	{
+		if (endsWithNoCase (pName, Ext[i]))
+		{
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+static const u16 MacRoman[128] = {
+	0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7, 0x00E9, 0x00E8,
+	0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3, 0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC,
+	0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF, 0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8,
+	0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211, 0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8,
+	0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB, 0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153,
+	0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA, 0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02,
+	0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
+	0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
+};
+
+// A Mac name (Mac Roman) as HTML (UTF-8).
+void CWebServer::OutMacName (const char *pText)
+{
+	for (; *pText; pText++)
+	{
+		unsigned c = (unsigned char) *pText;
+		if (c < 0x80)
+		{
+			char Ch[2] = {(char) c, '\0'};
+			OutHtml (Ch);
+			continue;
+		}
+		unsigned u = MacRoman[c - 0x80];
+		char Utf[4] = {0};
+		if (u < 0x800) { Utf[0] = (char) (0xC0 | (u >> 6)); Utf[1] = (char) (0x80 | (u & 0x3F)); }
+		else { Utf[0] = (char) (0xE0 | (u >> 12)); Utf[1] = (char) (0x80 | ((u >> 6) & 0x3F)); Utf[2] = (char) (0x80 | (u & 0x3F)); }
+		Out (Utf);
+	}
+}
+
+void CWebServer::SendHfsFolder (CSocket *pSocket, const char *pImage, const char *pQuery)
+{
+	if (m_pHost->FileInUse (pImage))
+	{
+		FlushEmulator ();
+	}
+
+	char Path[192];
+	FullPath (Path, sizeof Path, pImage);
+	CFatStorage Disk;
+	macemu::HfsVolume Volume;
+	if (!Disk.Open (Path) || !Volume.open (&Disk))
+	{
+		SendStatus (pSocket, 415, "That is not an HFS (Mac OS Standard) disk image. "
+					  "HFS+ (Mac OS Extended) is not supported.");
+		return;
+	}
+
+	char Value[16];
+	u32 nFolder = QueryValue (pQuery, "dir", Value, sizeof Value) ? (u32) atoi (Value) : 2;
+	static macemu::HfsEntry Entries[400];
+	int n = Volume.list (nFolder, Entries, 400);
+
+	m_nPageLength = 0;
+	Out (PageHead);
+	Out ("<section><h2>");
+	OutHtml (pImage);
+	Out (": ");
+	Out ("<a href='/hfs/");
+	OutUrl (pImage);
+	Out ("'>");
+	OutMacName (Volume.name ());
+	Out ("</a>");
+	if (nFolder != 2)
+	{
+		macemu::HfsEntry Folder;
+		if (Volume.find (nFolder, Folder))
+		{
+			Out (" / ");
+			OutMacName (Folder.name);
+			Out (" &nbsp;<a class=n href='/hfs/");
+			OutUrl (pImage);
+			Out ("?dir=");
+			OutNumber (Folder.parent);
+			Out ("'>[up]</a>");
+		}
+	}
+	Out ("</h2><table>");
+	for (int i = 0; i < n; i++)
+	{
+		const macemu::HfsEntry &E = Entries[i];
+		Out ("<tr><td>");
+		if (E.folder)
+		{
+			Out ("&#128193; <a href='/hfs/");
+			OutUrl (pImage);
+			Out ("?dir=");
+			OutNumber (E.id);
+			Out ("'>");
+			OutMacName (E.name);
+			Out ("</a></td><td class=s>");
+			OutNumber (E.items);
+			Out (" items</td><td></td></tr>");
+			continue;
+		}
+		char Type[5], Creator[5];
+		TypeString (E.type, Type);
+		TypeString (E.creator, Creator);
+		OutMacName (E.name);
+		Out (" <span class=n>");
+		OutHtml (Type);
+		Out ("/");
+		OutHtml (Creator);
+		Out ("</span></td><td class=s>");
+		OutSize ((u64) E.dataLen + E.rsrcLen);
+		Out ("</td><td class=a><a href='/hfsget/");
+		OutUrl (pImage);
+		Out ("?id=");
+		OutNumber (E.id);
+		Out ("&f=bin'>MacBinary</a>");
+		if (E.dataLen)
+		{
+			Out (" &middot; <a href='/hfsget/");
+			OutUrl (pImage);
+			Out ("?id=");
+			OutNumber (E.id);
+			Out ("&f=data'>data fork</a>");
+		}
+		Out ("</td></tr>");
+	}
+	if (n == 0)
+	{
+		Out ("<tr><td class=n>Empty.</td></tr>");
+	}
+	Out ("</table><p class=n>Free: ");
+	OutSize (Volume.freeBytes ());
+	Out (". MacBinary (.bin) keeps the resource fork, type and creator; StuffIt Expander and most "
+	     "emulators read it.</p></section><p><a href='/'>&larr; Back</a></p></main></body></html>");
+
+	char Head[160] = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+			 "Cache-Control: no-store\r\nConnection: close\r\nContent-Length: ";
+	appendUint (Head, m_nPageLength, sizeof Head);
+	strAppend (Head, "\r\n\r\n", sizeof Head);
+	if (SendText (pSocket, Head))
+	{
+		SendAll (pSocket, m_pPage, m_nPageLength);
+	}
+}
+
+void CWebServer::SendHfsFile (CSocket *pSocket, const char *pImage, const char *pQuery)
+{
+	char Path[192];
+	FullPath (Path, sizeof Path, pImage);
+	CFatStorage Disk;
+	macemu::HfsVolume Volume;
+	char Value[16], Format[8] = "bin";
+	macemu::HfsEntry E;
+	if (   !Disk.Open (Path) || !Volume.open (&Disk)
+	    || !QueryValue (pQuery, "id", Value, sizeof Value) || !Volume.find ((u32) atoi (Value), E) || E.folder)
+	{
+		SendStatus (pSocket, 404, "No such file in that disk.");
+		return;
+	}
+	QueryValue (pQuery, "f", Format, sizeof Format);
+	boolean bBin = !strEq (Format, "data");
+
+	u64 nTotal = bBin ? 128 + macemu::macBinaryPad (E.dataLen) + macemu::macBinaryPad (E.rsrcLen) : E.dataLen;
+	char Name[48];
+	strCopy (Name, E.name, sizeof Name);
+	for (char *p = Name; *p; p++)
+	{
+		if (*p == '"' || *p == '/' || *p == '\\' || (unsigned char) *p < ' ' || (unsigned char) *p > '~') *p = '_';
+	}
+	if (bBin) strAppend (Name, ".bin", sizeof Name);
+
+	char Head[384] = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+			 "Connection: close\r\nContent-Disposition: attachment; filename=\"";
+	strAppend (Head, Name, sizeof Head);
+	strAppend (Head, "\"\r\nContent-Length: ", sizeof Head);
+	appendUint (Head, (u32) nTotal, sizeof Head);
+	strAppend (Head, "\r\n\r\n", sizeof Head);
+	if (!SendText (pSocket, Head))
+	{
+		return;
+	}
+
+	if (bBin)
+	{
+		u8 Header[128];
+		macemu::macBinaryHeader (E, Header);
+		if (!SendAll (pSocket, Header, 128)) return;
+	}
+	for (int nFork = 0; nFork < (bBin ? 2 : 1); nFork++)
+	{
+		u32 nLen = nFork ? E.rsrcLen : E.dataLen;
+		u32 nPadded = bBin ? macemu::macBinaryPad (nLen) : nLen;
+		for (u32 nPos = 0; nPos < nPadded; )
+		{
+			u32 nChunk = nPadded - nPos < BufferSize ? nPadded - nPos : BufferSize;
+			u32 nReal = nPos < nLen ? (nLen - nPos < nChunk ? nLen - nPos : nChunk) : 0;
+			memset (m_pBuffer, 0, nChunk);
+			if (nReal && !Volume.readFork (E, nFork != 0, nPos, m_pBuffer, nReal)) return;
+			if (!SendAll (pSocket, m_pBuffer, nChunk)) return;
+			nPos += nChunk;
+		}
+	}
+}
+
+// The files uploaded to SD:/transfer/ become an 800K floppy in the disk
+// folder ("clear=1" empties the folder first; "insert=2" puts the floppy in
+// floppy drive 2).
+void CWebServer::MakeFloppy (CSocket *pSocket, const char *pQuery)
+{
+	char Value[16];
+	char Folder[160];
+	FullPath (Folder, sizeof Folder, "transfer");
+	DIR Directory;
+	FILINFO Info;
+
+	if (QueryValue (pQuery, "clear", Value, sizeof Value))
+	{
+		ClearTransfer ();
+		SendStatus (pSocket, 200, "Ready.");
+		return;
+	}
+
+	// Read the files (they must fit on 800K together).
+	enum { MaxBytes = 1600 * 1024 };
+	static u8 *pFiles = 0, *pImage = 0;
+	if (pFiles == 0) pFiles = new u8[MaxBytes];
+	if (pImage == 0) pImage = new u8[macemu::kHfsFloppyBytes];
+	static macemu::HfsNewFile List[macemu::kHfsFloppyMaxFiles];
+	int nCount = 0;
+	u32 nUsed = 0;
+	if (f_findfirst (&Directory, &Info, Folder, "*") == FR_OK)
+	{
+		while (Info.fname[0] != '\0' && nCount < macemu::kHfsFloppyMaxFiles)
+		{
+			if (!(Info.fattrib & AM_DIR) && Info.fsize + nUsed <= MaxBytes)
+			{
+				char Path[200];
+				strCopy (Path, Folder, sizeof Path);
+				strAppend (Path, "/", sizeof Path);
+				strAppend (Path, Info.fname, sizeof Path);
+				FIL File;
+				UINT nRead = 0;
+				if (f_open (&File, Path, FA_READ) == FR_OK)
+				{
+					f_read (&File, pFiles + nUsed, (UINT) Info.fsize, &nRead);
+					f_close (&File);
+				}
+				u8 *p = pFiles + nUsed;
+				nUsed += nRead;
+				macemu::HfsNewFile &F = List[nCount];
+				if (!macemu::macBinaryParse (p, nRead, F))
+				{
+					memset (&F, 0, sizeof F);
+					strCopy (F.name, Info.fname, sizeof F.name);
+					F.data = p;
+					F.dataLen = nRead;
+					F.type = 0x3F3F3F3F;	// ????
+					F.creator = 0x3F3F3F3F;
+					static const struct { const char *pExt; u32 nType, nCreator; } Types[] = {
+						{".txt", 0x54455854, 0x74747874}, {".text", 0x54455854, 0x74747874},	// TEXT ttxt
+						{".hqx", 0x54455854, 0x53495478}, {".sit", 0x53495444, 0x53495421},	// SITD SIT!
+						{".pict", 0x50494354, 0x74747874}, {".gif", 0x47494666, 0x3F3F3F3F},
+						{".jpg", 0x4A504547, 0x3F3F3F3F}, {".jpeg", 0x4A504547, 0x3F3F3F3F},
+					};
+					for (unsigned t = 0; t < sizeof Types / sizeof Types[0]; t++)
+					{
+						if (endsWithNoCase (Info.fname, Types[t].pExt))
+						{
+							F.type = Types[t].nType;
+							F.creator = Types[t].nCreator;
+						}
+					}
+					if (F.type == 0x54455854 && !endsWithNoCase (Info.fname, ".hqx"))
+					{
+						for (u32 i = 0; i < nRead; i++) if (p[i] == '\n') p[i] = '\r';   // Mac line ends
+					}
+				}
+				nCount++;
+			}
+			if (f_findnext (&Directory, &Info) != FR_OK) break;
+		}
+		f_closedir (&Directory);
+	}
+	if (nCount == 0)
+	{
+		SendStatus (pSocket, 400, "No files were sent.");
+		return;
+	}
+
+	// A new name in the disk folder: Transfer 1.dsk, Transfer 2.dsk, ...
+	char Name[64], Path[200];
+	for (unsigned i = 1; ; i++)
+	{
+		strCopy (Name, "Transfer ", sizeof Name);
+		appendUint (Name, i, sizeof Name);
+		strAppend (Name, ".dsk", sizeof Name);
+		strCopy (Path, m_pHost->DiskDir (), sizeof Path);
+		strAppend (Path, "/", sizeof Path);
+		strAppend (Path, Name, sizeof Path);
+		char Full[220];
+		FullPath (Full, sizeof Full, Path);
+		if (f_stat (Full, &Info) != FR_OK)
+		{
+			strCopy (Path, Full, sizeof Path);
+			break;
+		}
+	}
+	char Volume[28];
+	strCopy (Volume, Name, sizeof Volume);
+	Volume[strLen (Volume) - 4] = '\0';			// "Transfer 1", without ".dsk"
+
+	if (!macemu::hfsMakeFloppy (pImage, Volume, List, nCount, m_pHost->MacTime ()))
+	{
+		SendStatus (pSocket, 413, "Those files do not fit on an 800K floppy. Send fewer at a time.");
+		return;
+	}
+	FIL File;
+	UINT nWritten = 0;
+	char Dir[160];
+	FullPath (Dir, sizeof Dir, m_pHost->DiskDir ());
+	f_mkdir (Dir);
+	if (   f_open (&File, Path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK
+	    || f_write (&File, pImage, macemu::kHfsFloppyBytes, &nWritten) != FR_OK
+	    || f_close (&File) != FR_OK || nWritten != macemu::kHfsFloppyBytes)
+	{
+		SendStatus (pSocket, 507, "Cannot write the floppy (is the card full?).");
+		return;
+	}
+	ClearTransfer ();
+
+	char Reply[160] = "Made ";
+	strAppend (Reply, Name, sizeof Reply);
+	strAppend (Reply, " in the ", sizeof Reply);
+	strAppend (Reply, m_pHost->DiskDir (), sizeof Reply);
+	strAppend (Reply, " folder", sizeof Reply);
+	if (QueryValue (pQuery, "insert", Value, sizeof Value))
+	{
+		// The main loop puts it in the drive; wait a moment for it.
+		m_bInsertOK = FALSE;
+		strCopy (m_InsertName, Name, sizeof m_InsertName);
+		unsigned nStart = CTimer::Get ()->GetTicks ();
+		while (m_InsertName[0] && CTimer::Get ()->GetTicks () - nStart < 3 * HZ)
+		{
+			CScheduler::Get ()->MsSleep (20);
+		}
+		strAppend (Reply, m_InsertName[0] ? " (the Mac is busy: insert it from the F12 menu)."
+				  : m_bInsertOK ? " and put it in floppy drive 2." : " (could not insert it: see the F12 menu).",
+			   sizeof Reply);
+		m_InsertName[0] = '\0';
+	}
+	else
+	{
+		strAppend (Reply, ".", sizeof Reply);
+	}
+	SendStatus (pSocket, 200, Reply);
+}
+
+void CWebServer::ClearTransfer (void)
+{
+	char Folder[160];
+	FullPath (Folder, sizeof Folder, "transfer");
+	f_mkdir (Folder);
+	DIR Directory;
+	FILINFO Info;
+	if (f_findfirst (&Directory, &Info, Folder, "*") == FR_OK)
+	{
+		while (Info.fname[0] != '\0')
+		{
+			char Path[200];
+			strCopy (Path, Folder, sizeof Path);
+			strAppend (Path, "/", sizeof Path);
+			strAppend (Path, Info.fname, sizeof Path);
+			f_unlink (Path);
+			if (f_findnext (&Directory, &Info) != FR_OK) break;
+		}
+		f_closedir (&Directory);
 	}
 }
 

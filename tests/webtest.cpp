@@ -2,6 +2,7 @@
 // host: Circle's sockets and FatFs are replaced by POSIX ones (tests/webshim).
 
 #include "../src/circle/webserver.h"
+#include "../src/frontend/hfs.h"
 #include <circle/sched/scheduler.h>
 #include <circle/logger.h>
 #include <circle/timer.h>
@@ -18,6 +19,7 @@
 #include <atomic>
 #include <string>
 #include <thread>
+#include <vector>
 
 static int failures = 0, checks = 0;
 #define CHECK(c) do { checks++; if (!(c)) { failures++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
@@ -111,6 +113,15 @@ FRESULT f_findfirst(DIR *dp, FILINFO *fi, const char *path, const char *)
     if (!dp->d) return FR_NO_FILE;
     return f_findnext(dp, fi);
 }
+FRESULT f_lseek(FIL *fp, unsigned long long ofs) { return fseek(fp->f, (long)ofs, SEEK_SET) == 0 ? FR_OK : FR_DISK_ERR; }
+FRESULT f_stat(const char *path, FILINFO *fi)
+{
+    struct stat st;
+    if (stat(hostPath(path).c_str(), &st) != 0) return FR_NO_FILE;
+    fi->fsize = (unsigned long long)st.st_size;
+    fi->fattrib = S_ISDIR(st.st_mode) ? AM_DIR : 0;
+    return FR_OK;
+}
 FRESULT f_mkdir(const char *path) { return mkdir(hostPath(path).c_str(), 0755) == 0 ? FR_OK : FR_DISK_ERR; }
 FRESULT f_closedir(DIR *dp) { if (dp->d) closedir(dp->d); return FR_OK; }
 FRESULT f_getfree(const char *, DWORD *clusters, FATFS **fs)
@@ -128,6 +139,7 @@ public:
     boolean FileInUse(const char *p) override { return strcmp(p, "hd0.img") == 0 || strcmp(p, "disks/inuse.dsk") == 0; }
     const char *DiskDir() override { return "disks"; }
     const char *Version() override { return "test <1>"; }
+    macemu::u32 MacTime() override { return 0xE0000000u; }
 };
 
 struct Reply { int code; std::string body; };
@@ -208,17 +220,19 @@ int main(int argc, char **argv)
     writeFile("disks/inuse.dsk", std::string(819200, 'F'));
     writeFile("disks/Old & <odd>.dsk", "x");
 
-    Host host;
-    CNetSubSystem net;
+    static Host host;
+    static CNetSubSystem net;
     CWebServer *server = new CWebServer(&net, "SD:", &host);
     std::thread([server] { server->Run(); }).detach();
 
     // The emulator's main loop: carries out flush and restart requests.
-    std::atomic<int> flushes(0), restarts(0);
-    std::thread([&] {
+    static std::atomic<int> flushes(0), restarts(0);   // static: the server threads outlive main()
+    static std::string inserted;
+    std::thread([server] {
         for (;;) {
             if (server->FlushRequested()) { flushes++; server->FlushDone(); }
             if (server->RestartRequested()) { restarts++; server->RestartDone(); }
+            if (const char *n = server->InsertRequested()) { inserted = n; server->InsertDone(true); }
             usleep(5000);
         }
     }).detach();
@@ -327,6 +341,80 @@ int main(int argc, char **argv)
     CHECK(r.code == 403);
     r = request("DELETE", "/files/macemu.cfg");
     CHECK(r.code == 403);
+
+    // Inside a Mac disk image: browse, download as MacBinary and data fork.
+    {
+        static std::vector<u8> img(macemu::kHfsFloppyBytes);
+        static u8 rsrc[700], data[5000];
+        for (int i = 0; i < 700; i++) rsrc[i] = (u8)(i * 3);
+        for (int i = 0; i < 5000; i++) data[i] = (u8)(i * 5 + 1);
+        macemu::HfsNewFile f = {};
+        strcpy(f.name, "Hello App");
+        f.type = 0x4150504C; f.creator = 0x48454C4F;
+        f.data = data; f.dataLen = 5000; f.rsrc = rsrc; f.rsrcLen = 700;
+        CHECK(macemu::hfsMakeFloppy(img.data(), "Test Disk", &f, 1, 0xE0000000u));
+        writeFile("disks/test.dsk", std::string(img.begin(), img.end()));
+        r = request("GET", "/");
+        CHECK(r.body.find("/hfs/disks/test.dsk") != std::string::npos);
+        r = request("GET", "/hfs/disks/test.dsk");
+        CHECK(r.code == 200 && r.body.find("Test Disk") != std::string::npos && r.body.find("Hello App") != std::string::npos);
+        CHECK(r.body.find("APPL/HELO") != std::string::npos);
+        r = request("GET", "/hfsget/disks/test.dsk?id=16&f=bin");
+        macemu::HfsNewFile back;
+        CHECK(r.code == 200 && macemu::macBinaryParse((const u8 *)r.body.data(), (u32)r.body.size(), back));
+        CHECK(back.dataLen == 5000 && back.rsrcLen == 700 && !memcmp(back.rsrc, rsrc, 700) && !memcmp(back.data, data, 5000));
+        CHECK(back.type == 0x4150504C && !strcmp(back.name, "Hello App"));
+        r = request("GET", "/hfsget/disks/test.dsk?id=16&f=data");
+        CHECK(r.code == 200 && r.body.size() == 5000 && !memcmp(r.body.data(), data, 5000));
+        r = request("GET", "/hfs/mac.rom");
+        CHECK(r.code == 415);
+        r = request("GET", "/hfs/macemu.cfg");
+        CHECK(r.code == 404 || r.code == 403);
+    }
+
+    // Send files to the Mac: a transfer floppy, put in drive 2.
+    {
+        r = request("POST", "/makefloppy?clear=1");
+        CHECK(r.code == 200);
+        mkdir((root + "/transfer").c_str(), 0755);
+        r = request("PUT", "/files/transfer/notes.txt", "line one\nline two\n");
+        CHECK(r.code == 201);
+        r = request("PUT", "/files/transfer/picture.gif", std::string(3000, 'g'));
+        CHECK(r.code == 201);
+        r = request("POST", "/makefloppy?insert=2");
+        CHECK(r.code == 200 && r.body.find("Transfer 1.dsk") != std::string::npos && r.body.find("drive 2") != std::string::npos);
+        CHECK(inserted == "Transfer 1.dsk");
+        std::string made = readFile("disks/Transfer 1.dsk");
+        CHECK(made.size() == macemu::kHfsFloppyBytes);
+        struct S : macemu::Storage {
+            std::string *d;
+            macemu::u32 size() override { return (macemu::u32)d->size(); }
+            bool read(macemu::u32 o, void *b, macemu::u32 n) override { memcpy(b, d->data() + o, n); return true; }
+            bool write(macemu::u32, const void *, macemu::u32) override { return false; }
+            bool readOnly() override { return true; }
+        } st;
+        st.d = &made;
+        macemu::HfsVolume v;
+        CHECK(v.open(&st) && !strcmp(v.name(), "Transfer 1"));
+        macemu::HfsEntry e[8];
+        int n = v.list(2, e, 8);
+        CHECK(n == 2);
+        for (int i = 0; i < n; i++) {
+            if (!strcmp(e[i].name, "notes.txt")) {
+                char buf[32] = {};
+                CHECK(e[i].type == 0x54455854 && v.readFork(e[i], false, 0, buf, e[i].dataLen));
+                CHECK(!strcmp(buf, "line one\rline two\r"));          // Mac line endings
+            } else {
+                CHECK(!strcmp(e[i].name, "picture.gif") && e[i].type == 0x47494666 && e[i].dataLen == 3000);
+            }
+        }
+        CHECK(readFile("transfer/notes.txt") == "<missing>");          // the upload folder is emptied
+        r = request("POST", "/makefloppy");
+        CHECK(r.code == 400);                                          // nothing to send
+        r = request("PUT", "/files/transfer/x.txt", "x");
+        r = request("POST", "/makefloppy");
+        CHECK(r.code == 200 && r.body.find("Transfer 2.dsk") != std::string::npos);
+    }
 
     // Restart the Mac.
     r = request("POST", "/restart");

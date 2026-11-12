@@ -297,7 +297,17 @@ int main(int argc, char **argv)
     size_t typed = 0;
     int typeState = 0;
     bool shiftHeld = false;
+    // FLOPPY_LATE=frame:image inserts a floppy into drive 1 while running
+    // (a non-startup disk present at power-on is ejected by the ROM).
+    int lateFrame = -1;
+    std::string lateImage;
+    if (const char *late = getenv("FLOPPY_LATE")) {
+        lateFrame = atoi(late);
+        if (const char *colon = strchr(late, ':')) lateImage = colon + 1;
+    }
     for (int f = 0; f < frames; f++) {
+        if (f == lateFrame && !host.insertDisk(0, lateImage.c_str()))
+            fprintf(stderr, "cannot insert %s\n", lateImage.c_str());
         mac.runFrame();
         if (quad && getenv("IO_FROM") && f == atoi(getenv("IO_FROM"))) { ioLogCount = 0; quad->ioLog = logIo; quad->logAllIo = true; }
         if (quad && getenv("IO_FROM") && f == atoi(getenv("IO_FROM")) + 1) { quad->logAllIo = false; quad->ioLog = nullptr; }
