@@ -64,19 +64,26 @@ public:
     virtual u32 translate(u32 logical, bool write, bool supervisor, bool code, bool &fault) = 0;
 };
 
+struct M68KFast;
+
 class M68K {
 public:
     enum Model { MC68000 = 0, MC68020 = 2, MC68030 = 3, MC68040 = 4 };
+    typedef void (*Handler)(M68K &, u16);
 
     explicit M68K(Bus *bus);
 
-    void setModel(int m) { model = m; }
+    void setModel(int m) { model = m; table = m == MC68000 ? s_table000 : s_table020; }
+    bool fastDispatch = true;           // false: decode every instruction in exec() (for comparisons)
     int getModel() const { return model; }
     void attachFpu(Coprocessor *f) { fpu = f; }
     void attachMmu(Coprocessor *unit, Translator *t) { mmuUnit = unit; mmu = t; }
 
     void hardReset();           // zero everything, load SSP/PC from vectors 0/1
     int step();                 // execute one instruction, returns CPU clock cycles used
+    // Up to `count` instructions, stopping once totalCycles reaches `end`;
+    // returns the cycles used.  Exactly like calling step() that often.
+    u32 run(int count, u64 end);
     void setIRQ(int level) { irq = level; }
 
     u16 getSR() const;
@@ -100,9 +107,46 @@ public:
     int cyc;
 
     // Helpers, public so that coprocessors can use them.
-    u32 rd(u32 addr, int sz);                   // sz: 0 byte, 1 word, 2 long
-    void wr(u32 addr, int sz, u32 v);
-    u16 fetch16();
+    // sz: 0 byte, 1 word, 2 long.  The common case (a 68020+ access within
+    // a page that the host TLB maps) is inline; the rest is rdSlow/wrSlow.
+    u32 rd(u32 addr, int sz)
+    {
+        if (model != MC68000 && (addr & 0xFFF) <= 0x1000 - (1u << sz)) {
+            const TlbEntry &e = tlb[(addr >> 12) & (kTlbSize - 1)];
+            if (e.tag == tlbTag(addr)) {
+                cyc += 4;
+                const u8 *p = e.ptr + (addr & 0xFFF);
+                return sz == 0 ? p[0] : sz == 1 ? (u32)be16(p) : be32(p);
+            }
+        }
+        return rdSlow(addr, sz);
+    }
+    void wr(u32 addr, int sz, u32 v)
+    {
+        if (model != MC68000 && (addr & 0xFFF) <= 0x1000 - (1u << sz)) {
+            const TlbEntry &e = tlb[(addr >> 12) & (kTlbSize - 1)];
+            if (e.tag == tlbTag(addr) && e.writable) {
+                cyc += 4;
+                u8 *p = e.ptr + (addr & 0xFFF);
+                if (sz == 0) p[0] = (u8)v; else if (sz == 1) putBe16(p, (u16)v); else putBe32(p, v);
+                return;
+            }
+        }
+        wrSlow(addr, sz, v);
+    }
+    u16 fetch16()
+    {
+        u32 addr = pc;
+        if (model != MC68000 && (addr & 0xFFF) != 0xFFF) {
+            const TlbEntry &e = codeTlb[(addr >> 12) & (kCodeTlbSize - 1)];
+            if (e.tag == tlbTag(addr)) {
+                pc = addr + 2;
+                cyc += 4;
+                return be16(e.ptr + (addr & 0xFFF));
+            }
+        }
+        return fetch16Slow();
+    }
     u32 fetch32() { u32 h = fetch16(); return (h << 16) | fetch16(); }
     u32 ea(int mode, int reg, int sz, bool noPenalty = false);
     u32 readEA(int mode, int reg, int sz);
@@ -118,6 +162,13 @@ public:
     void flushTlb() { tlbGeneration = ~0u; }
 
 private:
+    friend struct M68KFast;
+    // One handler per opcode (m68kfast.inc), for the 68000 and for 68020+.
+    static Handler *s_table000, *s_table020;   // 65536 entries each, from the heap
+    static bool s_tablesBuilt;
+    static void buildTables();
+    Handler *table;
+
     Bus *bus;
     Coprocessor *fpu, *mmuUnit;
     Translator *mmu;
@@ -134,9 +185,19 @@ private:
     enum { kTlbSize = 512 };
     struct TlbEntry { u32 tag; u8 *ptr; bool writable; };
     TlbEntry tlb[kTlbSize];
-    TlbEntry fetchEntry;
+    enum { kCodeTlbSize = 256 };
+    TlbEntry codeTlb[kCodeTlbSize];     // instruction fetches (the 68040 translates them with ITT)
     u32 tlbGeneration;
-    void checkTlb();
+    void checkTlb()
+    {
+        u32 gen = bus->mapGeneration + (mmu ? mmu->generation * 7919u : 0);   // TC writes flush, bumping it
+        if (gen != tlbGeneration) flushTlb(gen);
+    }
+    void flushTlb(u32 gen);
+    u32 rdSlow(u32 addr, int sz);
+    void wrSlow(u32 addr, int sz, u32 v);
+    u16 fetch16Slow();
+    inline int stepOne();
     u8 *tlbLookup(u32 addr, bool write, bool code);
     u32 tlbTag(u32 addr) const { return (addr & 0xFFFFF000u) | 1u | (fS ? 2u : 0u); }
 

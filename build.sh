@@ -97,6 +97,14 @@ fi
 cd "$TOP/src/circle"
 rm -f ../core/*.o ../frontend/*.o *.o
 make CIRCLEHOME="$CIRCLE" -j"$(nproc)"
+# Circle refuses (or silently breaks) kernels over KERNEL_MAX_SIZE (2 MB),
+# counting code, data and zeroed data.
+ELF="${IMG%.img}.elf"
+TOTAL=$(${PREFIX}size "$ELF" | awk 'NR == 2 { print $4 }')
+if [ "$TOTAL" -gt 2097152 ]; then
+    echo "$ELF is $TOTAL bytes: over Circle's 2 MB kernel limit" >&2
+    exit 1
+fi
 mkdir -p "$TOP/sdcard"
 cp "$IMG" "$TOP/sdcard/"
 echo "Built sdcard/$IMG"

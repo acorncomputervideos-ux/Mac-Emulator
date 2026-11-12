@@ -139,8 +139,13 @@ bool Mmu040::control(int reg, u32 &v, bool write)
     default: return false;
     }
     if (write) {
-        *r = v & mask;
-        flush();                                        // also bumps the generation for the CPU's TLB
+        // Only a change can alter translations.  (On a real 68040 these
+        // writes do not flush the ATC at all; Mac OS writes the same TT
+        // values again and again when it switches addressing modes.)
+        if (*r != (v & mask)) {
+            *r = v & mask;
+            flush();                                    // also bumps the generation for the CPU's TLB
+        }
     } else {
         v = *r;
     }

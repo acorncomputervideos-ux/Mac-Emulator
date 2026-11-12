@@ -59,7 +59,9 @@ M68K::M68K(Bus *bus) : bus(bus)
     instPC = 0; opcode = 0; traceNext = false;
     tlbGeneration = ~0u;
     for (int i = 0; i < kTlbSize; i++) tlb[i].tag = 0;
-    fetchEntry.tag = 0;
+    for (int i = 0; i < kCodeTlbSize; i++) codeTlb[i].tag = 0;
+    buildTables();
+    table = s_table000;
 }
 
 void M68K::hardReset()
@@ -105,13 +107,11 @@ u32 M68K::physical(u32 addr, bool write, bool code)
     return p;
 }
 
-void M68K::checkTlb()
+void M68K::flushTlb(u32 gen)
 {
-    u32 gen = bus->mapGeneration + (mmu ? mmu->generation * 7919u : 0);   // TC writes flush, bumping it
-    if (gen == tlbGeneration) return;
     tlbGeneration = gen;
     for (int i = 0; i < kTlbSize; i++) tlb[i].tag = 0;
-    fetchEntry.tag = 0;
+    for (int i = 0; i < kCodeTlbSize; i++) codeTlb[i].tag = 0;
 }
 
 // Find (or build) the host pointer for the page of `addr`.  Translation
@@ -121,7 +121,7 @@ u8 *M68K::tlbLookup(u32 addr, bool write, bool code)
 {
     checkTlb();
     u32 tag = tlbTag(addr);
-    TlbEntry &e = code ? fetchEntry : tlb[(addr >> 12) & (kTlbSize - 1)];
+    TlbEntry &e = code ? codeTlb[(addr >> 12) & (kCodeTlbSize - 1)] : tlb[(addr >> 12) & (kTlbSize - 1)];
     if (e.tag == tag && (!write || e.writable)) return e.ptr;
     u32 phys = addr;
     if (mmu && mmu->enabled()) {
@@ -139,13 +139,14 @@ u8 *M68K::tlbLookup(u32 addr, bool write, bool code)
     return p;
 }
 
-u16 M68K::fetch16()
+u16 M68K::fetch16Slow()
 {
     u32 addr = pc;
     pc += 2;
     cyc += 4;
     if (model != MC68000 && (addr & 0xFFF) != 0xFFF) {
-        if (fetchEntry.tag == tlbTag(addr)) return be16(fetchEntry.ptr + (addr & 0xFFF));
+        const TlbEntry &e = codeTlb[(addr >> 12) & (kCodeTlbSize - 1)];
+        if (e.tag == tlbTag(addr)) return be16(e.ptr + (addr & 0xFFF));
         if (u8 *p = tlbLookup(addr, false, true)) return be16(p + (addr & 0xFFF));
     }
     if (mmu && mmu->enabled()) addr = physical(addr, false, true);
@@ -154,7 +155,7 @@ u16 M68K::fetch16()
 
 static const u32 kSize[3] = {1, 2, 4};
 
-u32 M68K::rd(u32 addr, int sz)
+u32 M68K::rdSlow(u32 addr, int sz)
 {
     if (model == MC68000) {
         if (sz == 0) { cyc += 4; return bus->read8(addr); }
@@ -189,7 +190,7 @@ u32 M68K::rd(u32 addr, int sz)
     return bus->read32(addr);
 }
 
-void M68K::wr(u32 addr, int sz, u32 v)
+void M68K::wrSlow(u32 addr, int sz, u32 v)
 {
     if (model == MC68000) {
         if (sz == 0) { cyc += 4; bus->write8(addr, (u8)v); }
@@ -461,6 +462,18 @@ u32 M68K::shift(int type, bool left, u32 v, int count, int sz)
 
 int M68K::step()
 {
+    return stepOne();
+}
+
+u32 M68K::run(int count, u64 end)
+{
+    u32 total = 0;
+    for (int i = 0; i < count && totalCycles < end; i++) total += (u32)stepOne();
+    return total;
+}
+
+inline int M68K::stepOne()
+{
     cyc = 0;
     if (irq != 7) nmiSeen = false;
     if ((irq < 7 && irq > (int)imask) || (irq == 7 && !nmiSeen)) {
@@ -478,7 +491,12 @@ int M68K::step()
         if (model != MC68000) checkTlb();               // mappings may have changed in the last instruction
         instPC = pc;
         opcode = fetch16();
-        exec(opcode);
+#ifdef OPHIST
+        extern unsigned long long gOpHist[65536];
+        gOpHist[opcode]++;
+#endif
+        if (fastDispatch) table[opcode](*this, opcode);
+        else exec(opcode);
         if (bus->busError) busErrorException();
         else if (traceNext) exception(9, pc, 10, model == MC68000 ? 0 : 2);
     }
@@ -1593,5 +1611,7 @@ bool M68K::mmuControl(int cr, u32 &v, bool write)
 {
     return mmuUnit && mmuUnit->control(cr, v, write);
 }
+
+#include "m68kfast.inc"
 
 } // namespace macemu

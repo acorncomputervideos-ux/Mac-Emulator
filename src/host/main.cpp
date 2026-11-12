@@ -219,6 +219,7 @@ int main(int argc, char **argv)
         if (ram.size() < 0x800000) ram.resize(0x800000);
         quad = new Quadra(getenv("QUADRA_21") ? Dafb::Apple21 : Dafb::VGA);
         ok = quad->init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
+        if (getenv("MACEMU_NOFAST")) quad->cpu.fastDispatch = false;
         if (traceIo) { quad->ioLog = logIo; }
         if (watchPc) {
             gWatchPc = watchPc; gWatchCpu = &quad->cpu; quad->stepHook = watchCheck;
@@ -244,8 +245,8 @@ int main(int argc, char **argv)
     for (size_t i = 4; i + 1 < romFile.data.size(); i += 2) sum += (u32)((romFile.data[i] << 8) | romFile.data[i + 1]);
     printf("ROM %zuK, checksum %08X (computed %08X)\n", romFile.data.size() / 1024, be32(romFile.data.data()), sum);
 
-    time_t now = time(nullptr);
-    struct tm *tm = localtime(&now);
+    time_t now = getenv("MACEMU_TIME") ? (time_t)atoll(getenv("MACEMU_TIME")) : time(nullptr);   // fixed clock for repeatable runs
+    struct tm *tm = gmtime(&now);
     mac.clockChip().seconds = (macTime(tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec));
 
     Host host(mac, cfg);

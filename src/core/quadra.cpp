@@ -270,9 +270,14 @@ void Quadra::runFrame()
         // Run a short batch of instructions, then service the devices: a
         // couple of microseconds of latency, far less overhead.
         u32 c = 0;
-        for (int i = 0; i < 16 && cpu.totalCycles < end; i++) {
-            if (stepHook) { cpu.instPC = cpu.pc; stepHook(); }
-            c += (u32)cpu.step();
+        if (stepHook) {
+            for (int i = 0; i < 16 && cpu.totalCycles < end; i++) {
+                cpu.instPC = cpu.pc;
+                stepHook();
+                c += (u32)cpu.step();
+            }
+        } else {
+            c = cpu.run(16, end);
         }
         // VIA E clock: 783360 Hz from a 33.33 MHz CPU clock, kept as a fraction.
         viaFrac += c * 783360u;
