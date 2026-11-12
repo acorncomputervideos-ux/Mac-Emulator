@@ -163,6 +163,7 @@ void CWebServer::Run (void)
 		CLogger::Get ()->Write (FromWeb, LogError, "Cannot listen on port 80");
 		return;
 	}
+	CLogger::Get ()->Write (FromWeb, LogNotice, "Listening on port 80");
 
 	while (1)
 	{
@@ -174,6 +175,10 @@ void CWebServer::Run (void)
 			CScheduler::Get ()->MsSleep (100);
 			continue;
 		}
+
+		CString From;
+		ForeignIP.Format (&From);
+		CLogger::Get ()->Write (FromWeb, LogNotice, "Connection from %s", (const char *) From);
 
 		pConnection->SetOptionReceiveTimeout (20 * 1000000);
 		pConnection->SetOptionSendTimeout (20 * 1000000);
