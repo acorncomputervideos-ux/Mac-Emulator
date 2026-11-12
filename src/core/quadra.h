@@ -147,6 +147,7 @@ private:
     u32 busError(u32 addr, bool write, u32 value);
     void updateIrq();
     void serviceSonic(bool again);
+    void serviceEsp();
 };
 
 } // namespace macemu

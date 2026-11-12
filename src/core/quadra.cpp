@@ -257,12 +257,18 @@ u32 Quadra::io2(u32 off, int size, bool write, u32 v)
         return size == 4 ? djmemc[r & 15] : (djmemc[r & 15] >> (8 * (4 - size - (int)(off & 3)))) & (size == 1 ? 0xFF : 0xFFFF);
     }
     if (off >= 0x10000 && off < 0x10100) {
-        if (write) { esp.write((int)(off >> 4) & 15, (u8)v); return 0; }
-        return esp.read((int)(off >> 4) & 15);
+        // The interrupt edge is latched in VIA2 at once: drivers poll the
+        // chip and clear the VIA flag straight after a command.
+        if (write) { esp.write((int)(off >> 4) & 15, (u8)v); serviceEsp(); return 0; }
+        u8 r = esp.read((int)(off >> 4) & 15);
+        serviceEsp();
+        return r;
     }
     if (off >= 0x10100 && off < 0x10200) {
-        if (write) { esp.dmaWrite((u8)v); return 0; }
-        return esp.dmaRead();
+        if (write) { esp.dmaWrite((u8)v); serviceEsp(); return 0; }
+        u8 r = esp.dmaRead();
+        serviceEsp();
+        return r;
     }
     if (off >= 0x14000 && off < 0x16000) {
         if (write) { asc.write(off - 0x14000, (u8)v); return 0; }
@@ -278,6 +284,18 @@ u32 Quadra::io2(u32 off, int size, bool write, u32 v)
         return iwm.read((int)(off >> 9) & 15, cpu.totalCycles / 4);
     }
     return busError(0x50000000 | off, write, v);
+}
+
+// The SCSI interrupt: VIA2 CB2, latched on the rising edge of the chip's
+// line, at the moment it rises.
+void Quadra::serviceEsp()
+{
+    bool e = esp.irq();
+    if (e && !espIrqSeen) {
+        via2.raise(Via::IRQ_CB2);
+        if (ioLog && logAllIo) ioLog(ioLogCtx, "raise CB2", 0, 0);
+    }
+    espIrqSeen = e;
 }
 
 // The Ethernet interrupt goes through VIA2's slot interrupt (CA1).  That
@@ -329,9 +347,7 @@ void Quadra::runFrame()
             soundBuf[sample++] = asc.sample();
             nextSample += kCyclesPerFrame / kSamplesPerFrame;
         }
-        bool e = esp.irq();                             // SCSI interrupt: VIA2 CB2
-        if (e && !espIrqSeen) via2.raise(Via::IRQ_CB2);
-        espIrqSeen = e;
+        serviceEsp();
         bool sIrq = asc.irq();                          // sound: VIA2 CB1 in classic mode
         if (sIrq && !ascIrqSeen) via2.raise(Via::IRQ_CB1);
         ascIrqSeen = sIrq;

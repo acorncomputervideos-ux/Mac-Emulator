@@ -7,6 +7,7 @@
 #include "../src/core/mac.h"
 #include "../src/core/keys.h"
 #include "../src/core/esp.h"
+#include "../src/core/quadra.h"
 #include "../src/core/iwm.h"
 #include "../src/core/sonic.h"
 
@@ -838,8 +839,30 @@ static void testSonic()
     CHECK(s.prom(0) == 0x10);
 }
 
+// The Quadra latches the SCSI chip's interrupt in VIA2 (CB2) the moment it
+// rises.  SCSI Manager 4.3 (System 7.5) polls the chip right after a command
+// and clears the VIA flag before reading the chip's interrupt register; a
+// flag set later would be left with no interrupt behind it, and the Mac
+// would loop in its interrupt handler.
+static void testQuadraScsiIrq()
+{
+    std::vector<u8> rom(0x100000), ram(0x800000);
+    static Quadra q;
+    CHECK(q.init(rom.data(), (u32)rom.size(), ram.data(), (u32)ram.size()));
+    const u32 esp = 0x50F10000, via2 = 0x50F02000;
+    q.write8(esp + 0x80, 0x07);                         // CFG1: bus ID 7, reset interrupt on
+    q.write8(esp + 0x30, 0x03);                         // reset the SCSI bus: interrupts at once
+    CHECK(q.read8(via2 + 13 * 0x200) & 0x08);           // CB2 already set
+    q.write8(via2 + 13 * 0x200, 0x08);                  // the driver clears it ...
+    CHECK(q.read8(esp + 0x40) & 0x80);                  // ... sees the chip's interrupt ...
+    q.read8(esp + 0x50);                                // ... and reads the interrupt register
+    CHECK(!q.esp.irq());
+    CHECK(!(q.read8(via2 + 13 * 0x200) & 0x08));        // nothing left over
+}
+
 int main()
 {
+    testQuadraScsiIrq();
     testSonic();
     testSwimMfm();
     testCdrom();

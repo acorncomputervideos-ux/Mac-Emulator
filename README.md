@@ -36,7 +36,9 @@ Three models are emulated:
 - NCR 53C96 SCSI with pseudo-DMA, up to seven disks.
 - ADB keyboard and mouse, Enhanced ASC sound, clock and PRAM, soft power off.
 - Follows QEMU's Quadra 800 model (GLUE interrupt routing, djMEMC, IOSB,
-  VIA quirks), which boots Mac OS 7.1–8.1.
+  VIA quirks), which boots Mac OS 7.1–8.1. Checked here with System 7.1 and
+  System 7.5.3 (whose SCSI Manager 4.3 needs the SCSI interrupt latched in
+  VIA2 the moment the chip raises it).
 
 **Which ROMs work**
 - Quadra 610/650/800 (F1ACAD13) and Centris 610/650 (F1A6F343): the
