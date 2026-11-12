@@ -12,6 +12,7 @@
 #include <circle/bcmwatchdog.h>
 #include <circle/machineinfo.h>
 #include <circle/sched/task.h>
+#include <circle/synchronize.h>
 
 #include "../core/keys.h"
 #include "../frontend/keymap.h"
@@ -76,6 +77,19 @@ CKernel::CKernel (void)
 	m_nIdleFrames (0),
 	m_nScreenshot (0),
 	m_nEmulatedFrames (0),
+	m_nEmulatedSeen (0),
+#ifdef ARM_ALLOW_MULTI_CORE
+	m_pCores (0),
+#endif
+	m_bEmuCoreRunning (FALSE),
+	m_nPauseRequests (0),
+	m_nPauseSeq (0),
+	m_nPauseAck (0),
+	m_nEventIn (0),
+	m_nEventOut (0),
+	m_nSoundIn (0),
+	m_nSoundOut (0),
+	m_nSoundRate (22255),
 	m_nStatsTime (0),
 	m_nSpeedPercent (100),
 	m_pNet (0),
@@ -593,6 +607,25 @@ TShutdownMode CKernel::Run (void)
 	m_Logger.RegisterPanicHandler (PanicHandler);
 	m_Timer.StartKernelTimer (HZ, WatchdogTimer, 0, this);
 
+#ifdef ARM_ALLOW_MULTI_CORE
+	// The Mac gets core 1 to itself; this core keeps USB, the network, the
+	// screen, sound and the SD card.
+	m_pCores = new CEmuCores (this);
+	if (m_pCores == 0 || !m_pCores->Initialize ())
+	{
+		m_Logger.Write (FromKernel, LogWarning, "Cannot start the other cores: running on one");
+	}
+	else
+	{
+		hostu64 nStart = CTimer::GetClockTicks64 ();
+		while (!m_bEmuCoreRunning && CTimer::GetClockTicks64 () - nStart < 1000000)
+		{
+		}
+		m_Logger.Write (FromKernel, LogNotice, m_bEmuCoreRunning ? "The Mac runs on core 1"
+								     : "Core 1 did not start: running on one");
+	}
+#endif
+
 	hostu64 nNextFrame = CTimer::GetClockTicks64 ();
 	m_nStatsTime = nNextFrame;
 
@@ -618,8 +651,13 @@ TShutdownMode CKernel::Run (void)
 
 		// The menu was closed (Esc, F12, Resume, Restart ...): repaint the
 		// whole Mac screen over it.
+		if (!bMenuWasOpen && m_pOsd->active ())
+		{
+			PauseEmu ();			// the Mac waits while the menu is open
+		}
 		if (bMenuWasOpen && !m_pOsd->active ())
 		{
+			ResumeEmu ();
 			fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 			m_bForceRedraw = TRUE;
 			DrawMac (TRUE);
@@ -652,15 +690,25 @@ TShutdownMode CKernel::Run (void)
 			continue;
 		}
 
-		if (nSpeed == 0)
+		if (m_bEmuCoreRunning)
+		{
+			// The Mac runs on its own core: this one just draws, plays the
+			// sound and serves the SD card at the display's pace.
+			nNextFrame += FrameMicros;
+			hostu64 nNow = CTimer::GetClockTicks64 ();
+			if (nNow + 4 * FrameMicros < nNextFrame || nNow > nNextFrame + 4 * FrameMicros)
+			{
+				nNextFrame = nNow;
+			}
+			WaitUntil (nNextFrame);
+		}
+		else if (nSpeed == 0)
 		{
 			// Unlimited: emulate for one display frame's worth of real time.
 			hostu64 nUntil = CTimer::GetClockTicks64 () + FrameMicros;
 			do
 			{
-				m_pMachine->runFrame ();
-				m_nEmulatedFrames++;
-				Housekeeping ();
+				ExecuteFrame ();
 				m_Scheduler.Yield ();		// let the network run
 			}
 			while (CTimer::GetClockTicks64 () < nUntil);
@@ -671,14 +719,7 @@ TShutdownMode CKernel::Run (void)
 		{
 			for (unsigned i = 0; i < nSpeed; i++)
 			{
-				m_pMachine->runFrame ();
-				m_nEmulatedFrames++;
-				Housekeeping ();
-			}
-
-			if (nSpeed == 1)
-			{
-				QueueSound ();
+				ExecuteFrame ();
 			}
 
 			nNextFrame += FrameMicros;
@@ -698,6 +739,8 @@ TShutdownMode CKernel::Run (void)
 			WaitUntil (CTimer::GetClockTicks64 () + 3000);
 		}
 
+		Housekeeping ();
+		QueueSound ();
 		UpdateScreen ();
 		Present ();
 		m_CPUThrottle.Update ();
@@ -713,6 +756,7 @@ TShutdownMode CKernel::Run (void)
 			{
 				powerOff ();
 			}
+			PauseEmu ();
 			m_pMachine->flushDisks ();
 			SavePRAM ();
 			m_ActLED.Off ();
@@ -735,6 +779,7 @@ TShutdownMode CKernel::Run (void)
 			m_nKeyOut = m_nKeyIn;
 			ReleaseAllKeys ();
 			resetMachine ();
+			ResumeEmu ();
 			m_bHaveVideo = FALSE;
 			fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 			nNextFrame = CTimer::GetClockTicks64 ();
@@ -743,9 +788,10 @@ TShutdownMode CKernel::Run (void)
 		hostu64 nNow = CTimer::GetClockTicks64 ();
 		if (nNow - m_nStatsTime >= 2000000)
 		{
-			m_nSpeedPercent = (unsigned) ((hostu64) m_nEmulatedFrames * FrameMicros * 100
+			unsigned nFrames = m_nEmulatedFrames;
+			m_nSpeedPercent = (unsigned) ((hostu64) (nFrames - m_nEmulatedSeen) * FrameMicros * 100
 						      / (nNow - m_nStatsTime));
-			m_nEmulatedFrames = 0;
+			m_nEmulatedSeen = nFrames;
 			m_nStatsTime = nNow;
 			UpdateInfo ();
 		}
@@ -915,18 +961,30 @@ void CKernel::ShowMessage (const char *pLine1, const char *pLine2)
 
 void CKernel::QueueSound (void)
 {
-	if (m_pSound == 0 || !m_Config.sound)
+	// Take what the Mac produced since last time (370 samples a frame at
+	// 22254.5 Hz) and resample it to the device rate.
+	static s16 In[4096];
+	unsigned nInCount = 0;
+	unsigned nOutPos = m_nSoundOut;
+	DataMemBarrier ();
+	while (nOutPos != m_nSoundIn && nInCount < sizeof In / sizeof In[0])
+	{
+		In[nInCount++] = m_SoundRing[nOutPos];
+		nOutPos = (nOutPos + 1) % SoundRingSize;
+	}
+	DataMemBarrier ();
+	m_nSoundOut = nOutPos;
+
+	if (m_pSound == 0 || !m_Config.sound || nInCount == 0)
 	{
 		return;
 	}
 
-	// Resample 370 samples/frame (22254.5 Hz) to the device rate.
-	static s16 Buffer[2 * 1200];
-	u32 nInCount, nInRate;
-	const s16 *pIn = m_pMachine->sound (nInCount, nInRate);
+	static s16 Buffer[2 * 2400];
+	unsigned nInRate = m_nSoundRate;
 	unsigned nOut = 0;
 	int nVolume = m_Config.volume;
-	while (nOut < 1200)
+	while (nOut < 2400)
 	{
 		unsigned nIndex = m_nSoundFraction / m_nSampleRate;
 		if (nIndex >= nInCount)
@@ -935,11 +993,15 @@ void CKernel::QueueSound (void)
 			break;
 		}
 
-		s16 nSample = (s16) (pIn[nIndex] * nVolume / 10);
+		s16 nSample = (s16) (In[nIndex] * nVolume / 10);
 		Buffer[2 * nOut] = nSample;
 		Buffer[2 * nOut + 1] = nSample;
 		nOut++;
 		m_nSoundFraction += nInRate;
+	}
+	if (nOut == 2400)
+	{
+		m_nSoundFraction = 0;
 	}
 
 	unsigned nFree = m_pSound->GetQueueFramesAvail ();
@@ -954,6 +1016,163 @@ void CKernel::QueueSound (void)
 	}
 }
 
+// One emulated frame: the input that arrived first, then the Mac, then its
+// sound (only at normal speed) into the ring for core 0.
+void CKernel::ExecuteFrame (void)
+{
+	DrainEvents ();
+	m_pMachine->runFrame ();
+	m_nEmulatedFrames++;
+
+	unsigned nSpeed = m_bTurbo ? 0 : (unsigned) m_Config.speed;
+	if (nSpeed == 1)
+	{
+		u32 nCount, nRate;
+		const s16 *pIn = m_pMachine->sound (nCount, nRate);
+		m_nSoundRate = nRate;
+		unsigned nIn = m_nSoundIn;
+		for (u32 i = 0; i < nCount; i++)
+		{
+			unsigned nNext = (nIn + 1) % SoundRingSize;
+			if (nNext == m_nSoundOut)
+			{
+				break;			// core 0 is behind: drop
+			}
+			m_SoundRing[nIn] = pIn[i];
+			nIn = nNext;
+		}
+		DataMemBarrier ();
+		m_nSoundIn = nIn;
+	}
+}
+
+void CKernel::PostEvent (TEmuEvent Type, int a, int b)
+{
+	unsigned nNext = (m_nEventIn + 1) % EventQueueSize;
+	if (nNext == m_nEventOut)
+	{
+		return;				// full: drop
+	}
+	TEvent &E = m_Events[m_nEventIn];
+	E.nType = (u8) Type;
+	E.a = (s16) a;
+	E.b = (s16) b;
+	DataMemBarrier ();
+	m_nEventIn = nNext;
+}
+
+void CKernel::DrainEvents (void)
+{
+	while (m_nEventOut != m_nEventIn)
+	{
+		DataMemBarrier ();
+		const TEvent &E = m_Events[m_nEventOut];
+		switch (E.nType)
+		{
+		case EvKey:		m_pMachine->keyEvent (E.a, E.b != 0);		break;
+		case EvMouseMove:	m_pMachine->mouseMove (E.a, E.b);		break;
+		case EvMouseButton:	m_pMachine->mouseButton (E.a != 0);		break;
+		default:		m_pMachine->interruptButton ();			break;
+		}
+		DataMemBarrier ();
+		m_nEventOut = (m_nEventOut + 1) % EventQueueSize;
+	}
+}
+
+// Stop the Mac's core between frames, so that this core may change the
+// machine (reset, disks, PRAM).  Nests; ResumeEmu() releases it.
+void CKernel::PauseEmu (void)
+{
+	if (!m_bEmuCoreRunning)
+	{
+		return;
+	}
+	m_nPauseRequests++;
+	unsigned nSeq = ++m_nPauseSeq;
+	DataMemBarrier ();
+	while (m_nPauseAck != nSeq)
+	{
+		CDiskProxy::Service ();		// it may be waiting for the disk
+	}
+	DataMemBarrier ();
+}
+
+void CKernel::ResumeEmu (void)
+{
+	if (!m_bEmuCoreRunning || m_nPauseRequests == 0)
+	{
+		return;
+	}
+	DataMemBarrier ();
+	m_nPauseRequests--;
+	DataMemBarrier ();
+}
+
+// Core 1: the Mac, and nothing else.  Paces itself to the chosen speed.
+void CKernel::EmuCoreRun (void)
+{
+	m_bEmuCoreRunning = TRUE;
+	DataMemBarrier ();
+	hostu64 nNext = CTimer::GetClockTicks64 ();
+	while (1)
+	{
+		if (m_nPauseRequests != 0)
+		{
+			do
+			{
+				m_nPauseAck = m_nPauseSeq;
+				DataMemBarrier ();
+			}
+			while (m_nPauseRequests != 0);
+			nNext = CTimer::GetClockTicks64 ();
+			continue;
+		}
+
+		if (m_pMachine->poweredOff ())
+		{
+			nNext = CTimer::GetClockTicks64 () + 1000;
+			while (CTimer::GetClockTicks64 () < nNext && m_nPauseRequests == 0)
+			{
+			}
+			continue;
+		}
+
+		unsigned nSpeed = m_bTurbo ? 0 : (unsigned) m_Config.speed;
+		if (nSpeed == 0)
+		{
+			ExecuteFrame ();
+			nNext = CTimer::GetClockTicks64 ();
+			continue;
+		}
+
+		for (unsigned i = 0; i < nSpeed && m_nPauseRequests == 0; i++)
+		{
+			ExecuteFrame ();
+		}
+
+		nNext += FrameMicros;
+		hostu64 nNow = CTimer::GetClockTicks64 ();
+		if (nNow + 4 * FrameMicros < nNext || nNow > nNext + 4 * FrameMicros)
+		{
+			nNext = nNow;
+		}
+		while (CTimer::GetClockTicks64 () < nNext && m_nPauseRequests == 0)
+		{
+		}
+	}
+}
+
+#ifdef ARM_ALLOW_MULTI_CORE
+void CEmuCores::Run (unsigned nCore)
+{
+	if (nCore == 1)
+	{
+		m_pKernel->EmuCoreRun ();
+	}
+	// other cores: nothing to do yet
+}
+#endif
+
 void CKernel::Housekeeping (void)
 {
 	// Disks the Mac ejected by itself.
@@ -961,8 +1180,10 @@ void CKernel::Housekeeping (void)
 	{
 		if (m_pMachine->floppy ().ejectedByGuest[d])
 		{
+			PauseEmu ();
 			m_pMachine->floppy ().ejectedByGuest[d] = false;
 			ejectDisk ((int) d);
+			ResumeEmu ();
 		}
 	}
 
@@ -982,6 +1203,7 @@ void CKernel::Housekeeping (void)
 	}
 	else if (m_nIdleFrames == 120)
 	{
+		PauseEmu ();
 		for (unsigned d = 0; d < 2; d++)
 		{
 			if (m_pFloppy[d] != 0)
@@ -992,10 +1214,13 @@ void CKernel::Housekeeping (void)
 
 		m_pMachine->flushDisks ();
 		SavePRAM ();
+		ResumeEmu ();
 	}
 	else if (m_nIdleFrames % 600 == 0)
 	{
+		PauseEmu ();
 		SavePRAM ();
+		ResumeEmu ();
 	}
 }
 
@@ -1204,6 +1429,7 @@ void CKernel::UpdateNetwork (void)
 	{
 		if (m_pWebServer->FlushRequested ())
 		{
+			PauseEmu ();
 			for (unsigned d = 0; d < 2; d++)
 			{
 				if (m_pFloppy[d] != 0)
@@ -1212,6 +1438,7 @@ void CKernel::UpdateNetwork (void)
 				}
 			}
 			m_pMachine->flushDisks ();
+			ResumeEmu ();
 			m_pWebServer->FlushDone ();
 		}
 
@@ -1298,6 +1525,7 @@ void CKernel::WaitUntil (hostu64 nUntil)
 	m_nLoops++;
 	while (CTimer::GetClockTicks64 () < nUntil)
 	{
+		CDiskProxy::Service ();
 		if (m_pNet != 0)
 		{
 			m_Scheduler.Yield ();
@@ -1383,6 +1611,7 @@ void CKernel::HandlePowerKey (void)
 void CKernel::powerOff (void)
 {
 	m_Logger.Write (FromKernel, LogNotice, "Turning off");
+	PauseEmu ();					// for good
 	for (unsigned d = 0; d < 2; d++)
 	{
 		if (m_pFloppy[d] != 0)
@@ -1856,10 +2085,16 @@ void CKernel::ProcessInput (void)
 	m_nMouseRemY -= my * 4;
 	if (mx != 0 || my != 0)
 	{
-		m_pMachine->mouseMove (mx, my);
+		PostEvent (EvMouseMove, mx, my);
 	}
 
-	m_pMachine->mouseButton ((nButtons & (MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT)) != 0);
+	boolean bButton = (nButtons & (MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT)) != 0;
+	static boolean bLastButton = FALSE;
+	if (bButton != bLastButton)
+	{
+		bLastButton = bButton;
+		PostEvent (EvMouseButton, bButton);
+	}
 }
 
 void CKernel::MacKey (int nKey, boolean bDown)
@@ -1870,7 +2105,7 @@ void CKernel::MacKey (int nKey, boolean bDown)
 	}
 
 	m_bMacKeyDown[nKey] = bDown;
-	m_pMachine->keyEvent (nKey, bDown);
+	PostEvent (EvKey, nKey, bDown);
 }
 
 void CKernel::ReleaseAllKeys (void)
@@ -2021,7 +2256,7 @@ void CKernel::HandleKey (u8 ucUsage, boolean bDown)
 	case HID_F9:
 		if (bDown)
 		{
-			m_pMachine->interruptButton ();
+			PostEvent (EvInterrupt, 0);
 		}
 		return;
 
@@ -2110,6 +2345,14 @@ int CKernel::listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax)
 
 bool CKernel::insertDisk (int nDrive, const char *pName)
 {
+	PauseEmu ();
+	bool bOK = InsertDiskPaused (nDrive, pName);
+	ResumeEmu ();
+	return bOK;
+}
+
+bool CKernel::InsertDiskPaused (int nDrive, const char *pName)
+{
 	if (m_pFloppy[nDrive] != 0)
 	{
 		ejectDisk (nDrive);
@@ -2148,27 +2391,33 @@ bool CKernel::insertDisk (int nDrive, const char *pName)
 
 void CKernel::ejectDisk (int nDrive)
 {
+	PauseEmu ();
 	m_pMachine->floppy ().eject (nDrive);		// flushes the image
 	delete m_pFloppy[nDrive];
 	m_pFloppy[nDrive] = 0;
 	m_FloppyName[nDrive][0] = '\0';
 	m_Config.floppy[nDrive][0] = '\0';
+	ResumeEmu ();
 }
 
 void CKernel::resetMachine (void)
 {
+	PauseEmu ();
 	m_pMachine->flushDisks ();
 	SavePRAM ();
 	ReleaseAllKeys ();
 	AttachHardDisks ();				// the menu may have changed them
 	m_pMachine->reset ();
 	m_bForceRedraw = TRUE;
+	m_nEventOut = m_nEventIn;			// forget input meant for the old run
+	ResumeEmu ();
 }
 
 // Model, ROM, memory and video changes need a fresh start of the whole
 // emulator: save everything and reboot the Pi (it is quick).
 void CKernel::saveAndReboot (void)
 {
+	PauseEmu ();					// for good
 	saveSettings ();
 	m_pMachine->flushDisks ();
 	SavePRAM ();
@@ -2180,7 +2429,7 @@ void CKernel::saveAndReboot (void)
 
 void CKernel::interruptButton (void)
 {
-	m_pMachine->interruptButton ();
+	PostEvent (EvInterrupt, 0);
 }
 
 void CKernel::settingsChanged (void)

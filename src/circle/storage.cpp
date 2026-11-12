@@ -1,5 +1,64 @@
 #include "storage.h"
+#include <circle/multicore.h>
+#include <circle/synchronize.h>
 #include <circle/util.h>
+
+macemu::Storage * volatile CDiskProxy::s_pStorage = 0;
+volatile int CDiskProxy::s_nOp = 0;
+volatile u32 CDiskProxy::s_nOffset = 0;
+void * volatile CDiskProxy::s_pBuffer = 0;
+volatile u32 CDiskProxy::s_nLength = 0;
+volatile bool CDiskProxy::s_bResult = false;
+volatile int CDiskProxy::s_nState = 0;
+
+boolean CDiskProxy::Remote (void)
+{
+#ifdef ARM_ALLOW_MULTI_CORE
+	return CMultiCoreSupport::ThisCore () != 0;
+#else
+	return FALSE;
+#endif
+}
+
+bool CDiskProxy::Call (macemu::Storage *pStorage, TOp Op, u32 nOffset, void *pBuffer, u32 nLength)
+{
+	s_pStorage = pStorage;
+	s_nOp = Op;
+	s_nOffset = nOffset;
+	s_pBuffer = pBuffer;
+	s_nLength = nLength;
+	DataMemBarrier ();
+	s_nState = 1;
+	while (s_nState != 2)
+	{
+		// core 0 is on it
+	}
+	DataMemBarrier ();
+	bool bResult = s_bResult;
+	s_nState = 0;
+	DataMemBarrier ();
+	return bResult;
+}
+
+void CDiskProxy::Service (void)
+{
+	if (s_nState != 1)
+	{
+		return;
+	}
+	DataMemBarrier ();
+	macemu::Storage *pStorage = s_pStorage;
+	bool bResult = true;
+	switch (s_nOp)
+	{
+	case OpRead:	bResult = pStorage->read (s_nOffset, s_pBuffer, s_nLength);	break;
+	case OpWrite:	bResult = pStorage->write (s_nOffset, s_pBuffer, s_nLength);	break;
+	default:	pStorage->flush ();						break;
+	}
+	s_bResult = bResult;
+	DataMemBarrier ();
+	s_nState = 2;
+}
 
 CFileStorage::CFileStorage (void)
 :	m_bOpen (FALSE),
@@ -38,6 +97,11 @@ boolean CFileStorage::Open (const char *pPath)
 
 bool CFileStorage::read (macemu::u32 nOffset, void *pBuffer, macemu::u32 nLength)
 {
+	if (CDiskProxy::Remote ())
+	{
+		return CDiskProxy::Call (this, CDiskProxy::OpRead, nOffset, pBuffer, nLength);
+	}
+
 	UINT nRead = 0;
 	if (   !m_bOpen
 	    || nOffset + nLength > m_nSize
@@ -52,6 +116,11 @@ bool CFileStorage::read (macemu::u32 nOffset, void *pBuffer, macemu::u32 nLength
 
 bool CFileStorage::write (macemu::u32 nOffset, const void *pBuffer, macemu::u32 nLength)
 {
+	if (CDiskProxy::Remote ())
+	{
+		return CDiskProxy::Call (this, CDiskProxy::OpWrite, nOffset, (void *) pBuffer, nLength);
+	}
+
 	UINT nWritten = 0;
 	if (   !m_bOpen
 	    || m_bReadOnly
@@ -69,6 +138,12 @@ bool CFileStorage::write (macemu::u32 nOffset, const void *pBuffer, macemu::u32 
 
 void CFileStorage::flush (void)
 {
+	if (CDiskProxy::Remote ())
+	{
+		CDiskProxy::Call (this, CDiskProxy::OpFlush, 0, 0, 0);
+		return;
+	}
+
 	if (m_bOpen && m_bDirty)
 	{
 		f_sync (&m_File);
@@ -149,6 +224,12 @@ bool CMemoryStorage::write (macemu::u32 nOffset, const void *pBuffer, macemu::u3
 
 void CMemoryStorage::flush (void)
 {
+	if (CDiskProxy::Remote ())
+	{
+		CDiskProxy::Call (this, CDiskProxy::OpFlush, 0, 0, 0);
+		return;
+	}
+
 	if (!m_bDirty || m_pData == 0)
 	{
 		return;

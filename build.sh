@@ -58,13 +58,15 @@ if [ "$("$TOP/tools/circle-usb-hook.sh" "$CIRCLE")" = patched ]; then
     rm -f "$CIRCLE"/.macemu-*
 fi
 
-STAMP="$CIRCLE/.macemu-$MODEL"
+STAMP="$CIRCLE/.macemu-$MODEL-mc"         # -mc: built with multi-core support
 if [ ! -f "$STAMP" ]; then
     cd "$CIRCLE"
     rm -f .macemu-*
     ./configure -r $RASPPI -p "$PREFIX" -f
     # Linux-targeted compilers default to outline atomics, which need libc.
     case "$PREFIX" in *linux*) echo 'CFLAGS += -mno-outline-atomics' >> Config.mk ;; esac
+    # The Mac runs on a core of its own (not on the single-core Pi 1 / Zero).
+    [ "$RASPPI" != 1 ] && echo 'DEFINE += -DARM_ALLOW_MULTI_CORE' >> Config.mk
     ./makeall clean >/dev/null
     make -C addon/fatfs clean >/dev/null
     make -C addon/SDCard clean >/dev/null

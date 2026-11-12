@@ -7,6 +7,29 @@
 #include <fatfs/ff.h>
 #include "../core/types.h"
 
+// The SD card (FatFs) may only be used from core 0.  When the Mac runs on
+// another core, its disk accesses are handed to core 0 through this single
+// request slot: the Mac's core waits while core 0 calls Service().
+class CDiskProxy
+{
+public:
+	enum TOp { OpRead, OpWrite, OpFlush };
+
+	// TRUE when called on a core other than 0.
+	static boolean Remote (void);
+	static bool Call (macemu::Storage *pStorage, TOp Op, u32 nOffset, void *pBuffer, u32 nLength);
+	static void Service (void);			// core 0: carry out a waiting request
+
+private:
+	static macemu::Storage * volatile s_pStorage;
+	static volatile int s_nOp;
+	static volatile u32 s_nOffset;
+	static void * volatile s_pBuffer;
+	static volatile u32 s_nLength;
+	static volatile bool s_bResult;
+	static volatile int s_nState;			// 0 idle, 1 requested, 2 done
+};
+
 // A hard disk image: read and written in place, block by block.
 class CFileStorage : public macemu::Storage
 {

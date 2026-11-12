@@ -15,6 +15,8 @@
 #include <circle/cputhrottle.h>
 #include <circle/logger.h>
 #include <circle/sched/scheduler.h>
+#include <circle/multicore.h>
+#include <circle/memory.h>
 #include <circle/net/netsubsystem.h>
 #include <wlan/bcm4343.h>
 #include <wlan/hostap/wpa_supplicant/wpasupplicant.h>
@@ -57,6 +59,19 @@ private:
 	CCharGenerator m_Generator;
 };
 
+#ifdef ARM_ALLOW_MULTI_CORE
+class CKernel;
+// Core 1 runs the Mac; cores 2 and 3 are not used yet.
+class CEmuCores : public CMultiCoreSupport
+{
+public:
+	CEmuCores (CKernel *pKernel) : CMultiCoreSupport (CMemorySystem::Get ()), m_pKernel (pKernel) {}
+	void Run (unsigned nCore) override;
+private:
+	CKernel *m_pKernel;
+};
+#endif
+
 class CKernel : public macemu::OsdHost, public CWebServerHost
 {
 public:
@@ -67,11 +82,14 @@ public:
 
 	TShutdownMode Run (void);
 
+	void EmuCoreRun (void);			// the Mac's own core (core 1)
+
 	// macemu::OsdHost
 	int listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax) override;
 	void saveAndReboot (void) override;
 	const char *networkLine (int nLine) override	{ return m_NetLine[nLine < 0 || nLine > 2 ? 0 : nLine]; }
 	bool insertDisk (int nDrive, const char *pName) override;
+	bool InsertDiskPaused (int nDrive, const char *pName);
 	void ejectDisk (int nDrive) override;
 	const char *diskName (int nDrive) override	{ return m_FloppyName[nDrive]; }
 	void resetMachine (void) override;
@@ -106,6 +124,12 @@ private:
 	void MacKey (int nKey, boolean bDown);
 	void ReleaseAllKeys (void);
 	void QueueSound (void);
+	void ExecuteFrame (void);		// one emulated frame, with queued input first
+	void PauseEmu (void);			// stop the Mac's core at a frame boundary
+	void ResumeEmu (void);
+	enum TEmuEvent { EvKey, EvMouseMove, EvMouseButton, EvInterrupt };
+	void PostEvent (TEmuEvent Type, int a, int b = 0);
+	void DrainEvents (void);
 	void UpdateScreen (void);
 	void Present (void);
 	void BootLog (boolean bForce = FALSE);
@@ -215,7 +239,24 @@ private:
 	u32			m_nLastActivity;
 	unsigned		m_nIdleFrames;
 	unsigned		m_nScreenshot;
-	unsigned		m_nEmulatedFrames;
+	volatile unsigned	m_nEmulatedFrames;	// counted on the Mac's core
+	unsigned		m_nEmulatedSeen;	// value at the last speed reading
+
+	// The Mac on its own core: pause handshake, input queue, sound ring
+#ifdef ARM_ALLOW_MULTI_CORE
+	CEmuCores		*m_pCores;
+#endif
+	volatile boolean	m_bEmuCoreRunning;
+	volatile unsigned	m_nPauseRequests;
+	volatile unsigned	m_nPauseSeq;
+	volatile unsigned	m_nPauseAck;
+	enum { EventQueueSize = 256, SoundRingSize = 16384 };
+	struct TEvent { u8 nType; s16 a, b; };
+	TEvent			m_Events[EventQueueSize];
+	volatile unsigned	m_nEventIn, m_nEventOut;
+	s16			m_SoundRing[SoundRingSize];
+	volatile unsigned	m_nSoundIn, m_nSoundOut;
+	volatile unsigned	m_nSoundRate;
 	u64			m_nStatsTime;
 	unsigned		m_nSpeedPercent;
 	char			m_InfoLine[2][64];

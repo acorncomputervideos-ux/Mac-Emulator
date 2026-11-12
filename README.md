@@ -133,6 +133,14 @@ Three models are emulated:
   temporary file first, so a broken transfer never leaves half a file.
 - Transfers are fastest while the F12 menu is open (the Mac is paused).
 
+**Multi-core**
+- On every Pi with more than one core, the emulated Mac has core 1 to
+  itself and runs without interruption. Core 0 does everything else: USB
+  keyboard and mouse, Wi-Fi/Ethernet and the web page, the screen (a steady
+  60 frames a second, whatever the Mac's speed), sound and the SD card.
+  The Mac's disk accesses are handed to core 0, which serves them at once.
+- The Pi 1 and Zero (one core) run everything on that core, as before.
+
 **Fast start-up**
 - The Pi's rainbow splash, the boot delay and the firmware's warning
   overlays are switched off in `config.txt`, and the ARM runs at full speed
@@ -249,7 +257,8 @@ src/core/      machine emulation: 68000, VIA, IWM + GCR floppy, NCR 5380 SCSI,
 src/frontend/  platform-independent frontend: config file, USB→Mac key map,
                display scaling/palettes/BMP, F12 menu
 src/circle/    the Raspberry Pi kernel: framebuffer, USB HID, HDMI/PWM sound,
-               SD card (FatFs), pacing, hot keys, web file manager
+               SD card (FatFs), the Mac's own core, pacing, hot keys,
+               web file manager, Wi-Fi, power keys
 src/host/      headless PC runner
 tests/         unit tests and the SingleStepTests driver; webtest runs the
                web file manager against real sockets and files
