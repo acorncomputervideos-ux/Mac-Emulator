@@ -21,9 +21,13 @@ public:
     explicit Fpu(int type);
     bool execute(M68K &cpu, u16 op) override;
     void reset() override;
+    void checkpoint() override { for (int i = 0; i < 8; i++) savedFp[i] = fp[i]; savedCr = fpcr; savedSr = fpsr; savedIar = fpiar; }
+    void rollback() override { for (int i = 0; i < 8; i++) fp[i] = savedFp[i]; fpcr = savedCr; fpsr = savedSr; fpiar = savedIar; }
 
     fm::F fp[8];
     u32 fpcr, fpsr, fpiar;
+    fm::F savedFp[8];                   // as the current instruction found them
+    u32 savedCr, savedSr, savedIar;
 
     // Memory formats (big-endian byte arrays), public for tests.
     static fm::F fromExtended(const u8 *p);

@@ -1847,6 +1847,22 @@ void CKernel::powerOff (void)
 #if RASPPI >= 5
 	poweroff ();
 #else
+	if (CMachineInfo::Get ()->GetMachineModel () == MachineModel400)
+	{
+		// The Pi 400's keyboard controller holds the power: it cuts it when
+		// the firmware's expander line 5 (GLOBAL_SHUTDOWN) is driven, as
+		// Linux's gpio-poweroff does (active, inactive, active).
+		static const unsigned States[] = {1, 0, 1};
+		for (unsigned i = 0; i < 3; i++)
+		{
+			CBcmPropertyTags Tags;
+			TPropertyTagGPIOState State;
+			State.nGPIO = EXP_GPIO_BASE + 5;
+			State.nState = States[i];
+			Tags.GetTag (PROPTAG_SET_SET_GPIO_STATE, &State, sizeof State, 8);
+			m_Timer.MsDelay (i < 2 ? 100 : 3000);
+		}
+	}
 	CBcmWatchdog Watchdog;
 	Watchdog.Restart (CBcmWatchdog::PartitionHalt);	// the firmware halts until GPIO 3 / power key
 #endif

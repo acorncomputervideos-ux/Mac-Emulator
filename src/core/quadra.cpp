@@ -348,6 +348,11 @@ void Quadra::runFrame()
     while (sample < kSamplesPerFrame) soundBuf[sample++] = asc.sample();
     frameStart = end;
 
+    // Translation faults in the RAM part of the address space (below the
+    // ROM and I/O at $40000000) mean virtual memory is paging: from then
+    // on, faulting instructions are made restartable.
+    if (cpu.pageFaults) cpu.restartable = true;
+
     via1.raise(Via::IRQ_CA1);                           // 60.15 Hz
     dafb.vbl();
     adb.tick();

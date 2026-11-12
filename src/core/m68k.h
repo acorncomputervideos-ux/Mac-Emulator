@@ -35,9 +35,15 @@ public:
     bool busError = false;
     u32 busErrorAddr = 0;
     bool busErrorWrite = false;
+    bool busErrorAtc = false;           // an MMU translation fault (not a device's)
+    bool busErrorCode = false;          // on an instruction fetch
+    int busErrorSize = 2;               // 0 byte, 1 word, 2 long
     void signalBusError(u32 addr, bool write)
     {
-        if (!busError) { busError = true; busErrorAddr = addr; busErrorWrite = write; }
+        if (!busError) {
+            busError = true; busErrorAddr = addr; busErrorWrite = write;
+            busErrorAtc = busErrorCode = false; busErrorSize = 2;
+        }
     }
 };
 
@@ -50,6 +56,10 @@ public:
     // Returns false if the instruction is not recognised (F-line exception).
     virtual bool execute(M68K &cpu, u16 op) = 0;
     virtual void reset() {}
+    // Save and restore the registers an instruction may change, so that a
+    // 68040 access fault can restart it.
+    virtual void checkpoint() {}
+    virtual void rollback() {}
     // 68040 MOVEC access to MMU registers; returns false if unknown.
     virtual bool control(int reg, u32 &value, bool write) { (void)reg; (void)value; (void)write; return false; }
 };
@@ -74,6 +84,11 @@ public:
     explicit M68K(Bus *bus);
 
     void setModel(int m) { model = m; table = m == MC68000 ? s_table000 : s_table020; }
+    // 68040: make access faults restartable (the registers are saved before
+    // each instruction, which costs some speed).  The machine turns this on
+    // while virtual memory is in use.
+    bool restartable = false;
+    u32 pageFaults = 0;                 // translation faults below $40000000 since reset
     bool fastDispatch = true;           // false: decode every instruction in exec() (for comparisons)
     int getModel() const { return model; }
     void attachFpu(Coprocessor *f) { fpu = f; }
@@ -207,6 +222,15 @@ private:
     u32 pop32() { u32 v = rd(a[7], 2); a[7] += 4; return v; }
     void switchStack(u32 newS, u32 newM);
     void busErrorException();
+
+    // The 68040 restarts a faulting instruction: its state as it began.
+    // Two block copies: d[] and a[] are adjacent, and so are usp ... imask.
+    struct Checkpoint { u32 da[16]; u32 rest[12]; };
+    Checkpoint saved;
+    void checkpoint();
+    void rollback();
+    static void checkLayout();
+    void faultSeen() { if (tlbGeneration != 0xFFFFFFFFu) flushTlb(0xFFFFFFFFu); }   // later accesses take the slow path
 
     u32 index(u32 base);
 

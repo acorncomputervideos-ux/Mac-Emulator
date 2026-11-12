@@ -70,6 +70,7 @@ void M68K::hardReset()
     fC = fV = fZ = fN = fX = 0;
     fS = 1; fM = 0; fT = 0; imask = 7;
     stopped = false; usp = isp = msp = 0;
+    restartable = false; pageFaults = 0;
     vbr = sfc = dfc = cacr = caar = 0;
     if (fpu) fpu->reset();
     if (mmuUnit) mmuUnit->reset();
@@ -103,8 +104,30 @@ u32 M68K::physical(u32 addr, bool write, bool code)
 {
     bool fault = false;
     u32 p = mmu->translate(addr, write, fS != 0, code, fault);
-    if (fault) bus->signalBusError(addr, write);
+    if (fault && !bus->busError) {
+        bus->signalBusError(addr, write);
+        bus->busErrorAtc = true;
+        bus->busErrorCode = code;
+        if (addr < 0x40000000u) pageFaults++;
+    }
     return p;
+}
+
+// d[]/a[] and usp, isp, msp, fC, fV, fZ, fN, fX, fS, fM, fT, imask are each
+// contiguous (checked below), so a checkpoint is two block copies.
+static_assert(sizeof(u32) == 4, "u32");
+
+__attribute__((noinline)) void M68K::checkpoint()
+{
+    memCopy(saved.da, d, sizeof saved.da);
+    memCopy(saved.rest, &usp, sizeof saved.rest);
+}
+
+__attribute__((noinline)) void M68K::rollback()
+{
+    memCopy(d, saved.da, sizeof saved.da);
+    memCopy(&usp, saved.rest, sizeof saved.rest);
+    pc = instPC;
 }
 
 void M68K::flushTlb(u32 gen)
@@ -184,14 +207,24 @@ u32 M68K::rdSlow(u32 addr, int sz)
         return v;
     }
     if (mapped) addr = physical(addr, false, false);
-    if (sz == 0) return bus->read8(addr);
-    if (sz == 1) return bus->read16(addr);
-    if (addr & 2) { u32 h = bus->read16(addr); return (h << 16) | bus->read16(addr + 2); }
-    return bus->read32(addr);
+    bool before = bus->busError;
+    if (before && model >= MC68040) {                   // translation fault: no access
+        faultSeen();
+        if (bus->busErrorAtc && !bus->busErrorWrite) bus->busErrorSize = sz;
+        return sz == 0 ? 0xFF : sz == 1 ? 0xFFFF : 0xFFFFFFFFu;
+    }
+    u32 v;
+    if (sz == 0) v = bus->read8(addr);
+    else if (sz == 1) v = bus->read16(addr);
+    else if (addr & 2) { u32 h = bus->read16(addr); v = (h << 16) | bus->read16(addr + 2); }
+    else v = bus->read32(addr);
+    if (!before && bus->busError && model >= MC68040) { bus->busErrorSize = sz; faultSeen(); }   // a device's
+    return v;
 }
 
 void M68K::wrSlow(u32 addr, int sz, u32 v)
 {
+    if (bus->busError && model >= MC68040) return;      // the instruction will run again: no writes now
     if (model == MC68000) {
         if (sz == 0) { cyc += 4; bus->write8(addr, (u8)v); }
         else if (sz == 1) { cyc += 4; bus->write16(addr, (u16)v); }
@@ -212,15 +245,18 @@ void M68K::wrSlow(u32 addr, int sz, u32 v)
     if ((sz && (addr & 1)) || (mapped && sz && (addr & 0xFFF) > 0x1000 - kSize[sz])) {
         for (u32 i = 0; i < kSize[sz]; i++) {
             u32 p = mapped ? physical(addr + i, true, false) : addr + i;
+            if (bus->busError && model >= MC68040) { faultSeen(); return; }
             bus->write8(p, (u8)(v >> (8 * (kSize[sz] - 1 - i))));
         }
         return;
     }
     if (mapped) addr = physical(addr, true, false);
+    if (bus->busError && model >= MC68040) { faultSeen(); bus->busErrorSize = sz; return; }
     if (sz == 0) bus->write8(addr, (u8)v);
     else if (sz == 1) bus->write16(addr, (u16)v);
     else if (addr & 2) { bus->write16(addr, (u16)(v >> 16)); bus->write16(addr + 2, (u16)v); }
     else bus->write32(addr, v);
+    if (bus->busError && model >= MC68040) { bus->busErrorSize = sz; faultSeen(); }   // a device's
 }
 
 u32 M68K::index(u32 base)
@@ -329,8 +365,9 @@ void M68K::exception(int vec, u32 pushPC, int extraCycles, int format)
 }
 
 // Bus error: format A (68020/68030 short bus cycle fault) or format 7
-// (68040 access error).  Enough for handlers that inspect the fault address
-// and for probing code; the faulting instruction is not restartable.
+// (68040 access error).  On the 68040 the registers have been put back as
+// the instruction found them and later writes were dropped, so returning
+// with RTE runs the instruction again: virtual memory can page in and go on.
 void M68K::busErrorException()
 {
     u32 addr = bus->busErrorAddr;
@@ -347,7 +384,11 @@ void M68K::busErrorException()
         wr(f + 2, 2, instPC);
         wr(f + 6, 1, 0x7000 | 2 * 4);
         wr(f + 8, 2, addr);                             // effective address
-        wr(f + 12, 1, (u16)((write ? 0 : 0x100) | 0x05)); // SSW: RW, TM = user/supervisor data
+        // SSW: ATC for a translation fault, RW, SIZE, TM (user/supervisor, data/code).
+        static const u16 kSizeBits[3] = {0x20, 0x40, 0x00};   // byte, word, long
+        u16 tm = (u16)((fS ? 4 : 0) | (bus->busErrorCode ? 2 : 1));
+        wr(f + 12, 1, (u16)((bus->busErrorAtc ? 0x400 : 0) | (write ? 0 : 0x100) |
+                            kSizeBits[bus->busErrorSize < 0 || bus->busErrorSize > 2 ? 2 : bus->busErrorSize] | tm));
         wr(f + 20, 2, addr);                            // fault address
     } else {
         a[7] -= 32;
@@ -490,14 +531,20 @@ inline int M68K::stepOne()
         traceNext = fT != 0;
         if (model != MC68000) checkTlb();               // mappings may have changed in the last instruction
         instPC = pc;
+        if (__builtin_expect(restartable, 0)) checkpoint();
         opcode = fetch16();
 #ifdef OPHIST
         extern unsigned long long gOpHist[65536];
         gOpHist[opcode]++;
 #endif
+        bool fline = __builtin_expect(restartable, 0) && (opcode >> 12) == 0xF && fpu;
+        if (fline) fpu->checkpoint();
         if (fastDispatch) table[opcode](*this, opcode);
         else exec(opcode);
-        if (bus->busError) busErrorException();
+        if (bus->busError) {
+            if (restartable) { rollback(); if (fline) fpu->rollback(); }
+            busErrorException();
+        }
         else if (traceNext) exception(9, pc, 10, model == MC68000 ? 0 : 2);
     }
     if (model >= MC68040) cyc = (cyc + 3) >> 2;
@@ -1614,4 +1661,16 @@ bool M68K::mmuControl(int cr, u32 &v, bool write)
 
 #include "m68kfast.inc"
 
+} // namespace macemu
+
+namespace macemu {
+// The checkpoint's block copies rely on this member layout.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+void M68K::checkLayout()
+{
+    static_assert(__builtin_offsetof(M68K, a) == __builtin_offsetof(M68K, d) + 32, "d[] then a[]");
+    static_assert(__builtin_offsetof(M68K, imask) == __builtin_offsetof(M68K, usp) + 44, "usp ... imask in order");
+}
+#pragma GCC diagnostic pop
 } // namespace macemu

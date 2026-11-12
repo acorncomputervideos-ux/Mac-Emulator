@@ -143,10 +143,74 @@ static void testCpu()
     CHECK(be32(&p.mem[sp + 20]) == 0x4000);             // fault address
 }
 
+// Virtual memory: a page fault leaves the registers as the instruction found
+// them, writes nothing, and RTE runs the instruction again once the page is in.
+static void testRestart()
+{
+    Phys p;
+    Mmu040 m(p);
+    M68K cpu(&p);
+    cpu.setModel(M68K::MC68040);
+    cpu.attachMmu(&m, &m);
+    tables(p);
+    p.l(PAGES + 0 * 4, 0x000000 | 1);
+    p.l(PAGES + 1 * 4, 0x001000 | 1);
+    p.l(PAGES + 3 * 4, 0x003000 | 1);
+    p.l(PAGES + 15 * 4, 0x00F000 | 1);
+    p.l(PAGES + 4 * 4, 0);                              // page 4: not present yet
+    putBe32(&p.mem[0x204000], 0x11223344);              // where it will be
+    putBe32(&p.mem[2 * 4], 0x3000);
+    const u8 handler[] = { 0xF5, 0x18, 0x4E, 0x73 };    // pflusha; rte
+    memcpy(&p.mem[0x3000], handler, sizeof handler);
+    const u8 code[] = {
+        0x20, 0x3C, 0x00, 0x01, 0x00, 0x00,             // move.l #ROOT,d0
+        0x4E, 0x7B, 0x08, 0x07,                         // movec d0,srp
+        0x4E, 0x7B, 0x08, 0x06,                         // movec d0,urp
+        0x20, 0x3C, 0x00, 0x00, 0x80, 0x00,             // move.l #$8000,d0
+        0x4E, 0x7B, 0x00, 0x03,                         // movec d0,tc
+        0x41, 0xF8, 0x40, 0x00,                         // lea $4000.w,a0
+        0x26, 0x18,                                     // move.l (a0)+,d3   (at $101C: faults)
+        0x4E, 0x71,                                     // nop               ($101E)
+    };
+    memcpy(&p.mem[0x1000], code, sizeof code);
+    cpu.setSR(0x2700);
+    cpu.a[7] = 0xF800;
+    cpu.pc = 0x1000;
+    cpu.restartable = true;                             // as the machine sets it while paging
+    cpu.d[3] = 0x1234;
+    for (int i = 0; i < 20 && cpu.pc != 0x3000; i++) cpu.step();
+    CHECK(cpu.pc == 0x3000);
+    CHECK(cpu.a[0] == 0x4000 && cpu.d[3] == 0x1234);    // put back
+    CHECK(cpu.pageFaults == 1);
+    u32 sp = cpu.a[7];
+    CHECK(be32(&p.mem[sp + 2]) == 0x101C);              // the instruction runs again
+    u16 ssw = be16(&p.mem[sp + 12]);
+    CHECK((ssw & 0x400) && (ssw & 0x100) && (ssw & 0x60) == 0 && (ssw & 7) == 5);   // ATC, read, long, supervisor data
+    p.l(PAGES + 4 * 4, 0x204000 | 1);                   // "paged in"
+    for (int i = 0; i < 5 && cpu.pc != 0x101E; i++) cpu.step();
+    CHECK(cpu.pc == 0x101E && cpu.d[3] == 0x11223344 && cpu.a[0] == 0x4004);
+
+    // A write to a missing page writes nothing and leaves -(A1) alone.
+    const u8 code2[] = {
+        0x43, 0xF9, 0x00, 0x00, 0x90, 0x10,             // lea $9010.l,a1  (page 9 invalid)
+        0x2C, 0x3C, 0x55, 0x66, 0x77, 0x88,             // move.l #$55667788,d6
+        0x23, 0x06,                                     // move.l d6,-(a1)  (at $110C)
+        0x4E, 0x71,
+    };
+    memcpy(&p.mem[0x1100], code2, sizeof code2);
+    cpu.pc = 0x1100;
+    for (int i = 0; i < 10 && cpu.pc != 0x3000; i++) cpu.step();
+    CHECK(cpu.pc == 0x3000 && cpu.a[1] == 0x9010);
+    sp = cpu.a[7];
+    CHECK(be32(&p.mem[sp + 2]) == 0x110C && !(be16(&p.mem[sp + 12]) & 0x100));   // a write
+    CHECK(be32(&p.mem[sp + 20]) == 0x900C);
+}
+
 int main()
 {
     testWalks();
     testCpu();
+    testRestart();
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

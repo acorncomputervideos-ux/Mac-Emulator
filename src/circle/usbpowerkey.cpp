@@ -8,6 +8,22 @@
 
 static const char From[] = "powerkey";
 
+// Bytes as hex, for the log: what a keyboard's extra interface describes and sends.
+static void LogHex (const char *pWhat, const u8 *pData, unsigned nLength)
+{
+	char Line[3 * 48 + 1];
+	unsigned n = nLength < 48 ? nLength : 48;
+	static const char Hex[] = "0123456789ABCDEF";
+	for (unsigned i = 0; i < n; i++)
+	{
+		Line[3 * i] = Hex[pData[i] >> 4];
+		Line[3 * i + 1] = Hex[pData[i] & 15];
+		Line[3 * i + 2] = ' ';
+	}
+	Line[3 * n] = '\0';
+	CLogger::Get ()->Write (From, LogNotice, "%s (%u bytes): %s", pWhat, nLength, Line);
+}
+
 TPowerKeyHandler *CUSBPowerKeyDevice::s_pHandler = 0;
 
 // Usages that mean "power": System Power Down, Keyboard Power, Consumer Power.
@@ -251,6 +267,13 @@ void CUSBPowerKeyDevice::ReportHandler (const u8 *pReport, unsigned nReportSize)
 		return;
 	}
 
+	static unsigned nLogged = 0;
+	if (nLogged < 12)
+	{
+		nLogged++;
+		LogHex ("Report", pReport, nReportSize);	// which keys send what, for diagnosis
+	}
+
 	u8 nID = 0;
 	if (m_bReportIDs)
 	{
@@ -314,6 +337,10 @@ CUSBFunction *macemu_usb_hid_hook (CUSBFunction *pParent)
 				REQUEST_IN | REQUEST_TO_INTERFACE, TempFunction.GetInterfaceNumber ())
 			     == (int) nLength
 			  && CUSBPowerKeyDevice::Wanted (pDesc, nLength);
+	if (pDesc != 0)
+	{
+		LogHex (bWanted ? "HID interface with a power key" : "HID interface, no power key", pDesc, nLength);
+	}
 	delete [] pDesc;
 
 	return bWanted ? new CUSBPowerKeyDevice (pParent) : 0;

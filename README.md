@@ -119,7 +119,11 @@ Three models are emulated:
   power key): the Mac II and Quadra ask "Shut Down?"; shutting the Mac down
   turns the Pi off on a Pi 400 or Pi 5, and the power key starts it again.
   Press it twice, or in the menu, to turn the Pi off at once (after saving).
-  The menu also has *Turn off the Pi*.
+  The menu also has *Turn off the Pi*. On a Pi 400 the power is cut through
+  the keyboard controller (the firmware's GLOBAL_SHUTDOWN line, as Linux
+  does), not just halted. If Fn+F10 does nothing, `macemu.log` lists what
+  the keyboard's extra USB interface describes and the first reports it
+  sends: please send it in. (Not yet tried on a real Pi 400.)
 - **F11** toggles unlimited speed (turbo).
 - **F10** saves a screenshot to `screenshots/macNNN.bmp` on the SD card.
 - **F9** presses the interrupt switch.
@@ -416,8 +420,13 @@ Not emulated yet:
 - The 68030 MMU, and with it the IIx/IIcx/SE/30/IIci.
 - The serial ports' SCC works, but nothing is connected to it: LocalTalk
   finds no network (use EtherTalk on the Quadra).
-- Restartable access faults: a faulting instruction completes before the
-  exception, so virtual memory should stay off.
+- Virtual memory does not start yet: with it switched on in the Memory
+  control panel, System 7.1 starts without it (and makes no swap file).
+  The 68040's restartable access faults that it needs are in place: a
+  faulting instruction leaves the registers as it found them, writes
+  nothing, and runs again after the handler returns (checked by a test with
+  real page tables). The registers are only saved before each instruction
+  once a page fault has been seen, so this costs nothing otherwise.
 - Video modes with thousands or millions of colours.
 - 68000 address errors.
 - The serial ports: no modem, printer or LocalTalk. The SCC is modelled only

@@ -410,6 +410,7 @@ int main(int argc, char **argv)
         if (f == lateFrame && !host.insertDisk(0, lateImage.c_str()))
             fprintf(stderr, "cannot insert %s\n", lateImage.c_str());
         mac.runFrame();
+        if (quad && getenv("RESTARTABLE")) quad->cpu.restartable = atoi(getenv("RESTARTABLE")) != 0;   // 0/1: override the VM detection
         if (getenv("REALTIME")) {                       // keep to 60.15 frames a second
             static timespec start;
             if (f == 0) clock_gettime(CLOCK_MONOTONIC, &start);
@@ -551,6 +552,7 @@ int main(int argc, char **argv)
     if (pramFile) {
         if (FILE *pf = fopen(pramFile, "wb")) { fwrite(mac.clockChip().pram, 1, 256, pf); fclose(pf); }
     }
+    if (quad && getenv("SHOW_VBR")) printf("vbr %08X bus error handler %08X restartable %d page faults %u\n", quad->cpu.vbr, be32(&ram[quad->cpu.vbr + 8]), quad->cpu.restartable, quad->cpu.pageFaults);
     printf("ran %d frames, %llu cycles, PRAM %s%s\n", frames, (unsigned long long)mac.cycles(),
            mac.clockChip().pramDirty ? "modified" : "untouched", mac.poweredOff() ? ", powered off" : "");
     return 0;
