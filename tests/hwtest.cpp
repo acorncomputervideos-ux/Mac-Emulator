@@ -6,6 +6,7 @@
 #include <vector>
 #include "../src/core/mac.h"
 #include "../src/core/keys.h"
+#include "../src/core/esp.h"
 
 using namespace macemu;
 
@@ -371,6 +372,33 @@ struct Rig {
     enum { vBufB = 0xEFE1FE, vDirB = 0xEFE5FE, vSR = 0xEFF5FE, vACR = 0xEFF7FE, vIFR = 0xEFFBFE };
 };
 
+// 53C96: an unaligned buffer makes the Mac's driver put the first word in
+// the FIFO by hand and DMA the rest.  The FIFO bytes must reach the disk
+// first (they used to be left behind, shifting and wrecking the block).
+static void testEspUnalignedWrite()
+{
+    MemStorage disk(64 * 512);
+    Esp esp;
+    esp.attach(0, &disk);
+    u8 data[1024];
+    for (int i = 0; i < 1024; i++) data[i] = (u8)(i * 7 + 3);
+
+    esp.write(4, 0);                                    // target ID 0
+    const u8 cdb[10] = {0x2A, 0, 0, 0, 0, 5, 0, 0, 2, 0};   // WRITE(10) LBA 5, 2 blocks
+    for (u8 b : cdb) esp.write(2, b);
+    esp.write(3, 0x41);                                 // select, CDB from the FIFO
+    esp.read(5);
+    esp.write(2, data[0]);                              // first word by hand
+    esp.write(2, data[1]);
+    esp.write(0, (u8)(1022 & 0xFF));                    // TC = the rest
+    esp.write(1, (u8)(1022 >> 8));
+    esp.write(14, 0);
+    esp.write(3, 0x90);                                 // DMA transfer information
+    for (int i = 2; i < 1024; i++) esp.dmaWrite(data[i]);
+    CHECK(memcmp(&disk.data[5 * 512], data, 1024) == 0);
+    CHECK(disk.data[7 * 512] == 0 && disk.data[5 * 512 - 1] == 0);
+}
+
 static void testMachine()
 {
     Rig r;
@@ -526,6 +554,7 @@ static void testMouseAndSound()
 
 int main()
 {
+    testEspUnalignedWrite();
     testGcr();
     testFloppy();
     testScsi();

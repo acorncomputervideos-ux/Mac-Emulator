@@ -286,6 +286,11 @@ void Esp::transferInfo()
         // Pseudo-DMA: the chip moves data between the target and its FIFO,
         // the CPU empties or fills the FIFO; we interrupt when it is done.
         dmaDone = false;
+        if (phase == DataOut) {
+            // Bytes the driver put in the FIFO by hand (the odd first word of
+            // an unaligned buffer) go to the target before the DMA data.
+            while (fifoCount && phase == DataOut) targetByteOut(pop());
+        }
         if (phase == DataIn) {
             fillFifo();
             if (fifoCount < 2 && (tc() == 0 || phase != DataIn)) { dmaDone = true; raise(INTR_BS); }
