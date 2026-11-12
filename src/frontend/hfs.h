@@ -68,6 +68,8 @@ struct HfsNewFile {
 // the files do not fit.  `macNow` is the creation time (Mac epoch).
 bool hfsMakeFloppy(u8 *out, const char *volumeName, const HfsNewFile *files, int count, u32 macNow);
 enum { kHfsFloppyBytes = 819200, kHfsFloppyMaxFiles = 64 };
+// The same for 819200 (800K) or 1474560 (1.44 MB) bytes.
+bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile *files, int count, u32 macNow);
 
 // MacBinary II.
 bool macBinaryParse(const u8 *file, u32 len, HfsNewFile &out);     // false: not MacBinary

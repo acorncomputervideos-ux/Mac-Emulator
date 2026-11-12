@@ -140,6 +140,7 @@ public:
     const char *DiskDir() override { return "disks"; }
     const char *Version() override { return "test <1>"; }
     macemu::u32 MacTime() override { return 0xE0000000u; }
+    macemu::u32 MaxFloppyBytes() override { return 1474560; }
 };
 
 struct Reply { int code; std::string body; };
@@ -414,6 +415,11 @@ int main(int argc, char **argv)
         r = request("PUT", "/files/transfer/x.txt", "x");
         r = request("POST", "/makefloppy");
         CHECK(r.code == 200 && r.body.find("Transfer 2.dsk") != std::string::npos);
+        // Too much for 800K: a 1.44 MB floppy (this Mac has a SuperDrive).
+        r = request("PUT", "/files/transfer/big.bin", std::string(1000000, 'B'));
+        r = request("POST", "/makefloppy");
+        CHECK(r.code == 200 && r.body.find("Transfer 3.dsk") != std::string::npos);
+        CHECK(readFile("disks/Transfer 3.dsk").size() == 1474560);
     }
 
     // Restart the Mac.

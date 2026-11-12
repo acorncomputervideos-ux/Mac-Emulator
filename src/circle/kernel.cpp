@@ -33,7 +33,7 @@ typedef ::u64 hostu64;
 static const char FromKernel[] = "macemu";
 
 static const unsigned FrameMicros = 16626;	// 370 lines x 352 cycles at 7.8336 MHz
-static const unsigned MaxFloppyBytes = 819200 + 84 + 4096;
+static const unsigned FloppyFileMax = 1474560 + 84 + 4096;   // up to 1.44 MB (Quadra SuperDrive)
 
 CKernel *CKernel::s_pThis = 0;
 
@@ -2396,8 +2396,8 @@ int CKernel::listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax)
 			switch (Kind)
 			{
 			case Floppies:
-				bUse = bUse && (nSize == 409600 || nSize == 819200
-						|| (nSize > 409600 + 84 && nSize <= MaxFloppyBytes));
+				bUse = bUse && (nSize == 409600 || nSize == 819200 || nSize == 1474560
+						|| (nSize > 409600 + 84 && nSize <= FloppyFileMax));
 				break;
 			case HardDisks:
 				bUse = bUse && nSize > 2 * 1024 * 1024 && !endsWithNoCase (Info.fname, ".zip")
@@ -2466,7 +2466,7 @@ bool CKernel::InsertDiskPaused (int nDrive, const char *pName)
 	strAppend (Path, pName, sizeof Path);
 
 	CMemoryStorage *pDisk = new CMemoryStorage;
-	if (   !pDisk->Load (Path, MaxFloppyBytes)
+	if (   !pDisk->Load (Path, FloppyFileMax)
 	    || !m_pMachine->floppy ().insert (nDrive, pDisk, m_Config.floppyReadOnly != 0))
 	{
 		delete pDisk;

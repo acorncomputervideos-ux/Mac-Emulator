@@ -7,6 +7,7 @@
 #include "../src/core/mac.h"
 #include "../src/core/keys.h"
 #include "../src/core/esp.h"
+#include "../src/core/iwm.h"
 
 using namespace macemu;
 
@@ -480,6 +481,87 @@ static void testCdrom()
     CHECK(sense[2] == 2 && sense[12] == 0x3A);
 }
 
+// SWIM ISM: switch from IWM mode, select drive 1 with the motor on, read
+// an ID field and its data field (marks flagged, CRCs good), write a sector.
+static u16 crc16Ccitt(u16 c, u8 v)
+{
+    c ^= (u16)(v << 8);
+    for (int i = 0; i < 8; i++) c = (c & 0x8000) ? (u16)((c << 1) ^ 0x1021) : (u16)(c << 1);
+    return c;
+}
+
+static void testSwimMfm()
+{
+    MemStorage disk(1474560);
+    for (u32 i = 0; i < disk.data.size(); i++) disk.data[i] = (u8)(i / 512 * 3 + i);
+    Iwm swim;
+    swim.superDrive = true;
+    CHECK(swim.insert(0, &disk));
+    swim.read(15, 0); swim.read(13, 0);                 // q7, q6 on: the mode register
+    swim.read(8, 0);                                    // drive enable off
+    for (u8 v : {0x57, 0x17, 0x57, 0x57}) swim.write(15, v, 0);
+    swim.write(4, 0xF5, 0);
+    CHECK(swim.read(12, 0) == 0xF5);                    // ISM phases register reads back
+    swim.write(7, 0x82, 0);                             // motor on, drive 1
+    swim.write(7, 0x08, 0);                             // action: read
+    auto next = [&](bool &mark) { u8 h = swim.read(15, 0); mark = (h & 1) != 0; return swim.read(9, 0); };
+    bool mark;
+    u8 v = next(mark);
+    int marks = 0, guard = 0;
+    // Skip to an ID field: A1 A1 A1 FE.
+    while (guard++ < 20000) {
+        if (mark && v == 0xA1) marks++; else { if (marks == 3 && v == 0xFE) break; marks = 0; }
+        v = next(mark);
+    }
+    CHECK(marks == 3 && v == 0xFE);
+    u8 id[6];
+    u16 c = 0xFFFF;
+    for (int i = 0; i < 3; i++) c = crc16Ccitt(c, 0xA1);
+    c = crc16Ccitt(c, 0xFE);
+    for (int i = 0; i < 6; i++) { id[i] = next(mark); c = crc16Ccitt(c, id[i]); }
+    CHECK(id[0] == 0 && id[1] == 0 && id[2] >= 1 && id[2] <= 18 && id[3] == 2 && c == 0);
+    int sector = id[2] - 1;
+    // Its data field: A1 A1 A1 FB, 512 bytes, CRC.
+    marks = 0; guard = 0;
+    v = next(mark);
+    while (guard++ < 200) {
+        if (mark && v == 0xA1) marks++; else { if (marks == 3 && v == 0xFB) break; marks = 0; }
+        v = next(mark);
+    }
+    CHECK(v == 0xFB);
+    u8 data[514];
+    c = 0xFFFF;
+    for (int i = 0; i < 3; i++) c = crc16Ccitt(c, 0xA1);
+    c = crc16Ccitt(c, 0xFB);
+    for (int i = 0; i < 514; i++) { data[i] = next(mark); c = crc16Ccitt(c, data[i]); }
+    CHECK(c == 0 && memcmp(data, &disk.data[sector * 512], 512) == 0);
+
+    // Write the next sector: read up to its ID field, then write a data field.
+    swim.write(6, 0x08, 0);
+    swim.write(7, 0x08, 0);
+    marks = 0; guard = 0;
+    v = next(mark);
+    while (guard++ < 20000) {
+        if (mark && v == 0xA1) marks++; else { if (marks == 3 && v == 0xFE) break; marks = 0; }
+        v = next(mark);
+    }
+    for (int i = 0; i < 6; i++) id[i] = next(mark);
+    int target = id[2] - 1;
+    swim.write(7, 0x10, 0);                             // write mode
+    for (int i = 0; i < 12; i++) swim.write(0, 0, 0);
+    for (int i = 0; i < 3; i++) swim.write(1, 0xA1, 0);
+    swim.write(0, 0xFB, 0);
+    for (int i = 0; i < 512; i++) swim.write(0, (u8)(i ^ 0x5A), 0);
+    swim.write(2, 0, 0);                                // CRC
+    swim.write(6, 0x18, 0);                             // end of the write
+    bool ok = true;
+    for (int i = 0; i < 512; i++) ok &= disk.data[target * 512 + i] == (u8)(i ^ 0x5A);
+    CHECK(ok);
+    CHECK(swim.read(14, 0) & 0x40);                     // still in ISM mode
+    swim.write(6, 0x40, 0);                             // back to IWM
+    swim.write(4, 0xF5, 0);
+}
+
 static void testMachine()
 {
     Rig r;
@@ -635,6 +717,7 @@ static void testMouseAndSound()
 
 int main()
 {
+    testSwimMfm();
     testCdrom();
     testEspUnalignedWrite();
     testGcr();

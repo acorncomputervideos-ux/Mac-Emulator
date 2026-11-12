@@ -48,7 +48,7 @@ static const char PageUpload[] =
 static const char PageTail[] =
 "<section><h2>Send files to the Mac</h2>"
 "<div id=tdrop>Drop files here, or <input type=file id=tpick multiple></div>"
-"<p class=n>They go on a new 800K floppy in the disks folder, which goes straight into floppy drive 2. "
+"<p class=n>They go on a new floppy (800K, or 1.44 MB on a Quadra if needed) in the disks folder, which goes straight into floppy drive 2. "
 "MacBinary files (.bin) keep their icons and resource forks. To get files out of a disk, click [open] next to it.</p>"
 "<div id=tst></div></section>"
 "<section><h2>Mac</h2><button onclick=restart()>Restart the Mac</button>"
@@ -1099,7 +1099,7 @@ void CWebServer::MakeFloppy (CSocket *pSocket, const char *pQuery)
 	enum { MaxBytes = 1600 * 1024 };
 	static u8 *pFiles = 0, *pImage = 0;
 	if (pFiles == 0) pFiles = new u8[MaxBytes];
-	if (pImage == 0) pImage = new u8[macemu::kHfsFloppyBytes];
+	if (pImage == 0) pImage = new u8[1474560];
 	static macemu::HfsNewFile List[macemu::kHfsFloppyMaxFiles];
 	int nCount = 0;
 	u32 nUsed = 0;
@@ -1184,10 +1184,19 @@ void CWebServer::MakeFloppy (CSocket *pSocket, const char *pQuery)
 	strCopy (Volume, Name, sizeof Volume);
 	Volume[strLen (Volume) - 4] = '\0';			// "Transfer 1", without ".dsk"
 
-	if (!macemu::hfsMakeFloppy (pImage, Volume, List, nCount, m_pHost->MacTime ()))
+	// 800K if the files fit, else 1.44 MB where the Mac has a SuperDrive.
+	u32 nBytes = macemu::kHfsFloppyBytes;
+	if (!macemu::hfsMakeVolume (pImage, nBytes, Volume, List, nCount, m_pHost->MacTime ()))
 	{
-		SendStatus (pSocket, 413, "Those files do not fit on an 800K floppy. Send fewer at a time.");
-		return;
+		nBytes = 1474560;
+		if (   m_pHost->MaxFloppyBytes () < nBytes
+		    || !macemu::hfsMakeVolume (pImage, nBytes, Volume, List, nCount, m_pHost->MacTime ()))
+		{
+			SendStatus (pSocket, 413, m_pHost->MaxFloppyBytes () < nBytes
+				    ? "Those files do not fit on an 800K floppy. Send fewer at a time."
+				    : "Those files do not fit on a 1.44 MB floppy. Send fewer at a time.");
+			return;
+		}
 	}
 	FIL File;
 	UINT nWritten = 0;
@@ -1195,8 +1204,8 @@ void CWebServer::MakeFloppy (CSocket *pSocket, const char *pQuery)
 	FullPath (Dir, sizeof Dir, m_pHost->DiskDir ());
 	f_mkdir (Dir);
 	if (   f_open (&File, Path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK
-	    || f_write (&File, pImage, macemu::kHfsFloppyBytes, &nWritten) != FR_OK
-	    || f_close (&File) != FR_OK || nWritten != macemu::kHfsFloppyBytes)
+	    || f_write (&File, pImage, nBytes, &nWritten) != FR_OK
+	    || f_close (&File) != FR_OK || nWritten != nBytes)
 	{
 		SendStatus (pSocket, 507, "Cannot write the floppy (is the card full?).");
 		return;

@@ -122,6 +122,14 @@ Three models are emulated:
   otherwise the cable), Wi-Fi, Ethernet or Off. One of them is used at a time.
 - Nothing waits for the network: it comes up while the Mac starts.
 
+**1.44 MB floppies (Quadra)**
+- The Quadra's drives are SuperDrives (FDHD): 1.44 MB MFM disks as well as
+  400K/800K GCR. The SWIM's ISM half is emulated (mode switch, registers,
+  parameter RAM, FIFO, marks and CRCs) and MFM tracks are built from the
+  image on the fly; writes, including formatting, go back into the image.
+  Checked with System 7.1: a 1.44 MB disk mounts, files open, and edits
+  saved to it are in the image after ejecting.
+
 **CD-ROM**
 - A CD-ROM drive at SCSI ID 3 that behaves like an AppleCD 300. Choose an
   `.iso`, `.toast` or `.cdr` image on the F12 menu's *Hard disks* page; the
@@ -332,7 +340,6 @@ What has **not** been verified:
 
 Not emulated yet:
 - The 68030 MMU, and with it the IIx/IIcx/SE/30/IIci.
-- Floppies on the Quadra beyond the SWIM's IWM mode (no 1.44 MB MFM disks).
 - Ethernet for the Mac itself (the Pi's Ethernet is used for the web file
   manager). The serial ports' SCC works, but nothing is connected to it:
   AppleTalk finds no network.

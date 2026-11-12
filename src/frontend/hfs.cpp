@@ -252,7 +252,7 @@ struct Rec {
     u32 dataLen;
 };
 
-const u32 kSectors = 1600, kAlBlSt = 4, kAllocBlocks = kSectors - kAlBlSt - 2, kXtBlocks = 4;
+const u32 kAlBlSt = 4, kXtBlocks = 4;
 
 u32 keyBytes(const Rec &r) { return (u32)(1 + 6 + strLen(r.name) + 1) & ~1u; }   // even
 u32 recBytes(const Rec &r) { return keyBytes(r) + r.dataLen; }
@@ -279,8 +279,15 @@ void setBit(u8 *map, u32 bit) { map[bit >> 3] |= (u8)(0x80 >> (bit & 7)); }
 
 bool hfsMakeFloppy(u8 *out, const char *volumeName, const HfsNewFile *files, int count, u32 now)
 {
+    return hfsMakeVolume(out, kHfsFloppyBytes, volumeName, files, count, now);
+}
+
+bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile *files, int count, u32 now)
+{
+    if (bytes != 819200 && bytes != 1474560) return false;
+    const u32 kSectors = bytes / 512, kAllocBlocks = kSectors - kAlBlSt - 2;
     if (count < 0 || count > kHfsFloppyMaxFiles) return false;
-    memFill(out, 0, kHfsFloppyBytes);
+    memFill(out, 0, bytes);
 
     char vol[28];
     strCopy(vol, volumeName, sizeof vol);

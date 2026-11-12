@@ -233,7 +233,7 @@ void Osd::pickerKey(Nav nav)
         switch (pickTarget) {
         case PickFloppy1: case PickFloppy2:
             host.ejectDisk(pickId);
-            if (pickSel && !host.insertDisk(pickId, name)) say("Not a usable 400K/800K disk image");
+            if (pickSel && !host.insertDisk(pickId, name)) say("Not a usable floppy (400K, 800K; 1.44 MB on a Quadra)");
             break;
         case PickHardDisk:
             strCopy(cfg.hd[pickId], pickSel ? name : "none", Config::kPath);

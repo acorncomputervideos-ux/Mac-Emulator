@@ -45,6 +45,7 @@ void Quadra::resetLine()
     via1.reset();
     via2.reset();
     iwm.reset();
+    iwm.superDrive = true;                              // the Quadras have FDHD drives
     esp.reset();
     asc.reset();
     adb.reset();

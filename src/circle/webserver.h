@@ -24,6 +24,7 @@ public:
 	virtual const char *DiskDir (void) = 0;
 	virtual const char *Version (void) = 0;			// shown on the page
 	virtual macemu::u32 MacTime (void) = 0;			// now, in the Mac's clock
+	virtual macemu::u32 MaxFloppyBytes (void) = 0;		// 819200, or 1474560 with a SuperDrive
 };
 
 class CWebServer : public CTask

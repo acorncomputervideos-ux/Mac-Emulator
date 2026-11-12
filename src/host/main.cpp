@@ -136,7 +136,9 @@ static void watchCheck()
     if (gWatchEsp) printf("      %s\n", gWatchEsp());
     if (const char *dump = getenv("WATCH_DUMP")) {      // code around the watchpoint, for objdump
         if (FILE *f = fopen(dump, "wb")) {
-            for (u32 i = 0; i < 4096; i++) fputc((int)c.rd(c.instPC - 128 + i, 0), f);
+            u32 from = c.instPC - 128, len = 4096;
+            if (const char *r = getenv("WATCH_DUMP_RANGE")) sscanf(r, "%x:%x", &from, &len);   // hex start:length
+            for (u32 i = 0; i < len; i++) fputc((int)c.rd(from + i, 0), f);
             fclose(f);
         }
     }
@@ -223,6 +225,13 @@ int main(int argc, char **argv)
         quad = new Quadra(getenv("QUADRA_21") ? Dafb::Apple21 : Dafb::VGA);
         ok = quad->init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
         if (getenv("MACEMU_NOFAST")) quad->cpu.fastDispatch = false;
+        if (getenv("SWIM_TRACE")) {
+            static Quadra *tq = quad;
+            quad->floppy().trace = [](void *, int line, bool write, u8 v) {
+                static unsigned n = 0;
+                if (n++ < 400000) printf("swim %s %2d %02X pc=%08X\n", write ? "W" : "R", line, v, tq->cpu.instPC);
+            };
+        }
         if (traceIo) { quad->ioLog = logIo; }
         if (watchPc) {
             gWatchPc = watchPc; gWatchCpu = &quad->cpu; quad->stepHook = watchCheck;
@@ -317,7 +326,21 @@ int main(int argc, char **argv)
         if (!wavPath.empty()) { u32 n, rate; const s16 *snd = mac.sound(n, rate); wav.insert(wav.end(), snd, snd + n); }
 
         // Scripted input, starting once the machine has had time to boot.
-        if (f >= frames / 2 && f % 4 == 0 && typed < typeText.size()) {
+        static int typeAt = getenv("TYPE_AT") ? atoi(getenv("TYPE_AT")) : -1;
+        // CMD_KEY=frame:k presses Command-k at that frame (e.g. 4800:s to save).
+        for (const char *ck = getenv("CMD_KEY"); ck && *ck; ) {   // "frame:k,frame:k,..."
+            int at = atoi(ck);
+            const char *colon = strchr(ck, ':');
+            if (!colon) break;
+            bool sh = false;
+            int key = asciiToKey(colon[1], sh);
+            if (key >= 0 && f == at) { mac.keyEvent(MK_Command, true); mac.keyEvent(key, true); }
+            if (key >= 0 && f == at + 3) { mac.keyEvent(key, false); mac.keyEvent(MK_Command, false); }
+            const char *comma = strchr(ck, ',');
+            if (!comma) break;
+            ck = comma + 1;
+        }
+        if (f >= (typeAt >= 0 ? typeAt : frames / 2) && f % 4 == 0 && typed < typeText.size()) {
             bool shift = false;
             int key = asciiToKey(typeText[typed], shift);
             if (key < 0) typed++;

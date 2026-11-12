@@ -107,6 +107,7 @@ public:
 	const char *DiskDir (void) override		{ return m_Config.diskDir; }
 	const char *Version (void) override		{ return "built " __DATE__ " " __TIME__; }
 	macemu::u32 MacTime (void) override		{ return m_pMachine->clockChip ().seconds; }
+	macemu::u32 MaxFloppyBytes (void) override	{ return m_pQuadra != 0 ? 1474560 : 819200; }
 
 private:
 	boolean LoadConfig (void);
