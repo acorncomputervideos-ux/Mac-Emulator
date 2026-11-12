@@ -140,6 +140,7 @@ CKernel::CKernel (void)
 	m_NetLine[1][0] = m_NetLine[2][0] = '\0';
 	m_ROMName[0] = '\0';
 	m_LogTail[0] = '\0';
+	m_WpaLast[0] = '\0';
 	CUSBPowerKeyDevice::RegisterHandler (PowerKeyHandler);
 	m_Config.setDefaults ();
 }
@@ -1046,12 +1047,24 @@ void CKernel::BootLog (boolean bForce)
 	}
 	Text[nLength] = '\0';
 
-	// The WPA supplicant says so when the password is wrong.
+	// The WPA supplicant says so when the password is wrong; its latest
+	// message goes on the menu's Network page.
 	for (const char *p = Text; *p; p++)
 	{
 		if (*p == 'm' && strncmp (p, "may be incorrect", 16) == 0)
 		{
 			m_bWrongPassword = TRUE;
+		}
+		if (*p == 'w' && strncmp (p, "wpa: ", 5) == 0)
+		{
+			const char *q = p + 5;
+			unsigned n = 0;
+			while (q[n] != '\0' && q[n] != '\n' && q[n] != '\r' && n + 1 < sizeof m_WpaLast)
+			{
+				n++;
+			}
+			memcpy (m_WpaLast, q, n);
+			m_WpaLast[n] = '\0';
 		}
 	}
 
@@ -1745,6 +1758,11 @@ void CKernel::UpdateNetwork (void)
 			{
 				strCopy (m_NetLine[1], bLink ? "Joined, but the password exchange fails."
 							     : "Network not found: check the name (case!).", sizeof m_NetLine[1]);
+			}
+			if (m_WpaLast[0] != '\0')
+			{
+				strCopy (m_NetLine[2], "Wi-Fi says: ", sizeof m_NetLine[2]);	// its latest message
+				strAppend (m_NetLine[2], m_WpaLast, sizeof m_NetLine[2]);
 			}
 		}
 	}
