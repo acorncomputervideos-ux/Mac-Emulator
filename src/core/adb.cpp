@@ -71,7 +71,11 @@ int AdbKeyboard::talk(int reg, u8 *out)
         if (head == tail) return 0;
         out[0] = queue[tail];
         tail = (tail + 1) & 63;
-        if (head != tail) { out[1] = queue[tail]; tail = (tail + 1) & 63; }
+        if ((out[0] & 0x7F) == 0x7F) {                  // power key: both bytes
+            out[1] = out[0];
+            return 2;
+        }
+        if (head != tail && (queue[tail] & 0x7F) != 0x7F) { out[1] = queue[tail]; tail = (tail + 1) & 63; }
         else out[1] = 0xFF;
         return 2;
     }

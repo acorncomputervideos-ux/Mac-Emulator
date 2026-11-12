@@ -13,7 +13,7 @@ namespace macemu {
 class OsdHost {
 public:
     enum { kNameLen = 64 };
-    enum FileKind { Floppies, HardDisks, Roms };
+    enum FileKind { Floppies, HardDisks, Roms, WifiNetworks };   // Wi-Fi: a scan, strongest first
     virtual ~OsdHost() {}
     // Files of one kind on the card; returns how many were stored.
     virtual int listFiles(FileKind kind, char (*names)[kNameLen], int max) = 0;
@@ -25,6 +25,7 @@ public:
     virtual void settingsChanged() = 0;                 // apply Config to video/sound/input
     virtual bool saveSettings() = 0;
     virtual void saveAndReboot() = 0;                   // for model, ROM and memory changes
+    virtual void powerOff() = 0;                        // save everything and turn the Pi off
     virtual bool screenshot() = 0;
     virtual const char *infoLine(int n) = 0;            // n = 0..1, status text
     virtual const char *networkLine(int n) = 0;         // n = 0..2, network status
@@ -59,7 +60,7 @@ private:
     enum Item {
         // main
         ItFloppy1, ItFloppy2, ItDisksPage, ItMachinePage, ItPrefsPage, ItNetworkPage,
-        ItReset, ItInterrupt, ItScreenshot, ItSave, ItResume,
+        ItReset, ItInterrupt, ItScreenshot, ItSave, ItPowerOff, ItResume,
         // hard disks
         ItHd0, ItHd6 = ItHd0 + 6, ItDisksBack,
         // machine
@@ -67,9 +68,9 @@ private:
         // display and sound
         ItSpeed, ItPalette, ItSound, ItVolume, ItMouse, ItAlt, ItPrefsBack,
         // network
-        ItNetMode, ItWifiName, ItWifiPass, ItWifiCountry, ItKeyboard, ItNetApply, ItNetworkBack,
+        ItNetMode, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry, ItKeyboard, ItNetApply, ItNetworkBack,
     };
-    enum PickTarget { PickFloppy1, PickFloppy2, PickHardDisk, PickRom };
+    enum PickTarget { PickFloppy1, PickFloppy2, PickHardDisk, PickRom, PickWifi };
 
     Config &cfg;
     OsdHost &host;

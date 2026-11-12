@@ -28,6 +28,7 @@
 
 #include "storage.h"
 #include "webserver.h"
+#include "usbpowerkey.h"
 #include "../core/mac.h"
 #include "../core/macii.h"
 #include "../core/quadra.h"
@@ -78,6 +79,7 @@ public:
 	void settingsChanged (void) override;
 	bool saveSettings (void) override;
 	bool screenshot (void) override;
+	void powerOff (void) override;
 	const char *infoLine (int nLine) override	{ return m_InfoLine[nLine ? 1 : 0]; }
 
 	// CWebServerHost
@@ -106,9 +108,16 @@ private:
 	void QueueSound (void);
 	void UpdateScreen (void);
 	void Present (void);
-	void BootLog (void);
+	void BootLog (boolean bForce = FALSE);
 	void DrawMac (boolean bForce);
 	void ShowMessage (const char *pLine1, const char *pLine2);
+	void HandlePowerKey (void);
+	boolean HasPowerButton (void);
+	int ScanWiFi (char (*ppNames)[kNameLen], int nMax);
+	void ShowEmergency (const char *pTitle);
+	static void PowerKeyHandler (void);
+	static void WatchdogTimer (TKernelTimerHandle hTimer, void *pParam, void *pContext);
+	static void PanicHandler (void);
 	void Housekeeping (void);
 	void UpdateInfo (void);
 	void StartNetwork (void);
@@ -189,6 +198,13 @@ private:
 	boolean			m_bMacKeyDown[128];
 	boolean			m_bCapsLock;
 	boolean			m_bTurbo;
+	volatile boolean	m_bPowerKey;		// a power key went down
+	unsigned		m_nMacPowerKeyTicks;	// when the Mac was last sent its power key
+	volatile unsigned	m_nLoops;		// main loop heartbeat, for the freeze detector
+	unsigned		m_nWatchedLoops;
+	unsigned		m_nStuckSeconds;
+	boolean			m_bEmergencyShown;
+	char			m_LogTail[2048];	// end of what went to macemu.log
 
 	// sound
 	unsigned		m_nSampleRate;

@@ -9,6 +9,9 @@
 #include <circle/bcmpropertytags.h>
 #include <circle/startup.h>
 #include <circle/net/mdnsdaemon.h>
+#include <circle/bcmwatchdog.h>
+#include <circle/machineinfo.h>
+#include <circle/sched/task.h>
 
 #include "../core/keys.h"
 #include "../frontend/keymap.h"
@@ -82,6 +85,12 @@ CKernel::CKernel (void)
 	m_bWiFi (FALSE),
 	m_bWiFiPending (FALSE),
 	m_nNetStartTicks (0),
+	m_bPowerKey (FALSE),
+	m_nMacPowerKeyTicks (0),
+	m_nLoops (0),
+	m_nWatchedLoops (0),
+	m_nStuckSeconds (0),
+	m_bEmergencyShown (FALSE),
 	m_bWrongPassword (FALSE),
 	m_nLogBytes (0),
 	m_bNetRunning (FALSE),
@@ -111,6 +120,8 @@ CKernel::CKernel (void)
 	strCopy (m_NetLine[0], "Network: off (Connection is set to Off)", sizeof m_NetLine[0]);
 	m_NetLine[1][0] = m_NetLine[2][0] = '\0';
 	m_ROMName[0] = '\0';
+	m_LogTail[0] = '\0';
+	CUSBPowerKeyDevice::RegisterHandler (PowerKeyHandler);
 	m_Config.setDefaults ();
 }
 
@@ -579,15 +590,31 @@ TShutdownMode CKernel::Run (void)
 	m_Logger.Write (FromKernel, LogNotice, "Running: %uK RAM, display %ux%u, zoom %d",
 			m_Config.ramKB, m_Surface.width, m_Surface.height, m_Layout.scale);
 
+	m_Logger.RegisterPanicHandler (PanicHandler);
+	m_Timer.StartKernelTimer (HZ, WatchdogTimer, 0, this);
+
 	hostu64 nNextFrame = CTimer::GetClockTicks64 ();
 	m_nStatsTime = nNextFrame;
 
 	boolean bMenuWasOpen = FALSE;
 	while (1)
 	{
+		m_nLoops++;
 		UpdateUSB ();
 		UpdateNetwork ();
 		ProcessInput ();
+
+#if RASPPI >= 5
+		if (is_power_button_pressed ())
+		{
+			m_bPowerKey = TRUE;
+		}
+#endif
+		if (m_bPowerKey)
+		{
+			m_bPowerKey = FALSE;
+			HandlePowerKey ();
+		}
 
 		// The menu was closed (Esc, F12, Resume, Restart ...): repaint the
 		// whole Mac screen over it.
@@ -619,6 +646,7 @@ TShutdownMode CKernel::Run (void)
 				m_bForceRedraw = TRUE;
 			}
 
+			BootLog ();
 			WaitUntil (CTimer::GetClockTicks64 () + 10000);
 			nNextFrame = CTimer::GetClockTicks64 ();
 			continue;
@@ -678,7 +706,13 @@ TShutdownMode CKernel::Run (void)
 
 		if (m_pMachine->poweredOff ())
 		{
-			// Shut Down: save everything and wait for a key to start again.
+			// Shut Down: with a power button (Pi 400, Pi 5), turn the Pi
+			// off like Raspberry Pi OS does.  Otherwise save everything
+			// and wait for a key to start again.
+			if (HasPowerButton ())
+			{
+				powerOff ();
+			}
 			m_pMachine->flushDisks ();
 			SavePRAM ();
 			m_ActLED.Off ();
@@ -688,8 +722,14 @@ TShutdownMode CKernel::Run (void)
 			m_nKeyOut = m_nKeyIn;
 			while (m_nKeyOut == m_nKeyIn)
 			{
+				m_nLoops++;
 				UpdateUSB ();
 				UpdateNetwork ();
+				BootLog ();
+				if (m_bPowerKey)
+				{
+					powerOff ();
+				}
 				WaitUntil (CTimer::GetClockTicks64 () + 20000);
 			}
 			m_nKeyOut = m_nKeyIn;
@@ -746,20 +786,20 @@ void CKernel::Present (void)
 
 // For the first three minutes, note progress in SD:/macemu.log so that a
 // problem on real hardware can be diagnosed.
-void CKernel::BootLog (void)
+void CKernel::BootLog (boolean bForce)
 {
 	// Everything Circle logs (USB, Wi-Fi driver, WPA, DHCP ...) goes to
 	// macemu.log on the card every two seconds, plus a status line every
 	// five seconds for the first three minutes (then every minute).
 	static unsigned nLastSecond = 0;
 	unsigned nSecond = m_Timer.GetUptime ();
-	if (nSecond == nLastSecond || nSecond % 2 != 0)
+	if (!bForce && (nSecond == nLastSecond || nSecond % 2 != 0))
 	{
 		return;
 	}
 	nLastSecond = nSecond;
 
-	if (nSecond % 5 == 0 && (nSecond <= 180 || nSecond % 60 == 0))
+	if (!bForce && nSecond % 5 == 0 && (nSecond <= 180 || nSecond % 60 == 0))
 	{
 		char Line[160] = "";
 		appendUint (Line, nSecond, sizeof Line);
@@ -802,6 +842,17 @@ void CKernel::BootLog (void)
 			m_bWrongPassword = TRUE;
 		}
 	}
+
+	unsigned nKeep = (unsigned) nLength < sizeof m_LogTail - 1 ? (unsigned) nLength : sizeof m_LogTail - 1;
+	unsigned nOld = strLen (m_LogTail);
+	if (nOld + nKeep >= sizeof m_LogTail)
+	{
+		unsigned nDrop = nOld + nKeep - (sizeof m_LogTail - 1);
+		memmove (m_LogTail, m_LogTail + nDrop, nOld - nDrop + 1);
+		nOld -= nDrop;
+	}
+	memcpy (m_LogTail + nOld, Text + nLength - nKeep, nKeep);
+	m_LogTail[nOld + nKeep] = '\0';
 
 	FIL File;
 	BYTE Mode = m_nLogBytes == 0 ? (FA_WRITE | FA_CREATE_ALWAYS) : (FA_WRITE | FA_OPEN_APPEND);
@@ -1244,6 +1295,7 @@ void CKernel::UpdateNetwork (void)
 // Wait for a moment in time, letting the network tasks run meanwhile.
 void CKernel::WaitUntil (hostu64 nUntil)
 {
+	m_nLoops++;
 	while (CTimer::GetClockTicks64 () < nUntil)
 	{
 		if (m_pNet != 0)
@@ -1289,6 +1341,341 @@ boolean CKernel::FileInUse (const char *pPath)
 	}
 
 	return FALSE;
+}
+
+// ----------------------------------------------------------------- power
+
+void CKernel::PowerKeyHandler (void)
+{
+	if (s_pThis != 0)
+	{
+		s_pThis->m_bPowerKey = TRUE;
+	}
+}
+
+// Pi 400 (Fn+F10) and Pi 5 have a power button that starts a halted Pi.
+boolean CKernel::HasPowerButton (void)
+{
+	TMachineModel Model = CMachineInfo::Get ()->GetMachineModel ();
+	return Model == MachineModel400 || Model == MachineModel5 || Model == MachineModel500;
+}
+
+// The power key: the Mac II and Quadra get their own power key, which asks
+// "Shut Down?"; shutting down then turns the Pi off.  A second press within
+// five seconds, a press in the menu, or one on a Mac Plus turns the Pi off
+// straight away (after saving).
+void CKernel::HandlePowerKey (void)
+{
+	m_Logger.Write (FromKernel, LogNotice, "Power key");
+	unsigned nNow = m_Timer.GetTicks ();
+	if (   m_pOsd->active ()
+	    || m_pPlus != 0
+	    || (m_nMacPowerKeyTicks != 0 && nNow - m_nMacPowerKeyTicks < 5 * HZ))
+	{
+		powerOff ();
+	}
+
+	m_nMacPowerKeyTicks = nNow;
+	MacKey (MK_Power, TRUE);
+	MacKey (MK_Power, FALSE);
+}
+
+void CKernel::powerOff (void)
+{
+	m_Logger.Write (FromKernel, LogNotice, "Turning off");
+	for (unsigned d = 0; d < 2; d++)
+	{
+		if (m_pFloppy[d] != 0)
+		{
+			m_pFloppy[d]->flush ();
+		}
+	}
+	m_pMachine->flushDisks ();
+	SavePRAM ();
+	BootLog (TRUE);
+
+	m_pOsd->close ();
+	ShowMessage ("Turning off.", HasPowerButton () ? "Press the power key to start again."
+						       : "You can unplug the Pi now.");
+	Present ();
+	m_ActLED.Off ();
+	m_Timer.MsDelay (1500);
+
+#if RASPPI >= 5
+	poweroff ();
+#else
+	CBcmWatchdog Watchdog;
+	Watchdog.Restart (CBcmWatchdog::PartitionHalt);	// the firmware halts until GPIO 3 / power key
+#endif
+}
+
+// ----------------------------------------------------------------- Wi-Fi scan
+
+// The Broadcom firmware's scan records, as Circle's WPA driver reads them.
+struct TBssInfo
+{
+	u32 version;
+	u32 length;
+	u8 BSSID[6];
+	u16 beacon_period;
+	u16 capability;
+	u8 SSID_len;
+	u8 SSID[32];
+	struct { u32 count; u8 rates[16]; } rateset;
+	u16 chanspec;
+	u16 atim_window;
+	u8 dtim_period;
+	s16 RSSI;
+	s8 phy_noise;
+	u8 n_cap;
+	u32 nbss_cap;
+	u8 ctl_ch;
+	u32 reserved32[1];
+	u8 flags;
+	u8 reserved[3];
+	u8 basic_mcs[16];
+	u16 ie_offset;
+	u32 ie_length;
+	u16 SNR;
+};
+
+struct TEscanResult
+{
+	u32 buflen;
+	u32 version;
+	u16 sync_id;
+	u16 bss_count;
+	TBssInfo bss_info;
+};
+
+int CKernel::ScanWiFi (char (*ppNames)[kNameLen], int nMax)
+{
+	if (m_pWLAN == 0)
+	{
+		ShowMessage ("Starting Wi-Fi...", "");
+		Present ();
+		m_pWLAN = new CBcm4343Device (WLAN_FIRMWARE);
+		if (m_pWLAN == 0 || !m_pWLAN->Initialize ())
+		{
+			m_Logger.Write (FromKernel, LogWarning, "No Wi-Fi for the scan");
+			delete m_pWLAN;
+			m_pWLAN = 0;
+			return 0;
+		}
+	}
+
+	ShowMessage ("Searching for Wi-Fi networks...", "This takes about five seconds.");
+	Present ();
+
+	unsigned nLen;
+	static u8 Buffer[FRAME_BUFFER_SIZE];
+	while (m_pWLAN->ReceiveScanResult (Buffer, &nLen))
+	{
+		// old results
+	}
+
+	if (!m_pWLAN->Control ("escan 4"))
+	{
+		m_Logger.Write (FromKernel, LogWarning, "Wi-Fi scan failed");
+		return 0;
+	}
+
+	static int Signal[128];
+	int n = 0;
+	hostu64 nEnd = CTimer::GetClockTicks64 () + 5500000;
+	while (CTimer::GetClockTicks64 () < nEnd)
+	{
+		WaitUntil (CTimer::GetClockTicks64 () + 20000);
+		while (m_pWLAN->ReceiveScanResult (Buffer, &nLen))
+		{
+			if (nLen < sizeof (TEscanResult))
+			{
+				continue;
+			}
+			TEscanResult *pResult = (TEscanResult *) Buffer;
+			TBssInfo *pBss = &pResult->bss_info;
+			for (unsigned i = 0; i < pResult->bss_count; i++)
+			{
+				if (   (u8 *) pBss + sizeof (TBssInfo) > Buffer + nLen
+				    || pBss->length < sizeof (TBssInfo) - 8)
+				{
+					break;
+				}
+
+				char Name[kNameLen];
+				unsigned nNameLen = pBss->SSID_len <= 32 ? pBss->SSID_len : 32;
+				for (unsigned k = 0; k < nNameLen; k++)
+				{
+					u8 c = pBss->SSID[k];
+					Name[k] = c < ' ' ? '?' : (char) c;
+				}
+				Name[nNameLen] = '\0';
+
+				if (nNameLen > 0 && Name[0] != '\0')
+				{
+					int j = 0;
+					while (j < n && strcmp (ppNames[j], Name) != 0) j++;
+					if (j < n)
+					{
+						if (pBss->RSSI > Signal[j]) Signal[j] = pBss->RSSI;
+					}
+					else if (n < nMax && n < 128)
+					{
+						strCopy (ppNames[n], Name, kNameLen);
+						Signal[n] = pBss->RSSI;
+						n++;
+					}
+				}
+
+				pBss = (TBssInfo *) ((u8 *) pBss + pBss->length);
+			}
+		}
+	}
+
+	// Strongest first.
+	for (int i = 1; i < n; i++)
+	{
+		for (int j = i; j > 0 && Signal[j] > Signal[j - 1]; j--)
+		{
+			char Tmp[kNameLen];
+			strCopy (Tmp, ppNames[j], kNameLen);
+			strCopy (ppNames[j], ppNames[j - 1], kNameLen);
+			strCopy (ppNames[j - 1], Tmp, kNameLen);
+			int t = Signal[j]; Signal[j] = Signal[j - 1]; Signal[j - 1] = t;
+		}
+	}
+
+	m_Logger.Write (FromKernel, LogNotice, "Wi-Fi scan: %d networks", n);
+	for (int i = 0; i < n; i++)
+	{
+		m_Logger.Write (FromKernel, LogNotice, "  %s (%d dBm)", ppNames[i], Signal[i]);
+	}
+
+	return n;
+}
+
+// ----------------------------------------------------------------- trouble
+
+// Once a second: if the main loop has not moved for eight seconds, put what
+// is known on the screen, so that a photo of it tells what went wrong.
+void CKernel::WatchdogTimer (TKernelTimerHandle hTimer, void *pParam, void *pContext)
+{
+	CKernel *pThis = (CKernel *) pContext;
+	if (pThis->m_nLoops != pThis->m_nWatchedLoops)
+	{
+		pThis->m_nWatchedLoops = pThis->m_nLoops;
+		pThis->m_nStuckSeconds = 0;
+	}
+	else if (++pThis->m_nStuckSeconds == 8 && !pThis->m_bEmergencyShown)
+	{
+		pThis->ShowEmergency ("The emulator has stopped responding.");
+	}
+
+	pThis->m_Timer.StartKernelTimer (HZ, WatchdogTimer, 0, pThis);
+}
+
+void CKernel::PanicHandler (void)
+{
+	if (s_pThis != 0)
+	{
+		s_pThis->ShowEmergency ("The emulator has crashed.");
+	}
+}
+
+// Straight into the frame buffer (no back buffer): may run in an interrupt.
+void CKernel::ShowEmergency (const char *pTitle)
+{
+	m_bEmergencyShown = TRUE;
+	volatile u32 *pFB = m_pFrameBufferPixels;
+	if (pFB == 0)
+	{
+		return;
+	}
+	unsigned nWidth = (unsigned) m_Surface.width, nHeight = (unsigned) m_Surface.height;
+	unsigned fw = (unsigned) m_Font.width (), fh = (unsigned) m_Font.height ();
+	unsigned nCols = nWidth / fw, nRows = nHeight / fh;
+
+	for (unsigned y = 0; y < nHeight; y++)
+	{
+		for (unsigned x = 0; x < nWidth; x++)
+		{
+			pFB[y * m_nFrameBufferPitch + x] = 0x00400000;
+		}
+	}
+
+	static char Text[sizeof m_LogTail + 2048 + 256];
+	Text[0] = '\0';
+	strAppend (Text, pTitle, sizeof Text);
+	strAppend (Text, "\nPlease take a photo of this screen.  Task: ", sizeof Text);
+	CTask *pTask = CScheduler::Get ()->GetCurrentTask ();
+	const char *pName = pTask != 0 ? pTask->GetName () : 0;
+	strAppend (Text, pName != 0 && pName[0] ? pName : "main", sizeof Text);
+	strAppend (Text, "\n\n", sizeof Text);
+	unsigned nHead = strLen (Text);
+	strAppend (Text, m_LogTail, sizeof Text);
+	static char Recent[2048];
+	int nRecent = m_Logger.Read (Recent, sizeof Recent - 1, FALSE);
+	if (nRecent > 0)
+	{
+		Recent[nRecent] = '\0';
+		strAppend (Text, Recent, sizeof Text);
+	}
+
+	// Lay the text out in lines, then show the title and the last lines.
+	static unsigned LineStart[512];
+	unsigned nLines = 0, nCol = 0;
+	LineStart[nLines++] = 0;
+	for (unsigned i = 0; Text[i] && nLines < 512; i++)
+	{
+		if (Text[i] == '\n' || nCol + 1 >= nCols)
+		{
+			LineStart[nLines++] = i + 1;
+			nCol = 0;
+		}
+		else
+		{
+			nCol++;
+		}
+	}
+
+	unsigned nFirstLog = 0;
+	while (nFirstLog < nLines && LineStart[nFirstLog] < nHead) nFirstLog++;
+	unsigned nRoom = nRows > nFirstLog ? nRows - nFirstLog : 0;
+	unsigned nFrom = nLines - nFirstLog > nRoom ? nLines - nRoom : nFirstLog;
+
+	unsigned nRow = 0;
+	for (unsigned l = 0; l < nLines && nRow < nRows; l++)
+	{
+		if (l >= nFirstLog && l < nFrom)
+		{
+			continue;
+		}
+		unsigned nEnd = l + 1 < nLines ? LineStart[l + 1] : strLen (Text);
+		for (unsigned i = LineStart[l], c = 0; i < nEnd && c < nCols; i++)
+		{
+			char ch = Text[i];
+			if (ch == '\n')
+			{
+				break;
+			}
+			if (ch < ' ' || ch > '~')
+			{
+				ch = ' ';
+			}
+			for (unsigned y = 0; y < fh; y++)
+			{
+				for (unsigned x = 0; x < fw; x++)
+				{
+					if (m_Font.pixel (ch, (int) x, (int) y))
+					{
+						pFB[(nRow * fh + y) * m_nFrameBufferPitch + c * fw + x] = 0x00FFFFFF;
+					}
+				}
+			}
+			c++;
+		}
+		nRow++;
+	}
 }
 
 void CKernel::UpdateUSB (void)
@@ -1531,6 +1918,15 @@ void CKernel::HandleModifier (u8 ucBit, boolean bDown)
 
 void CKernel::HandleKey (u8 ucUsage, boolean bDown)
 {
+	if (ucUsage == 0x66)				// Keyboard Power
+	{
+		if (bDown)
+		{
+			m_bPowerKey = TRUE;
+		}
+		return;
+	}
+
 	// Emulator hot keys.
 	// F12, or Pause, Scroll Lock or the Menu key (for keyboards whose F12
 	// is a media key unless Fn is held).
@@ -1651,6 +2047,11 @@ void CKernel::HandleKey (u8 ucUsage, boolean bDown)
 // floppy); ROMs from the root (64 KB to 1 MB).
 int CKernel::listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax)
 {
+	if (Kind == WifiNetworks)
+	{
+		return ScanWiFi (ppNames, nMax);
+	}
+
 	int n = 0;
 	for (int nPass = 0; nPass < 2 && n < nMax; nPass++)
 	{

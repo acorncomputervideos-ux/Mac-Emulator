@@ -105,6 +105,7 @@ struct Host : OsdHost {
     void interruptButton() override { mac.interruptButton(); }
     void settingsChanged() override {}
     bool saveSettings() override { return true; }
+    void powerOff() override {}
     void saveAndReboot() override {}
     const char *networkLine(int n) override { return n == 0 ? "Web file manager: http://192.168.1.20/" : n == 1 ? "Open it from a browser on your network" : ""; }
     bool screenshot() override { return true; }

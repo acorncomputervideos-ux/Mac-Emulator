@@ -203,7 +203,8 @@ struct FakeHost : OsdHost {
         static const char *floppies[] = {"zebra.dsk", "Apple.dsk", "mango.img"};
         static const char *hds[] = {"hd0.img", "disks/System 7.5.hda"};
         static const char *roms[] = {"Quadra-650.ROM", "MacPlus.rom"};
-        const char **list = kind == Floppies ? floppies : kind == HardDisks ? hds : roms;
+        static const char *nets[] = {"Strong Net", "Another"};
+        const char **list = kind == Floppies ? floppies : kind == HardDisks ? hds : kind == WifiNetworks ? nets : roms;
         int n = kind == Floppies ? 3 : 2, c = 0;
         for (int i = 0; i < n && c < max; i++) strCopy(names[c++], list[i], kNameLen);
         return c;
@@ -216,6 +217,8 @@ struct FakeHost : OsdHost {
     void settingsChanged() override { changes++; }
     bool saveSettings() override { saves++; return true; }
     void saveAndReboot() override { reboots++; }
+    int offs = 0;
+    void powerOff() override { offs++; }
     bool screenshot() override { shots++; return true; }
     const char *infoLine(int) override { return "info"; }
     const char *networkLine(int n) override { return n == 0 ? "http://192.168.1.20/" : "net"; }
@@ -228,7 +231,7 @@ struct BoxFont : Font {
 };
 
 // Main page order: floppy 1, floppy 2, hard disks, machine, prefs, network,
-// restart, interrupt, screenshot, save, resume.
+// restart, interrupt, screenshot, save, turn off, resume.
 static void go(Osd &o, int n) { o.key(Osd::NavPageUp); for (int i = 0; i < n; i++) o.key(Osd::NavDown); }
 
 static void testOsd()
@@ -344,6 +347,9 @@ static void testOsd()
     CHECK(host.nmis == 1 && !osd.active());
     osd.open();
     go(osd, 10); osd.key(Osd::NavSelect);
+    CHECK(host.offs == 1);
+    osd.open();
+    go(osd, 11); osd.key(Osd::NavSelect);
     CHECK(!osd.active());
 
     // Network page: connection type, Wi-Fi name and password typed in.
@@ -355,8 +361,16 @@ static void testOsd()
     CHECK(strEq(cfg.network, "ethernet") && net.rebootPending());
     net.key(Osd::NavRight); net.key(Osd::NavRight);
     CHECK(strEq(cfg.network, "off"));
+    net.key(Osd::NavDown); net.key(Osd::NavSelect);                         // scan: picker keeps signal order
+    net.key(Osd::NavDown); net.key(Osd::NavSelect);                          // first = strongest
+    CHECK(strEq(cfg.wifiSsid, "Strong Net") && net.editing());                // then straight to the password
+    net.key(Osd::NavBack);
+    CHECK(!net.editing() && strEq(cfg.network, "auto"));
+    strCopy(cfg.network, "off", sizeof cfg.network);
+    net.key(Osd::NavPageUp); net.key(Osd::NavDown);
     net.key(Osd::NavDown); net.key(Osd::NavSelect);                         // edit the name
     CHECK(net.editing());
+    for (int i = 0; i < 40; i++) net.typeChar('\b');                        // clear the old name
     for (const char *t = "My Wifi!x"; *t; t++) net.typeChar(*t);
     net.typeChar('\b');
     net.typeChar('\n');                                                    // ignored
@@ -383,6 +397,7 @@ static void testOsd()
         Surface s{px.data(), 640, 480, 640, {}, false, 0, 0};
         setPalette(s, 0);
         net.key(Osd::NavUp); net.key(Osd::NavUp); net.key(Osd::NavUp); net.key(Osd::NavSelect);  // editing, long text
+        CHECK(net.editing());
         net.draw(s, f);
         net.key(Osd::NavBack);
         bool intact = true;

@@ -154,6 +154,23 @@ static void testAdb()
     r.adbState(3);
 }
 
+// The power key goes out as 7F 7F (down) and FF FF (up), never paired
+// with another key.
+static void testAdbPowerKey()
+{
+    AdbKeyboard kb;
+    u8 out[2];
+    kb.key(0x00, true);                 // A down
+    kb.key(MK_Power, true);
+    kb.key(MK_Power, false);
+    kb.key(0x00, false);
+    CHECK(kb.talk(0, out) == 2 && out[0] == 0x00 && out[1] == 0xFF);
+    CHECK(kb.talk(0, out) == 2 && out[0] == 0x7F && out[1] == 0x7F);
+    CHECK(kb.talk(0, out) == 2 && out[0] == 0xFF && out[1] == 0xFF);
+    CHECK(kb.talk(0, out) == 2 && out[0] == 0x80 && out[1] == 0xFF);
+    CHECK(kb.talk(0, out) == 0);
+}
+
 static void testInterrupts()
 {
     Rig r;
@@ -218,6 +235,7 @@ static void testSound()
 
 int main()
 {
+    testAdbPowerKey();
     testMemoryMap();
     testAdb();
     testInterrupts();

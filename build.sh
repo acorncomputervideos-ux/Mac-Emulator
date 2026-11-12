@@ -53,6 +53,11 @@ if [ ! -f "$CIRCLE/addon/wlan/hostap/wpa_supplicant/Makefile.circle" ]; then
     git -C "$CIRCLE" submodule update --init --depth 1 addon/wlan/hostap
 fi
 
+# Hook for the emulator's own USB driver (power keys); rebuild Circle if new.
+if [ "$("$TOP/tools/circle-usb-hook.sh" "$CIRCLE")" = patched ]; then
+    rm -f "$CIRCLE"/.macemu-*
+fi
+
 STAMP="$CIRCLE/.macemu-$MODEL"
 if [ ! -f "$STAMP" ]; then
     cd "$CIRCLE"

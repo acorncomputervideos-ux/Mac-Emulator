@@ -98,6 +98,11 @@ Three models are emulated:
   - *Network*: connection type, Wi-Fi name, password and country, keyboard
     layout for typing them, and the web file manager's address.
   - Restart the Mac, interrupt switch, screenshot, save settings.
+- **Power key** (Pi 400: Fn+F10; Pi 5: the power button; keyboards with a
+  power key): the Mac II and Quadra ask "Shut Down?"; shutting the Mac down
+  turns the Pi off on a Pi 400 or Pi 5, and the power key starts it again.
+  Press it twice, or in the menu, to turn the Pi off at once (after saving).
+  The menu also has *Turn off the Pi*.
 - **F11** toggles unlimited speed (turbo).
 - **F10** saves a screenshot to `screenshots/macNNN.bmp` on the SD card.
 - **F9** presses the interrupt switch.
@@ -105,9 +110,10 @@ Three models are emulated:
 - Settings live in a plain-text `macemu.cfg`.
 
 **Network: Wi-Fi or Ethernet**
-- Wi-Fi (Pi 3, 3+, 4, 5, Zero W and Zero 2 W): open the F12 menu, choose
-  *Network*, type the Wi-Fi name and password, pick your country and choose
-  *Save and restart*. The Wi-Fi chip's firmware is in `firmware/` on the
+- Wi-Fi (Pi 3, 3+, 4, 400, 5, Zero W and Zero 2 W): open the F12 menu,
+  choose *Network*, then *Choose Wi-Fi network* (a scan, strongest first) or
+  type the name, enter the password, pick your country and choose *Save and
+  restart*. The Wi-Fi chip's firmware is in `firmware/` on the
   card. A `wpa_supplicant.conf` of your own on the card works too.
 - Ethernet: plug in a cable (Pi 3/3+ via USB, Pi 4 and Pi 5 built in).
 - *Connection* chooses Automatic (Wi-Fi when a Wi-Fi network is set up,

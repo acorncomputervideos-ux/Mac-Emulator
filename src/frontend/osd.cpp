@@ -153,9 +153,10 @@ void Osd::openPicker(PickTarget target, int id)
 {
     pickTarget = target;
     pickId = id;
-    OsdHost::FileKind kind = target == PickHardDisk ? OsdHost::HardDisks : target == PickRom ? OsdHost::Roms : OsdHost::Floppies;
+    OsdHost::FileKind kind = target == PickHardDisk ? OsdHost::HardDisks : target == PickRom ? OsdHost::Roms
+                           : target == PickWifi ? OsdHost::WifiNetworks : OsdHost::Floppies;
     pickCount = host.listFiles(kind, names, kMaxFiles);
-    for (int i = 1; i < pickCount; i++) {               // alphabetical
+    for (int i = 1; i < pickCount && target != PickWifi; i++) {   // alphabetical
         char tmp[OsdHost::kNameLen];
         strCopy(tmp, names[i], sizeof tmp);
         int j = i - 1;
@@ -190,7 +191,9 @@ void Osd::activate(int item)
     case ItScreenshot: say(host.screenshot() ? "Screenshot saved" : "Could not save the screenshot"); break;
     case ItSave: say(host.saveSettings() ? "Settings saved to macemu.cfg" : "Could not write macemu.cfg"); break;
     case ItResume: isOpen = false; break;
+    case ItPowerOff: host.powerOff(); break;
     case ItRom: openPicker(PickRom, 0); break;
+    case ItWifiScan: openPicker(PickWifi, 0); break;
     case ItApply: case ItNetApply: host.saveAndReboot(); break;
     case ItWifiName: case ItWifiPass:
         editItem = item;
@@ -210,7 +213,8 @@ void Osd::activate(int item)
 void Osd::pickerKey(Nav nav)
 {
     int total = pickCount + 1;
-    Page back = pickTarget == PickHardDisk ? PageDisks : pickTarget == PickRom ? PageMachine : PageMain;
+    Page back = pickTarget == PickHardDisk ? PageDisks : pickTarget == PickRom ? PageMachine
+              : pickTarget == PickWifi ? PageNetwork : PageMain;
     switch (nav) {
     case NavUp: pickSel = cycle(pickSel, -1, 0, total - 1); break;
     case NavDown: pickSel = cycle(pickSel, 1, 0, total - 1); break;
@@ -230,6 +234,17 @@ void Osd::pickerKey(Nav nav)
             disksChanged = true;
             say("Restart the Mac to use the new disks");
             break;
+        case PickWifi:
+            if (!pickSel) break;
+            strCopy(cfg.wifiSsid, name, sizeof cfg.wifiSsid);
+            if (strEqNoCase(cfg.network, "off") || strEqNoCase(cfg.network, "ethernet"))
+                strCopy(cfg.network, "auto", sizeof cfg.network);
+            pendingReboot = true;
+            page = back;
+            sel[PageNetwork] = ItWifiPass - ItNetMode;              // straight on to the password
+            editItem = ItWifiPass;
+            editBuf[0] = 0;
+            return;
         case PickRom:
             if (!pickSel) break;
             strCopy(cfg.rom, name, Config::kPath);
@@ -340,6 +355,7 @@ void Osd::label(int item, char *out, u32 max)
         break;
     }
     case ItWifiCountry: field("Wi-Fi country", cfg.wifiCountry); break;
+    case ItWifiScan: strAppend(out, "Choose Wi-Fi network (search)  >", max); break;
     case ItKeyboard: field("Keyboard layout", strEqNoCase(cfg.keyboard, "us") ? "US" : "UK"); break;
     case ItNetApply: strAppend(out, pendingReboot ? "Save and restart now" : "Save and restart", max); break;
     case ItReset: strAppend(out, disksChanged ? "Restart the Mac (attach new disks)" : "Restart the Mac", max); break;
@@ -347,6 +363,7 @@ void Osd::label(int item, char *out, u32 max)
     case ItScreenshot: strAppend(out, "Save a screenshot", max); break;
     case ItSave: strAppend(out, "Save settings", max); break;
     case ItResume: strAppend(out, "Resume", max); break;
+    case ItPowerOff: strAppend(out, "Turn off the Pi", max); break;
     case ItModel: {
         const char *m = strEqNoCase(cfg.machine, "plus") ? "Macintosh Plus" : strEqNoCase(cfg.machine, "ii") ? "Macintosh II"
                       : strEqNoCase(cfg.machine, "quadra") ? "Quadra 800" : "From the ROM";
@@ -421,6 +438,7 @@ void Osd::draw(Surface &s, const Font &f)
                                    "Network", ""};
     if (page == PagePicker) {
         const char *t = pickTarget == PickHardDisk ? "Choose a hard disk image" : pickTarget == PickRom ? "Choose a ROM"
+                      : pickTarget == PickWifi ? "Choose your Wi-Fi network"
                       : "Choose a floppy disk";
         drawText(s, f, tx, ty, t, ColSelFg);
     } else {
@@ -434,14 +452,16 @@ void Osd::draw(Surface &s, const Font &f)
             int idx = pickTop + i;
             bool hot = idx == pickSel;
             if (hot) fillRect(s, x + fw / 2, ty, w - fw, fh, ColSelBg);
-            strCopy(line, idx == 0 ? (pickTarget == PickRom ? "(keep the current ROM)" : "(none / eject)") : names[idx - 1], (u32)cols + 1);
+            strCopy(line, idx == 0 ? (pickTarget == PickRom ? "(keep the current ROM)" : pickTarget == PickWifi ? "(cancel)" : "(none / eject)")
+                                   : names[idx - 1], (u32)cols + 1);
             drawText(s, f, tx, ty, line, hot ? ColSelFg : idx == 0 ? ColDim : ColMenuFg);
             ty += fh;
         }
-        if (pickCount == 0) drawText(s, f, tx, ty + fh, "No matching files on the SD card", ColDim);
+        if (pickCount == 0)
+            drawText(s, f, tx, ty + fh, pickTarget == PickWifi ? "No networks found (or no Wi-Fi on this Pi)" : "No matching files on the SD card", ColDim);
         line[0] = 0;
         appendUint(line, (u32)pickCount, sizeof line);
-        strAppend(line, " files   Enter: choose   Esc: back", sizeof line);
+        strAppend(line, pickTarget == PickWifi ? " networks   Enter: choose   Esc: back" : " files   Enter: choose   Esc: back", sizeof line);
         drawText(s, f, tx, y + h - fh - fh / 4, line, ColDim);
         return;
     }
