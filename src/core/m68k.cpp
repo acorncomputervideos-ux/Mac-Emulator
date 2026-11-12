@@ -173,7 +173,9 @@ u16 M68K::fetch16Slow()
         if (u8 *p = tlbLookup(addr, false, true)) return be16(p + (addr & 0xFFF));
     }
     if (mmu && mmu->enabled()) addr = physical(addr, false, true);
-    return bus->read16(addr);
+    u16 v = bus->read16(addr);
+    checkTlb();                                         // a device access may have changed the map
+    return v;
 }
 
 static const u32 kSize[3] = {1, 2, 4};
@@ -204,6 +206,7 @@ u32 M68K::rdSlow(u32 addr, int sz)
             u32 p = mapped ? physical(addr + i, false, false) : addr + i;
             v = (v << 8) | bus->read8(p);
         }
+        checkTlb();
         return v;
     }
     if (mapped) addr = physical(addr, false, false);
@@ -219,6 +222,7 @@ u32 M68K::rdSlow(u32 addr, int sz)
     else if (addr & 2) { u32 h = bus->read16(addr); v = (h << 16) | bus->read16(addr + 2); }
     else v = bus->read32(addr);
     if (!before && bus->busError && model >= MC68040) { bus->busErrorSize = sz; faultSeen(); }   // a device's
+    checkTlb();                                         // reading a device may change the map (the ROM overlay)
     return v;
 }
 
@@ -248,6 +252,7 @@ void M68K::wrSlow(u32 addr, int sz, u32 v)
             if (bus->busError && model >= MC68040) { faultSeen(); return; }
             bus->write8(p, (u8)(v >> (8 * (kSize[sz] - 1 - i))));
         }
+        checkTlb();
         return;
     }
     if (mapped) addr = physical(addr, true, false);
@@ -257,6 +262,7 @@ void M68K::wrSlow(u32 addr, int sz, u32 v)
     else if (addr & 2) { bus->write16(addr, (u16)(v >> 16)); bus->write16(addr + 2, (u16)v); }
     else bus->write32(addr, v);
     if (bus->busError && model >= MC68040) { bus->busErrorSize = sz; faultSeen(); }   // a device's
+    checkTlb();                                         // writing a device may change the map
 }
 
 u32 M68K::index(u32 base)
@@ -510,7 +516,39 @@ int M68K::step()
 u32 M68K::run(int count, u64 end)
 {
     u32 total = 0;
-    for (int i = 0; i < count && totalCycles < end; i++) total += (u32)stepOne();
+    if (restartable || !fastDispatch || model < MC68020) {
+        for (int i = 0; i < count && totalCycles < end; i++) total += (u32)stepOne();
+        return total;
+    }
+    const int shift = model >= MC68040 ? 2 : 1;
+    // The address map can change between batches (a reset), on device
+    // accesses (rdSlow/wrSlow check after each) and in the instructions
+    // exec() runs (MMU registers, PFLUSH, RESET: generic() checks after
+    // each), so it need not be checked before every instruction.
+    checkTlb();
+    for (int i = 0; i < count && totalCycles < end; i++) {
+        // The usual case, with nothing unusual pending: the same steps as
+        // stepOne() with the rare cases' tests taken out.
+        if (__builtin_expect(irq > (int)imask || irq == 7 || stopped || fT, 0)) {
+            total += (u32)stepOne();
+            continue;
+        }
+        nmiSeen = false;
+        cyc = 0;
+        traceNext = false;
+        instPC = pc;
+        opcode = fetch16();
+#ifdef OPHIST
+        extern unsigned long long gOpHist[65536];
+        gOpHist[opcode]++;
+#endif
+        table[opcode](*this, opcode);
+        if (__builtin_expect(bus->busError, 0)) busErrorException();
+        int c = (cyc + (1 << shift) - 1) >> shift;
+        cyc = c;
+        totalCycles += (u32)c;
+        total += (u32)c;
+    }
     return total;
 }
 

@@ -34,7 +34,7 @@ struct M68KFast {
         return c.rd(eaT<M>(c, reg, sz), sz);
     }
 
-    static void generic(M68K &c, u16 op) { c.exec(op); }
+    static void generic(M68K &c, u16 op) { c.exec(op); c.checkTlb(); }   // (it may change the MMU)
 
     // ---------------------------------------------------------------- MOVE / MOVEA
 
@@ -463,3 +463,20 @@ void M68K::buildTables()
     }
     s_tablesBuilt = true;
 }
+
+#ifdef OPHIST
+// Opcode counts (a profiling build): the busiest opcodes still decoded by exec().
+unsigned long long gOpHist[65536];
+static struct OpHistDump {
+    ~OpHistDump() {
+        static unsigned idx[65536];
+        unsigned long long all = 0, gen = 0;
+        for (unsigned i = 0; i < 65536; i++) { idx[i] = i; all += gOpHist[i]; if (M68KFast::choose((u16)i, true) == &M68KFast::generic) gen += gOpHist[i]; }
+        std::sort(idx, idx + 65536, [](unsigned a, unsigned b) { return gOpHist[a] > gOpHist[b]; });
+        fprintf(stderr, "instructions %llu, generic %llu\n", all, gen);
+        int shown = 0;
+        for (unsigned i = 0; i < 65536 && shown < 60; i++)
+            if (M68KFast::choose((u16)idx[i], true) == &M68KFast::generic) { fprintf(stderr, "%04X %llu\n", idx[i], gOpHist[idx[i]]); shown++; }
+    }
+} s_opHistDump;
+#endif

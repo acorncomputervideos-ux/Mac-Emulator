@@ -125,9 +125,10 @@ public:
     // Helpers, public so that coprocessors can use them.
     // sz: 0 byte, 1 word, 2 long.  The common case (a 68020+ access within
     // a page that the host TLB maps) is inline; the rest is rdSlow/wrSlow.
+    // The 68000 never fills the TLB, so its accesses always take the slow way.
     u32 rd(u32 addr, int sz)
     {
-        if (model != MC68000 && (addr & 0xFFF) <= 0x1000 - (1u << sz)) {
+        if ((addr & 0xFFF) <= 0x1000 - (1u << sz)) {
             const TlbEntry &e = tlb[(addr >> 12) & (kTlbSize - 1)];
             if (e.tag == tlbTag(addr)) {
                 cyc += 4;
@@ -139,7 +140,7 @@ public:
     }
     void wr(u32 addr, int sz, u32 v)
     {
-        if (model != MC68000 && (addr & 0xFFF) <= 0x1000 - (1u << sz)) {
+        if ((addr & 0xFFF) <= 0x1000 - (1u << sz)) {
             const TlbEntry &e = tlb[(addr >> 12) & (kTlbSize - 1)];
             if (e.tag == tlbTag(addr) && e.writable) {
                 cyc += 4;
@@ -150,10 +151,10 @@ public:
         }
         wrSlow(addr, sz, v);
     }
-    u16 fetch16()
+    __attribute__((always_inline)) u16 fetch16()
     {
         u32 addr = pc;
-        if (model != MC68000 && (addr & 0xFFF) != 0xFFF) {
+        if ((addr & 0xFFF) != 0xFFF) {
             const TlbEntry &e = codeTlb[(addr >> 12) & (kCodeTlbSize - 1)];
             if (e.tag == tlbTag(addr)) {
                 pc = addr + 2;
@@ -215,7 +216,7 @@ private:
     u16 fetch16Slow();
     inline int stepOne();
     u8 *tlbLookup(u32 addr, bool write, bool code);
-    u32 tlbTag(u32 addr) const { return (addr & 0xFFFFF000u) | 1u | (fS ? 2u : 0u); }
+    u32 tlbTag(u32 addr) const { return (addr & 0xFFFFF000u) | 1u | (fS << 1); }   // fS is 0 or 1
 
     void push16(u16 v) { a[7] -= 2; wr(a[7], 1, v); }
     void push32(u32 v) { a[7] -= 4; wr(a[7], 2, v); }

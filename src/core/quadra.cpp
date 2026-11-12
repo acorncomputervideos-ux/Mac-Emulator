@@ -327,7 +327,7 @@ void Quadra::runFrame()
                 c += (u32)cpu.step();
             }
         } else {
-            c = cpu.run(16, end);
+            c = cpu.run(64, end);
         }
         // VIA E clock: 783360 Hz from a 33.33 MHz CPU clock, kept as a fraction.
         viaFrac += c * 783360u;
