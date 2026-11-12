@@ -1,3 +1,6 @@
+#ifdef SCSI_TRACE
+#include <cstdio>
+#endif
 #include "scsi.h"
 
 namespace macemu {
@@ -108,6 +111,9 @@ void Scsi::storeBlock()
 void Scsi::execute()
 {
     ScsiResult r = scsiExecute(dev[target], cmd, buf, senseKey, senseCode);
+#ifdef SCSI_TRACE
+    printf("scsi id %d cmd %02X %02X %02X %02X %02X %02X -> action %d len %u lba %u\n", target, cmd[0], cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], (int)r.action, (unsigned)r.len, (unsigned)r.lba);
+#endif
     switch (r.action) {
     case ScsiStatus:
         finish(r.status, r.key, r.asc);
@@ -188,8 +194,15 @@ void Scsi::byteInTaken()
     }
 }
 
+#ifdef SCSI_TRACE
+static u8 readTraced(Scsi &s, int reg, bool dack);
+#endif
 u8 Scsi::read(int reg, bool dack)
 {
+#ifdef SCSI_TRACE
+    static bool inner;
+    if (!inner) { inner = true; u8 v = readTraced(*this, reg, dack); inner = false; return v; }
+#endif
     bool dmaActive = (mode & MODE_DMA) && dmaRecv;
     switch (reg & 7) {
     case 0:
@@ -223,6 +236,10 @@ u8 Scsi::read(int reg, bool dack)
     case 5: {
         u8 v = 0;
         if ((mode & MODE_DMA) && (dmaSend || dmaRecv) && req && phaseMatch()) v |= 0x40;
+        // Sending, the chip asks for a byte whenever its output latch is
+        // empty: after the last one, too, when the target has moved on to
+        // the status phase.  The Plus ROM waits for that after a blind write.
+        if ((mode & MODE_DMA) && dmaSend && phase != Free && !phaseMatch()) v |= 0x40;
         if (irq) v |= 0x10;
         if (phaseMatch()) v |= 0x08;
         if (icr & ICR_ATN) v |= 0x02;
@@ -237,6 +254,9 @@ u8 Scsi::read(int reg, bool dack)
 
 void Scsi::write(int reg, u8 v, bool dack)
 {
+#ifdef SCSI_TRACE
+    static int n; if (n++ < 60) printf("scsi W reg %d = %02X%s\n", reg, v, dack ? " dack" : "");
+#endif
     switch (reg & 7) {
     case 0:
         odr = v;
@@ -311,4 +331,15 @@ void Scsi::write(int reg, u8 v, bool dack)
     }
 }
 
+#ifdef SCSI_TRACE
+static u8 readTraced(Scsi &s, int reg, bool dack)
+{
+    u8 v = s.read(reg, dack);
+    static int n; static int last = -1, lastv = -1, rep = 0;
+    if (reg == last && v == lastv) { rep++; return v; }
+    if (n++ < 80) printf("scsi R reg %d = %02X (after %d repeats)\n", reg, v, rep);
+    last = reg; lastv = v; rep = 0;
+    return v;
+}
+#endif
 } // namespace macemu

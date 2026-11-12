@@ -48,9 +48,9 @@ void AdbKeyboard::flush()
 
 // Like a real keyboard scanning its matrix: keys still held down after a
 // reset (start-up combinations such as Command-Option-P-R) are reported.
-void AdbKeyboard::queueHeld()
+void AdbKeyboard::queueHeld(bool fresh)
 {
-    modifiers = 0xFFFF;
+    if (fresh) modifiers = 0xFFFF;
     for (int code = 0; code < 0x80; code++) {
         if (!(held[code >> 3] & (1 << (code & 7)))) continue;
         u16 bit = modifierBit(code);
@@ -181,6 +181,7 @@ int AdbTransceiver::request(const u8 *cmd, int len, u8 *reply)
     timedOut = false;
     if ((cmd[0] & 0x0F) == 0x00) {                      // SendReset
         for (int i = 0; i < count; i++) devices[i]->reset();
+        ticksSinceReset = 0;
         timedOut = true;
         return 0;
     }
@@ -296,6 +297,13 @@ void AdbTransceiver::portB(u8 pins)
 
 void AdbTransceiver::tick()
 {
+    // Keys held through the Mac's ADB start-up (Command-Option-X-O, say)
+    // were read before its keyboard driver was in place: three seconds
+    // later the keyboard reports them once more, as a fresh scan would.
+    if (ticksSinceReset >= 0 && ++ticksSinceReset >= 360) {
+        ticksSinceReset = -1;
+        for (int i = 0; i < count; i++) devices[i]->rescan();
+    }
     if (pollBlocked || state != StateIdle || via.shiftingOut()) return;
     pollBlocked = true;
     u8 sr;

@@ -156,6 +156,27 @@ static void testAdb()
 
 // The power key goes out as 7F 7F (down) and FF FF (up), never paired
 // with another key.
+// Keys held through an ADB reset are reported again (start-up key
+// combinations), and once more on a rescan, but not after being released.
+static void testAdbHeldKeys()
+{
+    AdbKeyboard kb;
+    u8 out[2];
+    kb.key(0x37, true);                 // Command
+    kb.key(0x07, true);                 // X
+    kb.reset();
+    CHECK(kb.talk(0, out) == 2 && out[0] == 0x07 && out[1] == 0x37);   // in key-code order
+    CHECK(!kb.hasData());
+    kb.rescan();
+    CHECK(kb.hasData() && kb.talk(0, out) == 2 && out[0] == 0x07 && out[1] == 0x37);
+    kb.key(0x07, false);
+    kb.flush();
+    CHECK(kb.talk(0, out) == 2 && out[0] == 0x37);                      // still held: Command only
+    kb.key(0x37, false);
+    kb.flush();
+    CHECK(!kb.hasData());
+}
+
 static void testAdbPowerKey()
 {
     AdbKeyboard kb;
@@ -236,6 +257,7 @@ static void testSound()
 int main()
 {
     testAdbPowerKey();
+    testAdbHeldKeys();
     testMemoryMap();
     testAdb();
     testInterrupts();

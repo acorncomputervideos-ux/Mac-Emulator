@@ -25,6 +25,7 @@ public:
     virtual void listen(int reg, const u8 *data, int len);
     virtual bool hasData() const = 0;
     virtual void flush() {}
+    virtual void rescan() {}            // report keys still held (after start-up)
 
     u8 address, defaultAddress;
     u8 handlerId, defaultHandler;
@@ -38,6 +39,7 @@ public:
     void listen(int reg, const u8 *data, int len) override;
     bool hasData() const override { return head != tail; }
     void flush() override;
+    void rescan() override { queueHeld(false); }
     void key(int code, bool down);
 
     u8 leds;                    // register 2 low bits written by the Mac
@@ -47,7 +49,7 @@ private:
     int head, tail;
     u16 modifiers;              // register 2, active low
     u8 held[16] = {};           // keys down now: reported again after a reset or flush
-    void queueHeld();
+    void queueHeld(bool fresh = true);
 };
 
 class AdbMouse : public AdbDevice {
@@ -83,6 +85,7 @@ public:
     // SE and Classic enable the shift register interrupt before their ADB
     // driver is installed).
     bool quietAfterReset = false;
+    int ticksSinceReset = -1;           // counts to a rescan of held keys, -1 when done
 
 private:
     enum { StateNew = 0, StateEven = 1, StateOdd = 2, StateIdle = 3 };

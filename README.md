@@ -43,10 +43,12 @@ Three models are emulated:
   Quadra model. Both boot System 7.1.
 - Mac II: the Mac II model. Mac Plus, 512K and 128K: the Plus model.
 - Mac Classic (A49F9914) and SE: the Plus board with an ADB keyboard and
-  mouse, the full SCC and, on the Classic, a SuperDrive. **Partly working**:
-  the Classic gets as far as starting the Finder from System 7.1, but the
-  Finder never draws its desktop, and its ROM disk does not start yet
-  (Command-Option-X-O at power-on goes unseen).
+  mouse, the full SCC and, on the Classic, a SuperDrive. The Classic starts
+  System 7.1 to the Finder, and holding Command-Option-X-O at power-on
+  starts its built-in System 6 ROM disk.
+- Mac Plus: starts from SCSI hard disks (its ROM checks for the SCSI chip
+  by how the ROM is mirrored, and waits for the 5380's DRQ after a blind
+  write; both now as on the real board).
 - ROM dumps with extra bytes after the ROM are accepted (the checksum
   shows where the ROM ends).
 - Recognised but not emulated yet, with a message saying so: IIx/IIcx/SE/30,

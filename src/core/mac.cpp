@@ -100,7 +100,7 @@ u8 Machine::read8(u32 addr)
     addr &= 0xFFFFFF;
     if (se && overlay && addr >= 0x400000 && addr < 0x500000) overlay = false;   // the SE's ROM switch
     if (addr < 0x400000) return overlay ? rom[addr & romMask] : ram[addr & ramMask];
-    if (addr < 0x500000) return rom[addr & romMask];
+    if (addr < 0x500000) return romGap(addr) ? 0xFF : rom[addr & romMask];
     if (overlay && addr >= 0x600000 && addr < 0x800000) return ram[addr & ramMask];
     return deviceRead(addr);
 }
@@ -111,7 +111,7 @@ u16 Machine::read16(u32 addr)
     if (se && overlay && addr >= 0x400000 && addr < 0x500000) overlay = false;
     const u8 *p;
     if (addr < 0x400000) p = overlay ? rom + (addr & romMask) : ram + (addr & ramMask);
-    else if (addr < 0x500000) p = rom + (addr & romMask);
+    else if (addr < 0x500000) { if (romGap(addr)) return 0xFFFF; p = rom + (addr & romMask); }
     else if (overlay && addr >= 0x600000 && addr < 0x800000) p = ram + (addr & ramMask);
     else {
         // Peripheral chips sit on one half of the data bus only.
@@ -193,7 +193,11 @@ void Machine::deviceWrite(u32 addr, u8 v)
 
 u8 Machine::viaInputA()
 {
-    return 0xFF;                                        // bit 7: SCC wait/request, idle high
+    // Bit 7: SCC wait/request, idle high.  On the Classic, PA3 reads low as
+    // an input: that is how its ROM tells it from an SE (BoxFlag 11).
+    u8 v = 0xFF;
+    if (se && romMask >= 0x7FFFF) v &= (u8)~0x08;
+    return v;
 }
 
 u8 Machine::viaInputB()

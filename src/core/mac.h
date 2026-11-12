@@ -141,6 +141,9 @@ private:
     void soundSample(int n);
 
     void updateIrq();
+    // The Plus decodes its 128K ROM at $400000-$43FFFF only.  Its ROM tells
+    // a Plus (SCSI) from a 512Ke by comparing $420000 with $440000.
+    bool romGap(u32 addr) const { return hasScsi && !se && romMask == 0x1FFFF && addr >= 0x440000; }
     u8 deviceRead(u32 addr);
     void deviceWrite(u32 addr, u8 v);
 };

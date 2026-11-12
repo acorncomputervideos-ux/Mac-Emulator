@@ -405,7 +405,7 @@ int main(int argc, char **argv)
         if (*p == ':') holdFrames = atoi(p + 1);
     }
     for (int f = 0; f < frames; f++) {
-        if (f == 1) for (int k : heldKeys) mac.keyEvent(k, true);
+        if (f == (getenv("HOLD_FROM") ? atoi(getenv("HOLD_FROM")) : 1)) for (int k : heldKeys) mac.keyEvent(k, true);
         if (f == holdFrames) for (int k : heldKeys) mac.keyEvent(k, false);
         if (f == lateFrame && !host.insertDisk(0, lateImage.c_str()))
             fprintf(stderr, "cannot insert %s\n", lateImage.c_str());
