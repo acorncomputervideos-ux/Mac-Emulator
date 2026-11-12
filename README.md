@@ -38,6 +38,21 @@ Three models are emulated:
 - Follows QEMU's Quadra 800 model (GLUE interrupt routing, djMEMC, IOSB,
   VIA quirks), which boots Mac OS 7.1–8.1.
 
+**Which ROMs work**
+- Quadra 610/650/800 (F1ACAD13) and Centris 610/650 (F1A6F343): the
+  Quadra model. Both boot System 7.1.
+- Mac II: the Mac II model. Mac Plus, 512K and 128K: the Plus model.
+- Mac Classic (A49F9914) and SE: the Plus board with an ADB keyboard and
+  mouse, the full SCC and, on the Classic, a SuperDrive. **Partly working**:
+  the Classic gets as far as starting the Finder from System 7.1, but the
+  Finder never draws its desktop, and its ROM disk does not start yet
+  (Command-Option-X-O at power-on goes unseen).
+- ROM dumps with extra bytes after the ROM are accepted (the checksum
+  shows where the ROM ends).
+- Recognised but not emulated yet, with a message saying so: IIx/IIcx/SE/30,
+  IIci, IIsi, IIfx, LC, LC II, LC III, Color Classic, IIvx, LC 475/Quadra 605,
+  LC 580/Quadra 630, Quadra 700/900/950.
+
 **Macintosh II (colour)**
 - 24-bit and 32-bit addressing (the Mac II HMMU), ROM overlay, NuBus slots
   with bus errors for empty slots.
@@ -143,7 +158,10 @@ Three models are emulated:
   that they don't reach (on another subnet, or across a VPN).
 - Checked with two emulated Macs running System 7.1: they find each other
   with AARP, ZIP and NBP, and the second one defends its AppleTalk address
-  against the first. Not yet checked on real Pi hardware.
+  against the first. And with the Pi 3 kernel under QEMU: the Pi's Mac
+  takes the address `B2` + the Pi's IP, its AppleTalk frames reach a Mac on
+  the host, and that Mac answers it directly. Not yet checked on real Pi
+  hardware.
 - Not internet access: TCP/IP for the Mac (MacTCP, Open Transport) would
   need a router between the tunnel and the Pi's network, which is not
   written yet. Frames larger than 1472 bytes are dropped (AppleTalk's are

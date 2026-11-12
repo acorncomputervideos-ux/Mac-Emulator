@@ -76,6 +76,24 @@ inline u32 macTime(int year, int month, int day, int hour, int minute, int secon
     return (u32)(days * 86400 + hour * 3600 + minute * 60 + second);
 }
 
+// The ROM in a file that may carry extra bytes after it (some dumps do):
+// the largest standard ROM size whose checksum, the first long, matches the
+// words after it.  0 if none does.  A file of exactly a standard size is
+// taken as it is (some ROMs checksum only part of themselves).
+inline u32 romImageSize(const u8 *data, u32 size)
+{
+    static const u32 sizes[5] = {0x100000, 0x80000, 0x40000, 0x20000, 0x10000};
+    for (int i = 0; i < 5; i++) if (size == sizes[i]) return size;
+    for (int i = 0; i < 5; i++) {
+        u32 n = sizes[i];
+        if (n > size) continue;
+        u32 sum = 0;
+        for (u32 a = 4; a + 1 < n; a += 2) sum += (u32)((data[a] << 8) | data[a + 1]);
+        if (sum == ((u32)data[0] << 24 | (u32)data[1] << 16 | (u32)data[2] << 8 | data[3])) return n;
+    }
+    return 0;
+}
+
 // "a.b.c.d" -> four bytes.  False (and `ip` untouched) if it is not one.
 inline bool parseIPv4(const char *p, u8 *ip)
 {

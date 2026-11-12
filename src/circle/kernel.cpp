@@ -17,6 +17,7 @@
 #include "../core/keys.h"
 #include "../frontend/keymap.h"
 #include "../frontend/util.h"
+#include "../frontend/romid.h"
 
 using macemu::Machine; using macemu::Osd; using macemu::Config; using macemu::Scsi;
 using namespace macemu;
@@ -226,7 +227,7 @@ boolean CKernel::LoadROM (void)
 		}
 
 		u32 nSize = (u32) f_size (&File);
-		if (nSize != 0x10000 && nSize != 0x20000 && nSize != 0x40000 && nSize != 0x80000 && nSize != 0x100000)
+		if (nSize < 0x10000 || nSize > 0x110000)
 		{
 			m_Logger.Write (FromKernel, LogWarning, "%s: unsupported size %u", pName, nSize);
 			f_close (&File);
@@ -237,12 +238,15 @@ boolean CKernel::LoadROM (void)
 		UINT nRead = 0;
 		FRESULT Result = f_read (&File, m_pROM, nSize, &nRead);
 		f_close (&File);
-		if (Result != FR_OK || nRead != nSize)
+		u32 nImage = Result == FR_OK && nRead == nSize ? romImageSize (m_pROM, nSize) : 0;
+		if (nImage == 0)
 		{
+			m_Logger.Write (FromKernel, LogWarning, "%s: not a ROM image (size %u)", pName, nSize);
 			delete [] m_pROM;
 			m_pROM = 0;
 			continue;
 		}
+		nSize = nImage;		// extra bytes after the ROM are ignored
 
 		m_nROMSize = nSize;
 		strCopy (m_ROMName, pName, sizeof m_ROMName);
@@ -620,20 +624,32 @@ TShutdownMode CKernel::Run (void)
 		       "and name it mac.rom, or set rom= in macemu.cfg.");
 	}
 
-	// Pick the model: 64K/128K ROMs are the compact Macs, 256K is the
-	// Mac II, 1 MB the Quadra 610/650/800 family.
+	// Pick the model from the ROM: the compact Macs (128K to Classic), the
+	// Mac II, and the Quadra 610/650/800 and Centris 610/650.
+	const RomInfo &Rom = romIdentify (m_pROM, m_nROMSize);
+	m_Logger.Write (FromKernel, LogNotice, "ROM is a %s", Rom.name);
+	boolean bAuto = strEqNoCase (m_Config.machine, "auto");
+	boolean bCompact = bAuto && (Rom.family == RomCompact || Rom.family == RomSE);
 	boolean bQuadra = strEqNoCase (m_Config.machine, "quadra")
-			  || (strEqNoCase (m_Config.machine, "auto") && m_nROMSize == 0x100000);
-	boolean bMacII = !bQuadra
+			  || (bAuto && !bCompact && m_nROMSize == 0x100000);
+	boolean bMacII = !bQuadra && !bCompact
 			 && (strEqNoCase (m_Config.machine, "ii")
 			     || (!strEqNoCase (m_Config.machine, "plus") && m_nROMSize >= 0x40000));
+	if (Rom.family == RomNotYet && !strEqNoCase (m_Config.machine, "plus"))
+	{
+		static char Line[64];
+		strCopy (Line, "This ROM is from a ", sizeof Line);
+		strAppend (Line, Rom.name, sizeof Line);
+		Fatal (Line, "which is not emulated yet. Use a Quadra 650/800,",
+		       "Centris 650, Mac II, Classic, SE or Plus ROM.");
+	}
 	if (bQuadra)
 	{
-		if (m_nROMSize != 0x100000 || be32 (m_pROM) != 0xF1ACAD13)
+		if (m_nROMSize != 0x100000 || Rom.family != RomQuadra)
 		{
 			Fatal ("The Quadra emulation needs the 1 MB ROM of the",
 			       "Quadra 610/650/800 or Centris 610/650",
-			       "(checksum F1ACAD13).");
+			       "(checksum F1ACAD13 or F1A6F343).");
 		}
 		if (m_Config.ramKB < 8192)
 		{
@@ -643,7 +659,7 @@ TShutdownMode CKernel::Run (void)
 	}
 	else if (bMacII)
 	{
-		if (m_nROMSize != 0x40000)
+		if (m_nROMSize != 0x40000 || Rom.family == RomSE)
 		{
 			Fatal ("This ROM belongs to a Macintosh model that is",
 			       "not emulated yet (IIx, IIci, IIfx, Quadra 700 ...).",
@@ -2516,8 +2532,7 @@ int CKernel::listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax)
 						|| endsWithNoCase (Info.fname, ".cdr"));
 				break;
 			default:
-				bUse = bUse && (nSize == 0x10000 || nSize == 0x20000 || nSize == 0x40000
-						|| nSize == 0x80000 || nSize == 0x100000);
+				bUse = bUse && nSize >= 0x10000 && nSize <= 0x110000;	// some dumps carry extra bytes
 				break;
 			}
 

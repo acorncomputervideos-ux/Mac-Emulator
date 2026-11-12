@@ -37,7 +37,7 @@ public:
     int talk(int reg, u8 *out) override;
     void listen(int reg, const u8 *data, int len) override;
     bool hasData() const override { return head != tail; }
-    void flush() override { head = tail = 0; }
+    void flush() override;
     void key(int code, bool down);
 
     u8 leds;                    // register 2 low bits written by the Mac
@@ -46,6 +46,8 @@ private:
     u8 queue[64];
     int head, tail;
     u16 modifiers;              // register 2, active low
+    u8 held[16] = {};           // keys down now: reported again after a reset or flush
+    void queueHeld();
 };
 
 class AdbMouse : public AdbDevice {
@@ -77,6 +79,10 @@ public:
     bool intLine() const { return intHigh; }
     // Call every few milliseconds of emulated time for autopolling.
     void tick();
+    // No autopolling after a reset until the Mac has sent a command (the
+    // SE and Classic enable the shift register interrupt before their ADB
+    // driver is installed).
+    bool quietAfterReset = false;
 
 private:
     enum { StateNew = 0, StateEven = 1, StateOdd = 2, StateIdle = 3 };

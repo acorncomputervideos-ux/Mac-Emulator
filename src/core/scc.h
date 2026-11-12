@@ -23,6 +23,7 @@ public:
     void tick(u32 cycles);
     bool irq() const;
     bool sending() const { return ch[0].shifting || ch[1].shifting; }
+    bool masterIrqEnabled() const { return (ch[1].wr[9] & 0x08) != 0; }   // WR9 MIE
 
     u32 byteCycles;                     // set by the machine (CPU clock / 28800)
 

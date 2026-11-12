@@ -7,6 +7,7 @@
 #include "../src/core/keys.h"
 #include "../src/core/mac.h"
 #include "../src/frontend/config.h"
+#include "../src/frontend/romid.h"
 #include "../src/frontend/keymap.h"
 #include "../src/frontend/osd.h"
 #include "../src/frontend/util.h"
@@ -448,6 +449,24 @@ static void testOsd()
     CHECK(parseIPv4("192.168.0.9", ip) && ip[0] == 192 && ip[1] == 168 && ip[2] == 0 && ip[3] == 9);
     CHECK(!parseIPv4("192.168.0", ip) && !parseIPv4("256.1.1.1", ip) && !parseIPv4("1.2.3.4x", ip) && !parseIPv4("", ip));
     CHECK(ip[3] == 9);                                  // untouched by the failures
+
+    // ROM files: extra bytes after a ROM are dropped when its checksum says so.
+    {
+        std::vector<u8> rom(0x20000 + 7504, 0x5A);
+        u32 sum = 0;
+        for (u32 a = 4; a < 0x20000; a += 2) sum += (u32)((rom[a] << 8) | rom[a + 1]);
+        putBe32(rom.data(), sum);
+        CHECK(romImageSize(rom.data(), (u32)rom.size()) == 0x20000);
+        rom[100] ^= 1;                                  // wrong checksum: not a ROM
+        CHECK(romImageSize(rom.data(), (u32)rom.size()) == 0);
+        CHECK(romImageSize(rom.data(), 0x40000) == 0x40000);   // standard sizes as they are
+        putBe32(rom.data(), 0xF1A6F343);
+        CHECK(romIdentify(rom.data(), 0x100000).family == RomQuadra);
+        putBe32(rom.data(), 0xA49F9914);
+        CHECK(romIdentify(rom.data(), 0x80000).family == RomSE);
+        putBe32(rom.data(), 0x97221136);
+        CHECK(romIdentify(rom.data(), 0x40000).family == RomNotYet);
+    }
 
     // Typing.
     CHECK(usbToAscii(0x04, false, true) == 'a' && usbToAscii(0x04, true, true) == 'A');

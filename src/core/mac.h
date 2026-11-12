@@ -1,5 +1,11 @@
 // The Macintosh Plus (and 128K/512K/512Ke) machine: memory map, VIA wiring,
 // real-time clock, keyboard, mouse, video, sound and the run loop.
+//
+// With an SE or Classic ROM (version 0x0276) it is that machine instead:
+// the same board with an ADB keyboard and mouse on the VIA (PB3-PB5 and
+// the shift register), the ROM overlay cleared by the first access to the
+// ROM, and on the Classic a SuperDrive and 512K of ROM with System 6 on a
+// ROM disk (hold Command-Option-X-O at start-up).
 
 #ifndef MACEMU_MAC_H
 #define MACEMU_MAC_H
@@ -10,6 +16,8 @@
 #include "iwm.h"
 #include "scsi.h"
 #include "rtc.h"
+#include "adb.h"
+#include "scc.h"
 #include "emulator.h"
 
 namespace macemu {
@@ -25,8 +33,9 @@ public:
 
     Machine();
 
-    // `rom` is a 64K or 128K ROM image; `ram` is ramSize bytes (128K, 512K,
-    // 1M, 2M or 4M).  Both buffers stay owned by the caller.
+    // `rom` is a 64K or 128K ROM image (256K SE, 512K Classic); `ram` is
+    // ramSize bytes (128K, 512K, 1M, 2M or 4M).  Both buffers stay owned by
+    // the caller.
     bool init(const u8 *rom, u32 romSize, u8 *ram, u32 ramSize);
     void reset() override;
     void runFrame() override;                           // emulate 1/60.15 s
@@ -38,12 +47,15 @@ public:
     const s16 *soundBuffer() const { return soundBuf; }
 
     // Emulator
-    const char *modelName() const override { return rom && romMask >= 0x1FFFF ? "Macintosh Plus" : "Macintosh 512K"; }
+    const char *modelName() const override {
+        return se ? (romMask >= 0x7FFFF ? "Macintosh Classic" : "Macintosh SE")
+                  : rom && romMask >= 0x1FFFF ? "Macintosh Plus" : "Macintosh 512K";
+    }
     bool video(VideoFrame &f) override;
     const s16 *sound(u32 &count, u32 &rate) override { count = kSoundSamplesPerFrame; rate = 22255; return soundBuf; }
     void keyEvent(int macKey, bool down) override;      // ADB key codes (keys.h)
     void mouseMove(int dx, int dy) override;
-    void mouseButton(bool down) override { mouseDown = down; }
+    void mouseButton(bool down) override { if (se) adbMouse.setButton(down); else mouseDown = down; }
     void interruptButton() override { nmiFrames = 6; }
     Iwm &floppy() override { return iwm; }
     void attachDisk(int id, Storage *d) override { scsi.attach(id, d); }
@@ -64,7 +76,12 @@ public:
     Iwm iwm;
     Scsi scsi;
     bool hasScsi;
+    bool se;                            // SE or Classic: ADB
+    void (*stepHook)();                 // optional: called before every instruction
     u32 frameCount;
+    AdbTransceiver adb;
+    AdbKeyboard adbKeyboard;
+    AdbMouse adbMouse;
 
     // Bus
     u8 read8(u32 addr) override;
@@ -112,11 +129,10 @@ private:
     bool mouseDown;
     void mouseUpdate();
 
-    // SCC (just enough for the ROM and for mouse gating)
-    u8 sccPointer[2];
-    u8 sccWr[2][16];
-    u8 sccRead(int ch, bool data);
-    void sccWrite(int ch, bool data, u8 v);
+    // SCC: serial ports with nothing attached (LocalTalk finds no network)
+    Scc scc;
+    bool sccIrqLine;
+    void sccCheck() { bool i = scc.irq(); if (i != sccIrqLine) { sccIrqLine = i; updateIrq(); } }
 
     // Sound
     s16 soundBuf[kSoundSamplesPerFrame];

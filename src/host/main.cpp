@@ -26,6 +26,7 @@
 #include "../core/keys.h"
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
+#include "../frontend/romid.h"
 #include "../frontend/util.h"
 #include "../frontend/video.h"
 
@@ -262,9 +263,14 @@ int main(int argc, char **argv)
 
     FileStorage romFile;
     if (!romFile.load(argv[1])) { fprintf(stderr, "cannot read ROM %s\n", argv[1]); return 1; }
+    if (u32 n = romImageSize(romFile.data.data(), (u32)romFile.data.size())) romFile.data.resize(n);
     std::vector<u8> ram(cfg.ramKB * 1024);
-    bool quadra = strEqNoCase(cfg.machine, "quadra") || (strEqNoCase(cfg.machine, "auto") && romFile.data.size() == 0x100000);
-    bool macII = !quadra && (strEqNoCase(cfg.machine, "ii") || (!strEqNoCase(cfg.machine, "plus") && romFile.data.size() >= 0x40000));
+    const RomInfo &romInfo = romIdentify(romFile.data.data(), (u32)romFile.data.size());
+    bool autoPick = strEqNoCase(cfg.machine, "auto");
+    bool compact = autoPick && (romInfo.family == RomCompact || romInfo.family == RomSE);
+    bool quadra = strEqNoCase(cfg.machine, "quadra") || (autoPick && !compact && romFile.data.size() == 0x100000);
+    bool macII = !quadra && !compact && (strEqNoCase(cfg.machine, "ii") || (!strEqNoCase(cfg.machine, "plus") && romFile.data.size() >= 0x40000));
+    printf("ROM: %s\n", romInfo.name);
     if (!macII && !quadra && ram.size() > 0x400000) ram.resize(0x400000);
     static Machine plus;
     static MacII *two = nullptr;
@@ -377,7 +383,18 @@ int main(int argc, char **argv)
         lateFrame = atoi(late);
         if (const char *colon = strchr(late, ':')) lateImage = colon + 1;
     }
+    // HOLD_KEYS=k,k,...:frames holds ADB keys (hex) down from power-on, for
+    // start-up key combinations (the Classic's ROM disk: 37,3A,07,1F:600).
+    std::vector<int> heldKeys;
+    int holdFrames = 0;
+    if (const char *hk = getenv("HOLD_KEYS")) {
+        const char *p = hk;
+        while (*p && *p != ':') { heldKeys.push_back((int)strtol(p, (char **)&p, 16)); if (*p == ',') p++; }
+        if (*p == ':') holdFrames = atoi(p + 1);
+    }
     for (int f = 0; f < frames; f++) {
+        if (f == 1) for (int k : heldKeys) mac.keyEvent(k, true);
+        if (f == holdFrames) for (int k : heldKeys) mac.keyEvent(k, false);
         if (f == lateFrame && !host.insertDisk(0, lateImage.c_str()))
             fprintf(stderr, "cannot insert %s\n", lateImage.c_str());
         mac.runFrame();

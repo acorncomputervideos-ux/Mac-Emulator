@@ -30,12 +30,36 @@ void AdbDevice::listen(int reg, const u8 *data, int len)
     }
 }
 
+static u16 modifierBit(int code);
+
 void AdbKeyboard::reset()
 {
     AdbDevice::reset();
     head = tail = 0;
-    modifiers = 0xFFFF;
     leds = 0;
+    queueHeld();
+}
+
+void AdbKeyboard::flush()
+{
+    head = tail = 0;
+    queueHeld();
+}
+
+// Like a real keyboard scanning its matrix: keys still held down after a
+// reset (start-up combinations such as Command-Option-P-R) are reported.
+void AdbKeyboard::queueHeld()
+{
+    modifiers = 0xFFFF;
+    for (int code = 0; code < 0x80; code++) {
+        if (!(held[code >> 3] & (1 << (code & 7)))) continue;
+        u16 bit = modifierBit(code);
+        if (bit) modifiers &= (u16)~bit;
+        int next = (head + 1) & 63;
+        if (next == tail) break;
+        queue[head] = (u8)code;
+        head = next;
+    }
 }
 
 // Bits of register 2 (active low): delete, caps lock, reset, control,
@@ -56,6 +80,8 @@ static u16 modifierBit(int code)
 void AdbKeyboard::key(int code, bool down)
 {
     if (code < 0 || code > 0x7F) return;
+    if (down) held[code >> 3] |= (u8)(1 << (code & 7));
+    else held[code >> 3] &= (u8)~(1 << (code & 7));
     u16 bit = modifierBit(code);
     if (bit) { if (down) modifiers &= (u16)~bit; else modifiers |= bit; }
     int next = (head + 1) & 63;
@@ -127,7 +153,7 @@ void AdbTransceiver::reset()
 {
     state = StateIdle;
     intHigh = true;
-    pollBlocked = false;
+    pollBlocked = quietAfterReset;
     pollReply = false;
     timedOut = false;
     outLen = inLen = inIndex = 0;
