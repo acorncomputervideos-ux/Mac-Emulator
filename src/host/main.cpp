@@ -424,6 +424,12 @@ int main(int argc, char **argv)
         if (f == lateFrame && !host.insertDisk(0, lateImage.c_str()))
             fprintf(stderr, "cannot insert %s\n", lateImage.c_str());
         mac.runFrame();
+        if (getenv("DISK_LOG")) {                       // frames with disk activity
+            static u32 lastAct = 0;
+            u32 act = mac.diskActivity();
+            if (act != lastAct && f >= atoi(getenv("DISK_LOG"))) printf("frame %d: %u disk operations\n", f, act - lastAct);
+            lastAct = act;
+        }
         if (quad && getenv("RESTARTABLE")) quad->cpu.restartable = atoi(getenv("RESTARTABLE")) != 0;   // 0/1: override the VM detection
         if (getenv("REALTIME")) {                       // keep to 60.15 frames a second
             static timespec start;
@@ -516,7 +522,7 @@ int main(int argc, char **argv)
             if (mac.floppy().ejectedByGuest[d]) { mac.floppy().ejectedByGuest[d] = false; host.ejectDisk(d); printf("frame %d: guest ejected floppy %d\n", f, d + 1); }
 
         draw(false);
-        if (shotEvery && f % shotEvery == shotEvery - 1) {
+        if (shotEvery && f % shotEvery == shotEvery - 1 && f >= (getenv("SHOT_FROM") ? atoi(getenv("SHOT_FROM")) : 0)) {
             char name[32];
             snprintf(name, sizeof name, "-%05d.ppm", f + 1);
             writePpm(out + name, surf);
