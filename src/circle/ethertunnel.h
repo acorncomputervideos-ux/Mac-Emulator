@@ -19,6 +19,8 @@
 #include <circle/net/ipaddress.h>
 #include <circle/types.h>
 #include "../core/sonic.h"
+#include "../frontend/natrouter.h"
+#include "natcircle.h"
 
 class CEtherTunnel : public macemu::EtherLink
 {
@@ -29,10 +31,14 @@ public:
 	// Core 0.  pLastIP: the address the Pi had last time (4 bytes) or 0,
 	// for the Mac's Ethernet address before the network is up.
 	void SetLastIP (const u8 *pLastIP);
-	// pPeer: a host that also gets every broadcast ("a.b.c.d"), or 0.
-	boolean Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer = 0);	// once the network is up
+	// Once the network is up.  nPort: the AppleTalk tunnel's UDP port, or 0
+	// for none.  pPeer: a host that also gets every broadcast ("a.b.c.d"),
+	// or 0.  bInternet: route the Mac's TCP/IP through the Pi (NatRouter).
+	boolean Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer = 0, boolean bInternet = FALSE);
 	void Update (void);				// move frames; call often
-	boolean Running (void) const		{ return m_pSocket != 0; }
+	boolean Running (void) const		{ return m_pNet != 0; }
+	boolean Internet (void) const		{ return m_pRouter != 0; }
+	unsigned Connections (void) const	{ return m_pRouter != 0 ? m_pRouter->connections () : 0; }
 	unsigned Sent (void) const		{ return m_nSent; }
 	unsigned Received (void) const		{ return m_nReceived; }
 
@@ -44,9 +50,10 @@ public:
 private:
 	enum
 	{
-		MaxFrame = 1472,		// what fits one datagram (Circle sends no IP fragments)
+		MaxFrame = 1514,		// a whole Ethernet frame
+		TunnelMax = 1472,		// what fits one datagram (Circle sends no IP fragments)
 		TxSlots = 32,
-		RxSlots = 32,
+		RxSlots = 48,
 		Peers = 16
 	};
 
@@ -64,10 +71,13 @@ private:
 	};
 
 	void Learn (const u8 *pMAC, const u8 *pIP);
+	boolean PushRx (const u8 *pFrame, unsigned nLength);
 	boolean PeerFor (const u8 *pMAC, u8 *pIP);
 
 	CNetSubSystem *m_pNet;
-	CSocket *m_pSocket;
+	CSocket *m_pSocket;			// the AppleTalk tunnel, or 0
+	CNatSockets *m_pNatSockets;
+	macemu::NatRouter *m_pRouter;		// internet for the Mac, or 0
 	u16 m_nPort;
 	u8 m_OwnIP[4];
 	u8 m_PeerIP[4];

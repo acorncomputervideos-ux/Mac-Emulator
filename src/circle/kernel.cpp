@@ -525,7 +525,7 @@ void CKernel::LoadPRAM (void)
 // The Mac's own Ethernet (the Quadra's), carried over the Pi's network.
 void CKernel::StartMacEthernet (void)
 {
-	if (m_Config.macEthernet == 0 || strEqNoCase (m_Config.network, "off"))
+	if ((m_Config.macEthernet == 0 && !m_Config.macInternet) || strEqNoCase (m_Config.network, "off"))
 	{
 		return;
 	}
@@ -998,6 +998,11 @@ void CKernel::BootLog (boolean bForce)
 			appendUint (Line, m_pEther->Sent (), sizeof Line);
 			strAppend (Line, "/", sizeof Line);
 			appendUint (Line, m_pEther->Received (), sizeof Line);
+			if (m_pEther->Internet ())
+			{
+				strAppend (Line, " tcp=", sizeof Line);	// the Mac's internet connections
+				appendUint (Line, m_pEther->Connections (), sizeof Line);
+			}
 		}
 		m_Logger.Write (FromKernel, LogNotice, "%s", Line);
 	}
@@ -1649,10 +1654,11 @@ void CKernel::UpdateNetwork (void)
 
 		if (m_pEther != 0)
 		{
-			if (m_pEther->Start (m_pNet, (u16) m_Config.macEthernet, m_Config.macEthernetPeer))
+			if (m_pEther->Start (m_pNet, (u16) m_Config.macEthernet, m_Config.macEthernetPeer,
+					     m_Config.macInternet != 0))
 			{
-				m_Logger.Write (FromKernel, LogNotice, "Mac Ethernet: UDP port %d",
-						m_Config.macEthernet);
+				m_Logger.Write (FromKernel, LogNotice, "Mac Ethernet: AppleTalk on UDP port %d, internet %s",
+						m_Config.macEthernet, m_Config.macInternet ? "on" : "off");
 			}
 			// Remember the address: next time the Mac may ask for its
 			// Ethernet address before the network is up.

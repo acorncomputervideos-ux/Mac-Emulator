@@ -441,6 +441,9 @@ static void testOsd()
     again.setDefaults();
     again.parse(text, len);
     CHECK(again.macEthernet == 0 && strEq(again.ipGateway, "192.168.0.1") && strEq(again.macEthernetPeer, "10.1.2.3"));
+    CHECK(again.macInternet == 1);
+    again.parse("mac_internet=off\n", 17);
+    CHECK(again.macInternet == 0);
     again.parse("mac_ethernet=on\n", 16);
     CHECK(again.macEthernet == 6066);
     again.parse("mac_ethernet=6100\n", 18);

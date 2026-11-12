@@ -22,6 +22,7 @@ void Config::setDefaults()
     strCopy(network, "auto", sizeof network);
     strCopy(wifiCountry, "GB", sizeof wifiCountry);
     macEthernet = 6066;
+    macInternet = 1;
     strCopy(keyboard, "uk", sizeof keyboard);
 }
 
@@ -131,6 +132,7 @@ void Config::parse(const char *text, u32 len)
         else if (strEqNoCase(p, "ip_address")) strCopy(ipAddress, val, sizeof ipAddress);
         else if (strEqNoCase(p, "ip_netmask")) strCopy(ipNetmask, val, sizeof ipNetmask);
         else if (strEqNoCase(p, "ip_gateway")) strCopy(ipGateway, val, sizeof ipGateway);
+        else if (strEqNoCase(p, "mac_internet")) macInternet = strEqNoCase(val, "off") || strEq(val, "0") ? 0 : 1;
         else if (strEqNoCase(p, "mac_ethernet_peer")) strCopy(macEthernetPeer, val, sizeof macEthernetPeer);
         else if (strEqNoCase(p, "keyboard")) strCopy(keyboard, val, sizeof keyboard);
         else if (strEqNoCase(p, "date")) strCopy(date, val, sizeof date);
@@ -199,6 +201,7 @@ u32 Config::serialize(char *out, u32 max) const
     line(out, max, "ip_netmask", ipNetmask);
     line(out, max, "ip_gateway", ipGateway);
     if (macEthernet) lineInt(out, max, "mac_ethernet", macEthernet); else line(out, max, "mac_ethernet", "off");
+    line(out, max, "mac_internet", macInternet ? "on" : "off");
     line(out, max, "mac_ethernet_peer", macEthernetPeer);
     line(out, max, "keyboard", keyboard);
     line(out, max, "date", date);

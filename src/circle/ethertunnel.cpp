@@ -8,6 +8,8 @@
 CEtherTunnel::CEtherTunnel (void)
 :	m_pNet (0),
 	m_pSocket (0),
+	m_pNatSockets (0),
+	m_pRouter (0),
 	m_nPort (0),
 	m_bHavePeer (FALSE),
 	m_bHaveIP (FALSE),
@@ -43,6 +45,8 @@ CEtherTunnel::CEtherTunnel (void)
 
 CEtherTunnel::~CEtherTunnel (void)
 {
+	delete m_pRouter;
+	delete m_pNatSockets;
 	delete m_pSocket;
 	delete [] m_pTx;
 	delete [] m_pRx;
@@ -59,36 +63,41 @@ void CEtherTunnel::SetLastIP (const u8 *pLastIP)
 	}
 }
 
-boolean CEtherTunnel::Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer)
+boolean CEtherTunnel::Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer, boolean bInternet)
 {
+	if (m_pNet != 0 || pNet == 0)
+	{
+		return m_pNet != 0;
+	}
 	if (pPeer != 0 && *pPeer != '\0')
 	{
 		m_bHavePeer = macemu::parseIPv4 (pPeer, m_PeerIP);
 	}
 
-	if (m_pSocket != 0 || pNet == 0 || nPort == 0)
+	if (nPort != 0)
 	{
-		return m_pSocket != 0;
+		CSocket *pSocket = new CSocket (pNet, IPPROTO_UDP);
+		if (pSocket->Bind (nPort) < 0 || pSocket->SetOptionBroadcast (TRUE) < 0)
+		{
+			delete pSocket;
+		}
+		else
+		{
+			m_pSocket = pSocket;
+			m_nPort = nPort;
+		}
+	}
+	if (bInternet)
+	{
+		m_pNatSockets = new CNatSockets (pNet);
+		m_pRouter = new macemu::NatRouter (*m_pNatSockets);
 	}
 
-	CSocket *pSocket = new CSocket (pNet, IPPROTO_UDP);
-	if (pSocket == 0)
-	{
-		return FALSE;
-	}
-	if (pSocket->Bind (nPort) < 0 || pSocket->SetOptionBroadcast (TRUE) < 0)
-	{
-		delete pSocket;
-		return FALSE;
-	}
-
-	m_pNet = pNet;
-	m_nPort = nPort;
 	pNet->GetConfig ()->GetIPAddress ()->CopyTo (m_OwnIP);
 	DataMemBarrier ();
 	m_bHaveIP = TRUE;
-	m_pSocket = pSocket;
-	return TRUE;
+	m_pNet = pNet;
+	return m_pSocket != 0 || m_pRouter != 0;
 }
 
 // ---------------------------------------------------------------- core 1
@@ -111,7 +120,7 @@ void CEtherTunnel::etherSend (const u8 *pFrame, u32 nLength)
 {
 	if (nLength < 14 || nLength > MaxFrame)
 	{
-		return;				// too big for one datagram
+		return;
 	}
 	unsigned nNext = (m_nTxIn + 1) % TxSlots;
 	if (nNext == m_nTxOut)
@@ -189,44 +198,80 @@ boolean CEtherTunnel::PeerFor (const u8 *pMAC, u8 *pIP)
 	return FALSE;
 }
 
+boolean CEtherTunnel::PushRx (const u8 *pFrame, unsigned nLength)
+{
+	unsigned nNext = (m_nRxIn + 1) % RxSlots;
+	if (nNext == m_nRxOut)
+	{
+		return FALSE;			// the Mac is not taking them: drop
+	}
+	TFrame &F = m_pRx[m_nRxIn];
+	memcpy (F.Data, pFrame, nLength);
+	F.nLength = (u16) nLength;
+	DataMemBarrier ();
+	m_nRxIn = nNext;
+	return TRUE;
+}
+
 void CEtherTunnel::Update (void)
 {
-	if (m_pSocket == 0)
+	if (m_pNet == 0)
 	{
 		return;
 	}
 
-	// Out: what the Mac sent.
+	// Out: what the Mac sent.  TCP/IP and ARP go to the router, the rest
+	// (AppleTalk) through the tunnel.
 	while (m_nTxOut != m_nTxIn)
 	{
 		DataMemBarrier ();
 		const TFrame &F = m_pTx[m_nTxOut];
-		u8 IP[4];
-		CIPAddress Dest;
-		boolean bDirect = PeerFor (F.Data, IP);
-		if (bDirect)
-		{
-			Dest.Set (IP);
-		}
-		else
-		{
-			Dest.SetBroadcast ();
-		}
-		if (m_pSocket->SendTo (F.Data, F.nLength, MSG_DONTWAIT, Dest, m_nPort) > 0)
+		if (m_pRouter != 0 && m_pRouter->fromMac (F.Data, F.nLength))
 		{
 			m_nSent++;
 		}
-		if (!bDirect && m_bHavePeer)
+		else if (m_pSocket != 0 && F.nLength <= TunnelMax)
 		{
-			CIPAddress Peer (m_PeerIP);	// broadcasts do not reach it
-			m_pSocket->SendTo (F.Data, F.nLength, MSG_DONTWAIT, Peer, m_nPort);
+			u8 IP[4];
+			CIPAddress Dest;
+			boolean bDirect = PeerFor (F.Data, IP);
+			if (bDirect)
+			{
+				Dest.Set (IP);
+			}
+			else
+			{
+				Dest.SetBroadcast ();
+			}
+			if (m_pSocket->SendTo (F.Data, F.nLength, MSG_DONTWAIT, Dest, m_nPort) > 0)
+			{
+				m_nSent++;
+			}
+			if (!bDirect && m_bHavePeer)
+			{
+				CIPAddress Peer (m_PeerIP);	// broadcasts do not reach it
+				m_pSocket->SendTo (F.Data, F.nLength, MSG_DONTWAIT, Peer, m_nPort);
+			}
 		}
 		DataMemBarrier ();
 		m_nTxOut = (m_nTxOut + 1) % TxSlots;
 	}
 
-	// In: datagrams for the Mac.
-	for (unsigned n = 0; n < RxSlots; n++)
+	// The router's answers and the internet's data.
+	if (m_pRouter != 0)
+	{
+		m_pRouter->poll ();
+		u32 nLength;
+		while (   (m_nRxIn + 1) % RxSlots != m_nRxOut	// room for it (the router keeps the rest)
+		       && (nLength = m_pRouter->toMac (m_pBuffer)) != 0)
+		{
+			PushRx (m_pBuffer, nLength);
+			m_nReceived++;
+		}
+	}
+
+	// In: AppleTalk datagrams for the Mac.
+	for (unsigned n = 0; m_pSocket != 0 && n < RxSlots; n++)
 	{
 		CIPAddress From;
 		u16 nFromPort;
@@ -236,24 +281,16 @@ void CEtherTunnel::Update (void)
 		{
 			break;
 		}
-		if (nLength < 14 || nLength > MaxFrame || From == m_OwnIP)
+		if (nLength < 14 || nLength > TunnelMax || From == m_OwnIP)
 		{
 			continue;			// not a frame, or our own broadcast
 		}
 		u8 FromIP[4];
 		From.CopyTo (FromIP);
 		Learn (m_pBuffer + 6, FromIP);
-
-		unsigned nNext = (m_nRxIn + 1) % RxSlots;
-		if (nNext == m_nRxOut)
+		if (PushRx (m_pBuffer, (unsigned) nLength))
 		{
-			continue;			// the Mac is not taking them: drop
+			m_nReceived++;
 		}
-		TFrame &F = m_pRx[m_nRxIn];
-		memcpy (F.Data, m_pBuffer, nLength);
-		F.nLength = (u16) nLength;
-		DataMemBarrier ();
-		m_nRxIn = nNext;
-		m_nReceived++;
 	}
 }

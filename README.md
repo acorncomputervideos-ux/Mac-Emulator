@@ -162,10 +162,39 @@ Three models are emulated:
   takes the address `B2` + the Pi's IP, its AppleTalk frames reach a Mac on
   the host, and that Mac answers it directly. Not yet checked on real Pi
   hardware.
-- Not internet access: TCP/IP for the Mac (MacTCP, Open Transport) would
-  need a router between the tunnel and the Pi's network, which is not
-  written yet. Frames larger than 1472 bytes are dropped (AppleTalk's are
-  under 620).
+- Frames larger than 1472 bytes don't fit the tunnel (AppleTalk's are under 620).
+
+**Internet for the Mac (Quadra)**
+- A small router inside the emulator gives the Mac TCP/IP through the Pi's
+  own connection (cable or Wi-Fi), the way QEMU's and VirtualBox's NAT
+  networking do: web browsers, FTP (Fetch), email, Telnet, IRC, news.
+- The Mac needs TCP/IP software: MacTCP (System 7.1, 7.5) or Open
+  Transport (7.5.3 and later). Pick *Ethernet Built-In* and either
+  *Using DHCP Server* (Open Transport) / *Server* (MacTCP), or set it by
+  hand:
+
+  | | |
+  |---|---|
+  | IP address | 10.0.2.15 |
+  | Subnet mask | 255.255.255.0 |
+  | Router (gateway) | 10.0.2.2 |
+  | Name server (DNS) | 10.0.2.3 |
+
+- The router answers DHCP and BootP, ARP and ping (10.0.2.2), passes DNS
+  to the Pi's name server, and carries UDP and TCP through the Pi's
+  sockets. AppleTalk still goes through the tunnel at the same time.
+  Connections into the Mac from outside are not possible, and pings
+  beyond 10.0.2.2 get no answer.
+- Most web sites today need HTTPS with modern encryption, which browsers
+  of the time cannot do. Plain-HTTP sites work (for example
+  `http://frogfind.com`, `http://68k.news`, `http://theoldnet.com`), as
+  does a proxy on another computer that converts pages for old browsers
+  (such as *WebOne* or *MacProxy*). FTP downloads work directly.
+- `mac_internet=off` in `macemu.cfg` turns the router off.
+- Checked by a test that plays the Mac's part through the router to real
+  servers: ARP, DHCP, ping, UDP, DNS and a 200 KB TCP transfer with
+  acknowledgements and closing. Not yet tried with MacTCP or Open
+  Transport themselves, nor on a real Pi.
 
 **1.44 MB floppies (Quadra)**
 - The Quadra's drives are SuperDrives (FDHD): 1.44 MB MFM disks as well as

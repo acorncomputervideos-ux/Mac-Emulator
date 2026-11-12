@@ -27,6 +27,7 @@
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
 #include "../frontend/romid.h"
+#include "natposix.h"
 #include "../frontend/util.h"
 #include "../frontend/video.h"
 
@@ -177,7 +178,9 @@ static int asciiToKey(char c, bool &shift)
 // ETHER_UDP=port:peer:peerport carries the Mac's Ethernet frames in UDP
 // datagrams to one peer (another host runner, say); ETHER_LOG=1 lists them.
 struct UdpEther : EtherLink {
-    int fd = -1, port = 0;
+    int fd = -1, port = 6066;
+    PosixNatSockets natSockets;
+    NatRouter *router = nullptr;        // ETHER_NAT=1: internet for the Mac
     sockaddr_in peer = {};
     bool log = false;
     bool open(const char *spec) {
@@ -210,9 +213,15 @@ struct UdpEther : EtherLink {
     }
     void etherSend(const u8 *f, u32 n) override {
         if (log) show("out", f, n);
-        sendto(fd, f, n, 0, (sockaddr *)&peer, sizeof peer);
+        if (router && router->fromMac(f, n)) return;
+        if (fd >= 0) sendto(fd, f, n, 0, (sockaddr *)&peer, sizeof peer);
     }
     u32 etherReceive(u8 *f) override {
+        if (router) {
+            router->poll();
+            if (u32 n = router->toMac(f)) { if (log) show("in ", f, n); return n; }
+        }
+        if (fd < 0) return 0;
         ssize_t n = recv(fd, f, 1514, 0);
         if (n < 14) return 0;
         if (log) show("in ", f, (u32)n);
@@ -310,9 +319,12 @@ int main(int argc, char **argv)
     }
     Emulator &mac = *emu;
     static UdpEther ether;
+    if (getenv("ETHER_NAT")) ether.router = new NatRouter(ether.natSockets);
+    if (getenv("ETHER_LOG")) { ether.log = true; setvbuf(stdout, nullptr, _IOLBF, 0); }
     if (const char *spec = getenv("ETHER_UDP")) {
-        if (!ether.open(spec) || !mac.attachEthernet(&ether)) fprintf(stderr, "no Ethernet (%s)\n", spec);
+        if (!ether.open(spec)) fprintf(stderr, "no Ethernet tunnel (%s)\n", spec);
     }
+    if ((getenv("ETHER_UDP") || ether.router) && !mac.attachEthernet(&ether)) fprintf(stderr, "this Mac has no Ethernet\n");
     printf("%s, %uK RAM\n", mac.modelName(), (unsigned)(ram.size() / 1024));
     u32 sum = 0;
     for (size_t i = 4; i + 1 < romFile.data.size(); i += 2) sum += (u32)((romFile.data[i] << 8) | romFile.data[i + 1]);
@@ -534,7 +546,7 @@ int main(int argc, char **argv)
             fwrite(h, 1, 44, w); fwrite(wav.data(), 2, wav.size(), w); fclose(w);
         }
     }
-    if (quad && getenv("ETHER_UDP"))
+    if (quad && (getenv("ETHER_UDP") || getenv("ETHER_NAT")))
         printf("ethernet: %u frames sent, %u received\n", quad->sonic.framesSent, quad->sonic.framesReceived);
     if (pramFile) {
         if (FILE *pf = fopen(pramFile, "wb")) { fwrite(mac.clockChip().pram, 1, 256, pf); fclose(pf); }
