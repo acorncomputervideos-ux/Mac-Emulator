@@ -108,13 +108,16 @@ static const char PageTail[] =
 "await fetch('/reboot',{method:'POST'});setTimeout(function(){location.reload()},30000)}"
 "catch(x){st.textContent='Update stopped: '+x}}"
 "async function transfer(fl){var st=$('tst');try{"
+"var t=0;for(var i=0;i<fl.length;i++)t+=fl[i].size;"
+"if(t>1400*1024)throw 'Those files come to '+Math.round(t/1024)+'K: a floppy holds about 1400K (800K on Macs without a SuperDrive). '+"
+"'Send fewer at a time, or copy a bigger file to the card as a disk image.';"
 "await fetch('/makefloppy?clear=1',{method:'POST'});"
 "for(var i=0;i<fl.length;i++){st.textContent='Sending '+fl[i].name+' ...';"
 "var r=await fetch('/files/transfer/'+encodeURIComponent(fl[i].name),{method:'PUT',body:fl[i]});"
 "if(!r.ok)throw fl[i].name+': '+await r.text()}"
 "st.textContent='Making the floppy ...';var r=await fetch('/makefloppy?insert=2',{method:'POST'});"
 "st.textContent=await r.text();if(r.ok)setTimeout(function(){location.reload()},2500)}"
-"catch(x){st.textContent='Stopped: '+x}}"
+"catch(x){st.textContent='Stopped: '+(x instanceof TypeError?'the connection to the Pi was lost. Check the Wi-Fi and try again.':x)}}"
 "var td=$('tdrop');$('tpick').onchange=function(){transfer(this.files)};"
 "td.ondragover=function(e){e.preventDefault();td.className='on'};"
 "td.ondragleave=function(){td.className=''};"
@@ -142,7 +145,8 @@ CWebServer::CWebServer (CNetSubSystem *pNet, const char *pDrive, CWebServerHost 
 	m_pPage (new char[PageSize]),
 	m_nPageLength (0),
 	m_nHeaderLength (0),
-	m_nBodyStart (0)
+	m_nBodyStart (0),
+	m_nBodyUnread (0)
 {
 	m_Activity[0] = '\0';
 	m_InsertName[0] = '\0';
@@ -257,6 +261,25 @@ void CWebServer::Serve (CSocket *pSocket)
 		return;
 	}
 
+	// Files for the Mac can have any name: make one the card can store
+	// (only plain characters; FAT cannot take some, and the card's names
+	// are not Unicode).  MacBinary files carry their real name inside.
+	if (strncmp (pPath, "files/transfer/", 15) == 0)
+	{
+		for (char *p = Request.Path + 15; *p; p++)
+		{
+			unsigned char c = (unsigned char) *p;
+			if (c < ' ' || c >= 0x7F || strchr ("\\/:*?\"<>|", c) != 0)
+			{
+				*p = '_';
+			}
+		}
+		if (Request.Path[15] == '.')
+		{
+			Request.Path[15] = '_';
+		}
+	}
+
 	if (strncmp (pPath, "files/", 6) != 0)
 	{
 		SendStatus (pSocket, 404, "Not found");
@@ -300,6 +323,7 @@ boolean CWebServer::ReadRequest (CSocket *pSocket, TRequest *pRequest)
 {
 	// Read until the blank line that ends the header.
 	m_nHeaderLength = 0;
+	m_nBodyUnread = 0;
 	unsigned nEnd = 0;
 	while (nEnd == 0)
 	{
@@ -407,6 +431,9 @@ boolean CWebServer::ReadRequest (CSocket *pSocket, TRequest *pRequest)
 		pLine = pNext;
 	}
 	m_Header[nEnd] = chSaved;
+
+	unsigned nWithHeader = m_nHeaderLength - m_nBodyStart;
+	m_nBodyUnread = pRequest->nContentLength > nWithHeader ? pRequest->nContentLength - nWithHeader : 0;
 
 	return TRUE;
 }
@@ -634,6 +661,7 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 
 	u64 nLeft = pRequest->nContentLength;
 	u64 nTotal = nLeft;
+	m_nBodyUnread = 0;				// read below
 	boolean bOK = TRUE;
 
 	// Body bytes that came with the header.
@@ -1278,6 +1306,28 @@ void CWebServer::ClearTransfer (void)
 
 void CWebServer::SendStatus (CSocket *pSocket, unsigned nCode, const char *pMessage)
 {
+	// A browser that is still sending the body when the connection closes
+	// sees only "connection lost", never the reason: read the rest of the
+	// body first (up to 64 MB; more than that is not worth the wait).
+	if (m_nBodyUnread > 0 && m_nBodyUnread <= 64 * 1024 * 1024)
+	{
+		while (m_nBodyUnread > 0)
+		{
+			unsigned nWant = m_nBodyUnread > FRAME_BUFFER_SIZE ? FRAME_BUFFER_SIZE : (unsigned) m_nBodyUnread;
+			int nResult = pSocket->Receive (m_pBuffer, nWant, 0);
+			if (nResult <= 0)
+			{
+				break;
+			}
+			m_nBodyUnread -= (unsigned) nResult;
+		}
+	}
+	m_nBodyUnread = 0;
+	if (nCode >= 400)
+	{
+		CLogger::Get ()->Write (FromWeb, LogWarning, "%u %s", nCode, pMessage);
+	}
+
 	char Head[512] = "HTTP/1.1 ";
 	appendUint (Head, nCode, sizeof Head);
 	strAppend (Head, nCode < 300 ? " OK" : " Error", sizeof Head);

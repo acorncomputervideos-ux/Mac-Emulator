@@ -112,6 +112,7 @@ private:
 	char m_Header[2048];
 	unsigned m_nHeaderLength;		// bytes in m_Header
 	unsigned m_nBodyStart;			// body bytes already read with the header
+	u64 m_nBodyUnread;			// request body not read yet (drained before an error reply)
 };
 
 #endif
