@@ -82,6 +82,8 @@ CKernel::CKernel (void)
 	m_bWiFi (FALSE),
 	m_bWiFiPending (FALSE),
 	m_nNetStartTicks (0),
+	m_bWrongPassword (FALSE),
+	m_nLogBytes (0),
 	m_bNetRunning (FALSE),
 	m_nNetTicks (0)
 {
@@ -661,6 +663,13 @@ TShutdownMode CKernel::Run (void)
 			WaitUntil (nNextFrame);			// the network runs meanwhile
 		}
 
+		// While the network is connecting, give its tasks a few ms each
+		// frame: Wi-Fi's WPA handshake must answer the router in time.
+		if (m_pNet != 0 && !m_bNetRunning && m_Timer.GetTicks () - m_nNetStartTicks < 300 * HZ)
+		{
+			WaitUntil (CTimer::GetClockTicks64 () + 3000);
+		}
+
 		UpdateScreen ();
 		Present ();
 		m_CPUThrottle.Update ();
@@ -739,38 +748,69 @@ void CKernel::Present (void)
 // problem on real hardware can be diagnosed.
 void CKernel::BootLog (void)
 {
+	// Everything Circle logs (USB, Wi-Fi driver, WPA, DHCP ...) goes to
+	// macemu.log on the card every two seconds, plus a status line every
+	// five seconds for the first three minutes (then every minute).
 	static unsigned nLastSecond = 0;
 	unsigned nSecond = m_Timer.GetUptime ();
-	if (nSecond == nLastSecond || nSecond % 5 != 0 || nSecond > 180)
+	if (nSecond == nLastSecond || nSecond % 2 != 0)
 	{
 		return;
 	}
 	nLastSecond = nSecond;
 
-	char Line[160] = "";
-	appendUint (Line, nSecond, sizeof Line);
-	strAppend (Line, "s frames=", sizeof Line);
-	appendUint (Line, m_nFrames, sizeof Line);
-	strAppend (Line, " speed=", sizeof Line);
-	appendUint (Line, m_nSpeedPercent, sizeof Line);
-	strAppend (Line, "% pc=", sizeof Line);
-	appendHex (Line, m_pMachine->debugPC (), 8, sizeof Line);
-	strAppend (Line, " disk=", sizeof Line);
-	appendUint (Line, m_pMachine->diskActivity (), sizeof Line);
-	strAppend (Line, " clock=", sizeof Line);
-	appendUint (Line, m_CPUThrottle.GetClockRate () / 1000000, sizeof Line);
-	strAppend (Line, "MHz temp=", sizeof Line);
-	appendUint (Line, m_CPUThrottle.GetTemperature (), sizeof Line);
-	strAppend (Line, "C\r\n", sizeof Line);
-	m_Logger.Write (FromKernel, LogNotice, "%s", Line);
+	if (nSecond % 5 == 0 && (nSecond <= 180 || nSecond % 60 == 0))
+	{
+		char Line[160] = "";
+		appendUint (Line, nSecond, sizeof Line);
+		strAppend (Line, "s frames=", sizeof Line);
+		appendUint (Line, m_nFrames, sizeof Line);
+		strAppend (Line, " speed=", sizeof Line);
+		appendUint (Line, m_nSpeedPercent, sizeof Line);
+		strAppend (Line, "% pc=", sizeof Line);
+		appendHex (Line, m_pMachine->debugPC (), 8, sizeof Line);
+		strAppend (Line, " disk=", sizeof Line);
+		appendUint (Line, m_pMachine->diskActivity (), sizeof Line);
+		strAppend (Line, " clock=", sizeof Line);
+		appendUint (Line, m_CPUThrottle.GetClockRate () / 1000000, sizeof Line);
+		strAppend (Line, "MHz temp=", sizeof Line);
+		appendUint (Line, m_CPUThrottle.GetTemperature (), sizeof Line);
+		strAppend (Line, "C", sizeof Line);
+		if (m_bWiFi)
+		{
+			strAppend (Line, " wifi=", sizeof Line);
+			strAppend (Line, m_pWLAN == 0 ? "off" : m_pWLAN->IsLinkUp () ? "link" : "nolink", sizeof Line);
+			strAppend (Line, CWPASupplicant::IsConnected () ? ",wpa" : ",nowpa", sizeof Line);
+		}
+		strAppend (Line, m_bNetRunning ? " ip=yes" : " ip=no", sizeof Line);
+		m_Logger.Write (FromKernel, LogNotice, "%s", Line);
+	}
+
+	static char Text[LOGGER_BUFSIZE];
+	int nLength = m_Logger.Read (Text, sizeof Text - 1);
+	if (nLength <= 0 || m_nLogBytes > 2 * 1024 * 1024)
+	{
+		return;
+	}
+	Text[nLength] = '\0';
+
+	// The WPA supplicant says so when the password is wrong.
+	for (const char *p = Text; *p; p++)
+	{
+		if (*p == 'm' && strncmp (p, "may be incorrect", 16) == 0)
+		{
+			m_bWrongPassword = TRUE;
+		}
+	}
 
 	FIL File;
-	BYTE Mode = nSecond == 5 ? (FA_WRITE | FA_CREATE_ALWAYS) : (FA_WRITE | FA_OPEN_APPEND);
+	BYTE Mode = m_nLogBytes == 0 ? (FA_WRITE | FA_CREATE_ALWAYS) : (FA_WRITE | FA_OPEN_APPEND);
 	if (f_open (&File, DRIVE "/macemu.log", Mode) == FR_OK)
 	{
 		UINT nWritten;
-		f_write (&File, Line, strLen (Line), &nWritten);
+		f_write (&File, Text, (UINT) nLength, &nWritten);
 		f_close (&File);
+		m_nLogBytes += (unsigned) nLength;
 	}
 }
 
@@ -1162,9 +1202,34 @@ void CKernel::UpdateNetwork (void)
 				(const char *) IPString);
 	}
 
-	if (!m_bNetRunning && m_bWiFi && nTicks - m_nNetStartTicks > 40 * HZ)
+	if (!m_bNetRunning && m_bWiFi && m_pWLAN != 0)
 	{
-		strCopy (m_NetLine[1], "Still trying: check the name, password and country.", sizeof m_NetLine[1]);
+		unsigned nSeconds = (nTicks - m_nNetStartTicks) / HZ;
+		boolean bLink = m_pWLAN->IsLinkUp ();
+		boolean bWPA = m_pWPASupplicant == 0 || CWPASupplicant::IsConnected ();
+		char *p = m_NetLine[0];
+		if (bLink && bWPA)
+		{
+			strCopy (p, "Wi-Fi: connected, waiting for an address", sizeof m_NetLine[0]);
+			strCopy (m_NetLine[1], "(from the router's DHCP)", sizeof m_NetLine[1]);
+		}
+		else
+		{
+			strCopy (p, "Wi-Fi: connecting to ", sizeof m_NetLine[0]);
+			strAppend (p, m_Config.wifiSsid[0] ? m_Config.wifiSsid : "the network", sizeof m_NetLine[0]);
+			strAppend (p, " (", sizeof m_NetLine[0]);
+			appendUint (p, nSeconds, sizeof m_NetLine[0]);
+			strAppend (p, "s)", sizeof m_NetLine[0]);
+			if (m_bWrongPassword)
+			{
+				strCopy (m_NetLine[1], "The router rejects the password.", sizeof m_NetLine[1]);
+			}
+			else if (nSeconds > 30)
+			{
+				strCopy (m_NetLine[1], bLink ? "Joined, but the password exchange fails."
+							     : "Network not found: check the name (case!).", sizeof m_NetLine[1]);
+			}
+		}
 	}
 
 	if (m_bNetRunning && m_pWebServer != 0)

@@ -214,6 +214,8 @@ private:
 	boolean			m_bWiFi;		// Wi-Fi chosen
 	boolean			m_bWiFiPending;		// start it once the Mac is running
 	unsigned		m_nNetStartTicks;
+	boolean			m_bWrongPassword;	// seen in the WPA log
+	unsigned		m_nLogBytes;		// written to macemu.log so far
 	boolean			m_bNetRunning;
 	unsigned		m_nNetTicks;
 
