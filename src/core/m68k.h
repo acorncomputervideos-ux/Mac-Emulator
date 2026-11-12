@@ -88,6 +88,7 @@ public:
     // each instruction, which costs some speed).  The machine turns this on
     // while virtual memory is in use.
     bool restartable = false;
+    u16 lastTrap = 0;                   // the last A-line trap (Mac OS call), for logs
     u32 pageFaults = 0;                 // translation faults below $40000000 since reset
     bool fastDispatch = true;           // false: decode every instruction in exec() (for comparisons)
     int getModel() const { return model; }

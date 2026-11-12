@@ -409,6 +409,7 @@ void M68K::busErrorException()
 void M68K::illegal()
 {
     int grp = opcode >> 12;
+    if (grp == 0xA) lastTrap = opcode;                  // for logs: the Mac OS call last made
     exception(grp == 0xA ? 10 : grp == 0xF ? 11 : 4, instPC, 10);
 }
 

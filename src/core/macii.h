@@ -73,6 +73,7 @@ public:
 
     bool poweredOff() const override { return powerOff; }
     u32 debugPC() const override { return cpu.pc; }
+    u16 debugTrap() const override { return cpu.lastTrap; }
     bool addressing32() const { return mode32; }
 
     M68K cpu;

@@ -1000,6 +1000,8 @@ void CKernel::BootLog (boolean bForce)
 		appendUint (Line, m_nSpeedPercent, sizeof Line);
 		strAppend (Line, "% pc=", sizeof Line);
 		appendHex (Line, m_pMachine->debugPC (), 8, sizeof Line);
+		strAppend (Line, " trap=", sizeof Line);
+		appendHex (Line, m_pMachine->debugTrap (), 4, sizeof Line);
 		strAppend (Line, " disk=", sizeof Line);
 		appendUint (Line, m_pMachine->diskActivity (), sizeof Line);
 		strAppend (Line, " clock=", sizeof Line);

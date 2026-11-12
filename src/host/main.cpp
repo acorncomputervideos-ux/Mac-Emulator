@@ -567,6 +567,7 @@ int main(int argc, char **argv)
         if (FILE *pf = fopen(pramFile, "wb")) { fwrite(mac.clockChip().pram, 1, 256, pf); fclose(pf); }
     }
     if (quad && getenv("SHOW_VBR")) printf("vbr %08X bus error handler %08X restartable %d page faults %u\n", quad->cpu.vbr, be32(&ram[quad->cpu.vbr + 8]), quad->cpu.restartable, quad->cpu.pageFaults);
+    printf("last trap %04X, pc %08X\n", mac.debugTrap(), mac.debugPC());
     printf("ran %d frames, %llu cycles, PRAM %s%s\n", frames, (unsigned long long)mac.cycles(),
            mac.clockChip().pramDirty ? "modified" : "untouched", mac.poweredOff() ? ", powered off" : "");
     return 0;
