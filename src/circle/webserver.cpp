@@ -157,6 +157,14 @@ CWebServer::~CWebServer (void)
 
 void CWebServer::Run (void)
 {
+	// Listen only once the Pi has its address: Circle's listening socket
+	// keeps the address it had when it was made for its checksums, so one
+	// made before DHCP finished (0.0.0.0) silently drops every connection.
+	while (!m_pNet->IsRunning ())
+	{
+		CScheduler::Get ()->MsSleep (100);
+	}
+
 	CSocket Listener (m_pNet, IPPROTO_TCP);
 	if (Listener.Bind (80) < 0 || Listener.Listen (4) < 0)
 	{
