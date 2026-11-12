@@ -90,6 +90,8 @@ struct Host : OsdHost {
         for (int i = 0; i < count && n < max; i++) strCopy(names[n++], list[i], kNameLen);
         return n;
     }
+    bool insertCd(const char *) override { return false; }
+    const char *cdName() override { return ""; }
     bool insertDisk(int drive, const char *name) override {
         FileStorage *s = new FileStorage;
         if (!s->load(name) || !mac.floppy().insert(drive, s)) { delete s; return false; }
@@ -179,7 +181,7 @@ int main(int argc, char **argv)
     bool menu = false, traceIo = false;
     int tracePc = 0;
     u32 watchPc = 0;
-    std::string floppy[2], hd[7];
+    std::string floppy[2], hd[7], cd;
     for (int i = 2; i < argc; i++) {
         std::string a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : "";
@@ -187,6 +189,7 @@ int main(int argc, char **argv)
         else if (a == "--machine") { strCopy(cfg.machine, v, sizeof cfg.machine); i++; }
         else if (a == "--floppy1") { floppy[0] = v; i++; }
         else if (a == "--floppy2") { floppy[1] = v; i++; }
+        else if (a == "--cd") { cd = v; i++; }
         else if (a.size() == 5 && a.compare(0, 4, "--hd") == 0 && a[4] >= '0' && a[4] <= '6') { hd[a[4] - '0'] = v; i++; }
         else if (a == "--frames") { frames = atoi(v); i++; }
         else if (a == "--shot-every") { shotEvery = atoi(v); i++; }
@@ -258,6 +261,11 @@ int main(int argc, char **argv)
         FileStorage *s = new FileStorage;
         if (s->load(hd[id])) mac.attachDisk(id, s);
         else fprintf(stderr, "cannot read hard disk image %s\n", hd[id].c_str());
+    }
+    if (!cd.empty()) {                                  // CD-ROM drive at SCSI ID 3
+        FileStorage *s = new FileStorage;
+        if (s->load(cd)) { s->ro = true; mac.insertCdrom(3, s); }
+        else fprintf(stderr, "cannot read CD image %s\n", cd.c_str());
     }
 
     Surface surf;

@@ -12,7 +12,6 @@ enum {
 
 Esp::Esp()
 {
-    for (int i = 0; i < kTargets; i++) disks[i] = 0;
     activityCounter = 0;
     reset();
 }
@@ -42,7 +41,7 @@ void Esp::reset()
 
 void Esp::flush()
 {
-    for (int i = 0; i < kTargets; i++) if (disks[i]) disks[i]->flush();
+    for (int i = 0; i < kTargets; i++) if (dev[i].storage) dev[i].storage->flush();
 }
 
 void Esp::setTc(u32 v)
@@ -107,89 +106,34 @@ bool Esp::loadBlock()
 {
     activityCounter++;
     bufPos = 0;
-    bufLen = 512;
-    return disks[target]->read(lba * 512, buf, 512);
+    bufLen = dev[target].blockBytes;
+    return dev[target].storage->read(lba * bufLen, buf, bufLen);
 }
 
 void Esp::execute()
 {
-    Storage *d = disks[target];
-    u32 blocks = d->size() / 512;
-    u8 op = cdb[0];
-    switch (op) {
-    case 0x00: case 0x01: case 0x04: case 0x07: case 0x0B: case 0x1B: case 0x1E:
-    case 0x2B: case 0x2F: case 0x35:
-        if (op == 0x35) d->flush();
-        finish(0);
+    ScsiResult r = scsiExecute(dev[target], cdb, buf, senseKey, senseCode);
+    switch (r.action) {
+    case ScsiStatus:
+        finish(r.status, r.key, r.asc);
         return;
-    case 0x03: {                                        // REQUEST SENSE
-        memFill(buf, 0, 18);
-        buf[0] = 0x70; buf[2] = senseKey; buf[7] = 10; buf[12] = senseCode;
-        reply(18, cdb[4] ? cdb[4] : 4);
+    case ScsiDataIn:
+        reply(r.len, r.len);
         return;
-    }
-    case 0x12: {                                        // INQUIRY
-        static const char id[] = "MACEMU  CIRCLE HARD DISK1.0 ";
-        memFill(buf, 0, 36);
-        buf[2] = 1; buf[3] = 1; buf[4] = 31;
-        memCopy(buf + 8, id, 28);
-        reply(36, cdb[4]);
-        return;
-    }
-    case 0x15:                                          // MODE SELECT: accept and ignore
-        bufLen = cdb[4];
+    case ScsiDataOut:                                   // MODE SELECT parameters
+        bufLen = r.len;
         bufPos = 0;
-        phase = bufLen ? DataOut : Status;
+        phase = DataOut;
         status = 0;
         return;
-    case 0x1A: {                                        // MODE SENSE
-        int page = cdb[2] & 0x3F;
-        memFill(buf, 0, 64);
-        u32 n = 4;
-        buf[2] = d->readOnly() ? 0x80 : 0;
-        buf[3] = 8;
-        buf[n + 1] = (u8)(blocks >> 16); buf[n + 2] = (u8)(blocks >> 8); buf[n + 3] = (u8)blocks;
-        buf[n + 6] = 0x02;
-        n += 8;
-        if (page == 0x03 || page == 0x3F) { buf[n] = 3; buf[n + 1] = 22; buf[n + 11] = 32; buf[n + 12] = 2; n += 24; }
-        if (page == 0x04 || page == 0x3F) {
-            u32 cyl = blocks / 128;
-            buf[n] = 4; buf[n + 1] = 22;
-            buf[n + 2] = (u8)(cyl >> 16); buf[n + 3] = (u8)(cyl >> 8); buf[n + 4] = (u8)cyl; buf[n + 5] = 4;
-            n += 24;
-        }
-        buf[0] = (u8)(n - 1);
-        reply(n, cdb[4]);
-        return;
-    }
-    case 0x25:                                          // READ CAPACITY
-        putBe32(buf, blocks - 1);
-        putBe32(buf + 4, 512);
-        reply(8, 8);
-        return;
-    case 0x08: case 0x0A: case 0x28: case 0x2A: {
-        u32 count;
-        if (op < 0x20) {
-            lba = ((u32)(cdb[1] & 0x1F) << 16) | ((u32)cdb[2] << 8) | cdb[3];
-            count = cdb[4] ? cdb[4] : 256;
-        } else {
-            lba = be32(cdb + 2);
-            count = be16(cdb + 7);
-        }
-        if (lba > blocks || count > blocks - lba) { finish(2, 5, 0x21); return; }
-        if (!count) { finish(0); return; }
-        bool isWrite = op == 0x0A || op == 0x2A;
-        if (isWrite && d->readOnly()) { finish(2, 7, 0x27); return; }
-        blocksLeft = count;
+    default:
+        lba = r.lba;
+        blocksLeft = r.count;
         status = 0;
         senseKey = senseCode = 0;
-        if (isWrite) { writing = true; bufPos = 0; bufLen = 512; phase = DataOut; }
+        if (r.action == ScsiWriteBlocks) { writing = true; bufPos = 0; bufLen = dev[target].blockBytes; phase = DataOut; }
         else if (loadBlock()) { reading = true; phase = DataIn; }
         else finish(2, 3, 0x11);
-        return;
-    }
-    default:
-        finish(2, 5, 0x20);
         return;
     }
 }
@@ -214,16 +158,16 @@ void Esp::targetByteOut(u8 v)
 {
     if (phase == Command) {
         if (cdbLen < 16) cdb[cdbLen++] = v;
-        int need = (cdb[0] >> 5) == 0 ? 6 : (cdb[0] >> 5) == 5 ? 12 : 10;
+        int need = scsiCdbLength(cdb[0]);
         if (cdbLen >= need) execute();
         return;
     }
     if (phase != DataOut) return;
-    if (bufPos < 512) buf[bufPos] = v;
+    if (bufPos < kScsiBufBytes) buf[bufPos] = v;
     if (++bufPos < bufLen) return;
-    if (!writing) { finish(0); return; }           // MODE SELECT data
+    if (!writing) { scsiDataOutDone(dev[target], cdb, buf, bufLen); finish(0); return; }   // MODE SELECT data
     activityCounter++;
-    disks[target]->write(lba * 512, buf, 512);
+    dev[target].storage->write(lba * bufLen, buf, bufLen);
     lba++;
     bufPos = 0;
     if (--blocksLeft == 0) finish(0);
@@ -248,7 +192,7 @@ void Esp::select(bool atn, bool stop)
 {
     target = wregs[R_STAT] & 7;                         // bus ID register
     rregs[R_SEQ] = 0;
-    if (!disks[target]) {
+    if (!dev[target].storage && !dev[target].cdrom) {   // (an empty CD drive still answers)
         connected = false;
         phase = BusFree;
         fifoCount = 0;
@@ -341,11 +285,8 @@ void Esp::command(u8 cmd)
     case 0x00: break;                                   // NOP
     case 0x01: fifoCount = 0; fifoFromTarget = false; break;   // flush FIFO
     case 0x02: {                                        // reset chip
-        Storage *keep[kTargets];
-        for (int i = 0; i < kTargets; i++) keep[i] = disks[i];
         u32 act = activityCounter;
-        reset();
-        for (int i = 0; i < kTargets; i++) disks[i] = keep[i];
+        reset();                                        // (the targets stay attached)
         activityCounter = act;
         break;
     }

@@ -127,6 +127,10 @@ void Osd::adjust(int item, int dir)
         pendingReboot = true;
         return;
     }
+    case ItScaling:
+        cfg.sharp = !cfg.sharp;
+        pendingReboot = true;
+        return;
     case ItMonitor:
         strCopy(cfg.monitor, strEq(cfg.monitor, "21") ? "vga" : "21", sizeof cfg.monitor);
         pendingReboot = true;
@@ -154,7 +158,8 @@ void Osd::openPicker(PickTarget target, int id)
     pickTarget = target;
     pickId = id;
     OsdHost::FileKind kind = target == PickHardDisk ? OsdHost::HardDisks : target == PickRom ? OsdHost::Roms
-                           : target == PickWifi ? OsdHost::WifiNetworks : OsdHost::Floppies;
+                           : target == PickWifi ? OsdHost::WifiNetworks : target == PickCd ? OsdHost::CdImages
+                           : OsdHost::Floppies;
     pickCount = host.listFiles(kind, names, kMaxFiles);
     for (int i = 1; i < pickCount && target != PickWifi; i++) {   // alphabetical
         char tmp[OsdHost::kNameLen];
@@ -194,6 +199,7 @@ void Osd::activate(int item)
     case ItPowerOff: host.powerOff(); break;
     case ItRom: openPicker(PickRom, 0); break;
     case ItWifiScan: openPicker(PickWifi, 0); break;
+    case ItCdrom: openPicker(PickCd, 0); break;
     case ItApply: case ItNetApply: host.saveAndReboot(); break;
     case ItWifiName: case ItWifiPass:
         editItem = item;
@@ -213,7 +219,7 @@ void Osd::activate(int item)
 void Osd::pickerKey(Nav nav)
 {
     int total = pickCount + 1;
-    Page back = pickTarget == PickHardDisk ? PageDisks : pickTarget == PickRom ? PageMachine
+    Page back = (pickTarget == PickHardDisk || pickTarget == PickCd) ? PageDisks : pickTarget == PickRom ? PageMachine
               : pickTarget == PickWifi ? PageNetwork : PageMain;
     switch (nav) {
     case NavUp: pickSel = cycle(pickSel, -1, 0, total - 1); break;
@@ -233,6 +239,10 @@ void Osd::pickerKey(Nav nav)
             strCopy(cfg.hd[pickId], pickSel ? name : "none", Config::kPath);
             disksChanged = true;
             say("Restart the Mac to use the new disks");
+            break;
+        case PickCd:
+            if (pickSel && !host.insertCd(name)) say("Cannot open that CD image");
+            if (!pickSel) host.insertCd(0);
             break;
         case PickWifi:
             if (!pickSel) break;
@@ -355,6 +365,14 @@ void Osd::label(int item, char *out, u32 max)
         break;
     }
     case ItWifiCountry: field("Wi-Fi country", cfg.wifiCountry); break;
+    case ItCdrom: {
+        char name[20] = "CD-ROM (ID ";
+        appendUint(name, (u32)(cfg.cdromId < 0 ? 3 : cfg.cdromId), sizeof name);
+        strAppend(name, ")", sizeof name);
+        const char *n = host.cdName();
+        field(name, n[0] ? baseName(n) : "(empty)");
+        break;
+    }
     case ItWifiScan: strAppend(out, "Choose Wi-Fi network (search)  >", max); break;
     case ItKeyboard: field("Keyboard layout", strEqNoCase(cfg.keyboard, "us") ? "US" : "UK"); break;
     case ItNetApply: strAppend(out, pendingReboot ? "Save and restart now" : "Save and restart", max); break;
@@ -382,6 +400,7 @@ void Osd::label(int item, char *out, u32 max)
         appendUint(v, (u32)cfg.videoHeight, sizeof v);
         field("Mac II screen", v);
         break;
+    case ItScaling: field("Screen scaling", cfg.sharp ? "Sharp (whole pixels)" : "Smooth (fills screen)"); break;
     case ItMonitor: field("Quadra monitor", strEq(cfg.monitor, "21") ? "21-inch, 1152 x 870" : "VGA, 640 x 480 / 800 x 600"); break;
     case ItApply: strAppend(out, pendingReboot ? "Apply: save and restart now" : "Save and restart", max); break;
     case ItSpeed:
@@ -438,6 +457,7 @@ void Osd::draw(Surface &s, const Font &f)
                                    "Network", ""};
     if (page == PagePicker) {
         const char *t = pickTarget == PickHardDisk ? "Choose a hard disk image" : pickTarget == PickRom ? "Choose a ROM"
+                      : pickTarget == PickCd ? "Choose a CD-ROM image (.iso .toast .cdr)"
                       : pickTarget == PickWifi ? "Choose your Wi-Fi network"
                       : "Choose a floppy disk";
         drawText(s, f, tx, ty, t, ColSelFg);

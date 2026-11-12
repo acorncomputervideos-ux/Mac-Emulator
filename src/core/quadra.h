@@ -57,6 +57,7 @@ public:
     void interruptButton() override { nmiFrames = 6; updateIrq(); }
     Iwm &floppy() override { return iwm; }
     void attachDisk(int id, Storage *d) override { esp.attach(id, d); }
+    ScsiDevice &scsiDevice(int id) override { return esp.device(id); }
     void flushDisks() override { iwm.flush(); esp.flush(); }
     Rtc &clockChip() override { return rtc; }
     u64 cycles() const override { return cpu.totalCycles; }

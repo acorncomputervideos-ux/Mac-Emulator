@@ -92,6 +92,8 @@ public:
 	bool InsertDiskPaused (int nDrive, const char *pName);
 	void ejectDisk (int nDrive) override;
 	const char *diskName (int nDrive) override	{ return m_FloppyName[nDrive]; }
+	bool insertCd (const char *pName) override;
+	const char *cdName (void) override		{ return m_pCdrom != 0 ? m_Config.cdrom : ""; }
 	void resetMachine (void) override;
 	void interruptButton (void) override;
 	void settingsChanged (void) override;
@@ -110,6 +112,7 @@ private:
 	boolean LoadROM (void);
 	boolean SetupDisplay (int nMacWidth, int nMacHeight);
 	void SetupSound (void);
+	void UpdateFirmwareConfig (void);
 	void AttachDisks (void);
 	void AttachHardDisks (void);
 	void LoadPRAM (void);
@@ -205,6 +208,7 @@ private:
 	char			m_FloppyName[2][kNameLen];
 	CFileStorage		*m_pHardDisk[macemu::Scsi::kTargets];
 	char			m_HardDiskPath[macemu::Scsi::kTargets][160];	// without the drive
+	CFileStorage		*m_pCdrom;		// the CD-ROM image in the drive
 
 
 	// input, filled in interrupt context

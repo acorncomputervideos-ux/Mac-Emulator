@@ -11,7 +11,6 @@ enum {
 
 Scsi::Scsi()
 {
-    for (int i = 0; i < kTargets; i++) disks[i] = 0;
     activityCounter = 0;
     senseKey = senseCode = 0;
     reset();
@@ -34,7 +33,7 @@ void Scsi::reset()
 
 void Scsi::flush()
 {
-    for (int i = 0; i < kTargets; i++) if (disks[i]) disks[i]->flush();
+    for (int i = 0; i < kTargets; i++) if (dev[i].storage) dev[i].storage->flush();
 }
 
 u8 Scsi::busPhaseBits() const
@@ -96,125 +95,41 @@ bool Scsi::loadBlock()
 {
     activityCounter++;
     bufPos = 0;
-    bufLen = 512;
-    return disks[target]->read(lba * 512, buf, 512);
+    bufLen = dev[target].blockBytes;
+    return dev[target].storage->read(lba * bufLen, buf, bufLen);
 }
 
 void Scsi::storeBlock()
 {
     activityCounter++;
-    disks[target]->write(lba * 512, buf, 512);
+    dev[target].storage->write(lba * bufLen, buf, bufLen);
 }
 
 void Scsi::execute()
 {
-    Storage *d = disks[target];
-    u32 blocks = d->size() / 512;
-    u8 op = cmd[0];
-
-    switch (op) {
-    case 0x00:                                          // TEST UNIT READY
-    case 0x01:                                          // REZERO UNIT
-    case 0x04:                                          // FORMAT UNIT
-    case 0x07:                                          // REASSIGN BLOCKS
-    case 0x0B:                                          // SEEK(6)
-    case 0x1B:                                          // START STOP UNIT
-    case 0x1E:                                          // PREVENT ALLOW MEDIUM REMOVAL
-    case 0x2B:                                          // SEEK(10)
-    case 0x2F:                                          // VERIFY(10)
-    case 0x35:                                          // SYNCHRONIZE CACHE
-        if (op == 0x35) d->flush();
-        finish(0);
+    ScsiResult r = scsiExecute(dev[target], cmd, buf, senseKey, senseCode);
+    switch (r.action) {
+    case ScsiStatus:
+        finish(r.status, r.key, r.asc);
         return;
-
-    case 0x03: {                                        // REQUEST SENSE
-        u32 alloc = cmd[4] ? cmd[4] : 4;
-        memFill(buf, 0, 18);
-        buf[0] = 0x70;
-        buf[2] = senseKey;
-        buf[7] = 10;
-        buf[12] = senseCode;
-        reply(18, alloc);
+    case ScsiDataIn:
+        reply(r.len, r.len);
         return;
-    }
-
-    case 0x12: {                                        // INQUIRY
-        static const char id[] = "MACEMU  CIRCLE HARD DISK1.0 ";
-        memFill(buf, 0, 36);
-        buf[2] = 1;
-        buf[3] = 1;
-        buf[4] = 31;
-        memCopy(buf + 8, id, 28);
-        reply(36, cmd[4]);
-        return;
-    }
-
-    case 0x15:                                          // MODE SELECT(6)
-        bufLen = cmd[4];
+    case ScsiDataOut:                                   // MODE SELECT parameters
+        bufLen = r.len;
         bufPos = 0;
         blockIo = false;
-        if (bufLen) setPhase(DataOut); else finish(0);
+        setPhase(DataOut);
         return;
-
-    case 0x1A: {                                        // MODE SENSE(6)
-        int page = cmd[2] & 0x3F;
-        memFill(buf, 0, 64);
-        u32 n = 4;
-        buf[2] = d->readOnly() ? 0x80 : 0;
-        buf[3] = 8;
-        buf[n + 1] = (u8)(blocks >> 16); buf[n + 2] = (u8)(blocks >> 8); buf[n + 3] = (u8)blocks;
-        buf[n + 6] = 0x02;                              // 512 bytes per block
-        n += 8;
-        if (page == 0x03 || page == 0x3F) {             // format device
-            buf[n] = 0x03; buf[n + 1] = 22;
-            buf[n + 11] = 32;                           // sectors per track
-            buf[n + 12] = 0x02;                         // bytes per sector
-            n += 24;
-        }
-        if (page == 0x04 || page == 0x3F) {             // rigid disk geometry
-            u32 cyl = blocks / (32 * 4);
-            buf[n] = 0x04; buf[n + 1] = 22;
-            buf[n + 2] = (u8)(cyl >> 16); buf[n + 3] = (u8)(cyl >> 8); buf[n + 4] = (u8)cyl;
-            buf[n + 5] = 4;                             // heads
-            n += 24;
-        }
-        buf[0] = (u8)(n - 1);
-        reply(n, cmd[4]);
-        return;
-    }
-
-    case 0x25:                                          // READ CAPACITY
-        putBe32(buf, blocks - 1);
-        putBe32(buf + 4, 512);
-        reply(8, 8);
-        return;
-
-    case 0x08: case 0x0A: case 0x28: case 0x2A: {       // READ / WRITE
-        bool six = op < 0x20;
-        u32 count;
-        if (six) {
-            lba = ((u32)(cmd[1] & 0x1F) << 16) | ((u32)cmd[2] << 8) | cmd[3];
-            count = cmd[4] ? cmd[4] : 256;
-        } else {
-            lba = be32(cmd + 2);
-            count = be16(cmd + 7);
-        }
-        if (lba > blocks || count > blocks - lba) { finish(2, 5, 0x21); return; }
-        if (count == 0) { finish(0); return; }
-        bool isWrite = op == 0x0A || op == 0x2A;
-        if (isWrite && d->readOnly()) { finish(2, 7, 0x27); return; }
-        blocksLeft = count;
+    default:
+        lba = r.lba;
+        blocksLeft = r.count;
         blockIo = true;
         status = 0;
         senseKey = senseCode = 0;
-        if (isWrite) { bufPos = 0; bufLen = 512; setPhase(DataOut); }
+        if (r.action == ScsiWriteBlocks) { bufPos = 0; bufLen = dev[target].blockBytes; setPhase(DataOut); }
         else if (loadBlock()) setPhase(DataIn);
         else finish(2, 3, 0x11);
-        return;
-    }
-
-    default:
-        finish(2, 5, 0x20);                             // illegal request
         return;
     }
 }
@@ -228,17 +143,16 @@ void Scsi::byteOut(u8 v)
         return;
     case Command:
         if (cmdPos == 0) {
-            int group = v >> 5;
-            cmdLen = group == 0 ? 6 : group == 5 ? 12 : 10;
+            cmdLen = scsiCdbLength(v);
         }
         cmd[cmdPos++] = v;
         if (cmdPos >= cmdLen) execute();
         return;
     case DataOut:
-        if (bufPos < 512) buf[bufPos] = v;
+        if (bufPos < kScsiBufBytes) buf[bufPos] = v;
         bufPos++;
         if (bufPos < bufLen) return;
-        if (!blockIo) { finish(0); return; }
+        if (!blockIo) { scsiDataOutDone(dev[target], cmd, buf, bufLen); finish(0); return; }
         storeBlock();
         lba++;
         bufPos = 0;
@@ -345,7 +259,7 @@ void Scsi::write(int reg, u8 v, bool dack)
         // Selection: SEL with the target's ID bit on the data bus, BSY released.
         if (phase == Free && (icr & ICR_SEL) && !(icr & ICR_BSY) && (icr & ICR_DBUS)) {
             for (int id = 0; id < kTargets; id++) {
-                if (disks[id] && (odr & (1 << id))) {
+                if ((dev[id].storage || dev[id].cdrom) && (odr & (1 << id))) {
                     target = id;
                     phase = Selected;
                     req = false;

@@ -6,6 +6,7 @@
 #define MACEMU_ESP_H
 
 #include "types.h"
+#include "scsicmd.h"
 
 namespace macemu {
 
@@ -15,8 +16,9 @@ public:
 
     Esp();
     void reset();
-    void attach(int id, Storage *s) { disks[id] = s; }
-    Storage *disk(int id) const { return disks[id]; }
+    void attach(int id, Storage *s) { dev[id] = ScsiDevice(); dev[id].storage = s; }
+    Storage *disk(int id) const { return dev[id].storage; }
+    ScsiDevice &device(int id) { return dev[id]; }   // e.g. to make it a CD-ROM drive
 
     u8 read(int reg);
     void write(int reg, u8 v);
@@ -33,7 +35,7 @@ public:
 private:
     enum Phase { DataOut = 0, DataIn = 1, Command = 2, Status = 3, MsgOut = 6, MsgIn = 7, BusFree = 8 };
 
-    Storage *disks[kTargets];
+    ScsiDevice dev[kTargets];
     u8 rregs[16], wregs[16];
     u8 fifo[16];
     int fifoCount;
@@ -48,7 +50,7 @@ private:
     // Target side of the current command.
     u8 cdb[16];
     int cdbLen;
-    u8 buf[512];
+    u8 buf[kScsiBufBytes];
     u32 bufLen, bufPos;
     u32 lba, blocksLeft;
     bool reading, writing;

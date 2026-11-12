@@ -13,13 +13,15 @@ namespace macemu {
 class OsdHost {
 public:
     enum { kNameLen = 64 };
-    enum FileKind { Floppies, HardDisks, Roms, WifiNetworks };   // Wi-Fi: a scan, strongest first
+    enum FileKind { Floppies, HardDisks, Roms, WifiNetworks, CdImages };   // Wi-Fi: a scan, strongest first
     virtual ~OsdHost() {}
     // Files of one kind on the card; returns how many were stored.
     virtual int listFiles(FileKind kind, char (*names)[kNameLen], int max) = 0;
     virtual bool insertDisk(int drive, const char *name) = 0;
     virtual void ejectDisk(int drive) = 0;
     virtual const char *diskName(int drive) = 0;        // "" when empty
+    virtual bool insertCd(const char *name) = 0;        // null or "": eject
+    virtual const char *cdName() = 0;                   // "" when empty
     virtual void resetMachine() = 0;                    // also attaches the chosen hard disks
     virtual void interruptButton() = 0;
     virtual void settingsChanged() = 0;                 // apply Config to video/sound/input
@@ -62,15 +64,15 @@ private:
         ItFloppy1, ItFloppy2, ItDisksPage, ItMachinePage, ItPrefsPage, ItNetworkPage,
         ItReset, ItInterrupt, ItScreenshot, ItSave, ItPowerOff, ItResume,
         // hard disks
-        ItHd0, ItHd6 = ItHd0 + 6, ItDisksBack,
+        ItHd0, ItHd6 = ItHd0 + 6, ItCdrom, ItDisksBack,
         // machine
-        ItModel, ItRom, ItRam, ItVideo, ItMonitor, ItApply, ItMachineBack,
+        ItModel, ItRom, ItRam, ItVideo, ItMonitor, ItScaling, ItApply, ItMachineBack,
         // display and sound
         ItSpeed, ItPalette, ItSound, ItVolume, ItMouse, ItAlt, ItPrefsBack,
         // network
         ItNetMode, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry, ItKeyboard, ItNetApply, ItNetworkBack,
     };
-    enum PickTarget { PickFloppy1, PickFloppy2, PickHardDisk, PickRom, PickWifi };
+    enum PickTarget { PickFloppy1, PickFloppy2, PickHardDisk, PickRom, PickWifi, PickCd };
 
     Config &cfg;
     OsdHost &host;

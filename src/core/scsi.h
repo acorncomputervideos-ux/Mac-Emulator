@@ -4,6 +4,7 @@
 #define MACEMU_SCSI_H
 
 #include "types.h"
+#include "scsicmd.h"
 
 namespace macemu {
 
@@ -13,8 +14,9 @@ public:
 
     Scsi();
     void reset();
-    void attach(int id, Storage *disk) { disks[id] = disk; }
-    Storage *disk(int id) const { return disks[id]; }
+    void attach(int id, Storage *disk) { dev[id] = ScsiDevice(); dev[id].storage = disk; }
+    Storage *disk(int id) const { return dev[id].storage; }
+    ScsiDevice &device(int id) { return dev[id]; }
 
     u8 read(int reg, bool dack);
     void write(int reg, u8 v, bool dack);
@@ -25,7 +27,7 @@ public:
 private:
     enum Phase { Free, Selected, Command, DataIn, DataOut, Status, MsgIn, MsgOut };
 
-    Storage *disks[kTargets];
+    ScsiDevice dev[kTargets];
     u8 odr, icr, mode, tcr;
     bool aip, irq, dmaSend, dmaRecv;
 
@@ -35,7 +37,7 @@ private:
     int target;
     u8 cmd[12];
     int cmdLen, cmdPos;
-    u8 buf[512];
+    u8 buf[kScsiBufBytes];
     u32 bufLen, bufPos;
     u32 lba, blocksLeft;
     bool blockIo;

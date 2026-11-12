@@ -204,6 +204,8 @@ struct FakeHost : OsdHost {
         static const char *hds[] = {"hd0.img", "disks/System 7.5.hda"};
         static const char *roms[] = {"Quadra-650.ROM", "MacPlus.rom"};
         static const char *nets[] = {"Strong Net", "Another"};
+        static const char *cds[] = {"Install.iso"};
+        if (kind == CdImages) { strCopy(names[0], cds[0], kNameLen); return 1; }
         const char **list = kind == Floppies ? floppies : kind == HardDisks ? hds : kind == WifiNetworks ? nets : roms;
         int n = kind == Floppies ? 3 : 2, c = 0;
         for (int i = 0; i < n && c < max; i++) strCopy(names[c++], list[i], kNameLen);
@@ -212,6 +214,9 @@ struct FakeHost : OsdHost {
     bool insertDisk(int d, const char *name) override { if (!acceptInsert) return false; disk[d] = name; return true; }
     void ejectDisk(int d) override { disk[d].clear(); }
     const char *diskName(int d) override { return disk[d].c_str(); }
+    std::string cd;
+    bool insertCd(const char *n) override { cd = n ? n : ""; return true; }
+    const char *cdName() override { return cd.c_str(); }
     void resetMachine() override { resets++; }
     void interruptButton() override { nmis++; }
     void settingsChanged() override { changes++; }
@@ -271,6 +276,9 @@ static void testOsd()
     strCopy(cfg.hd[0], "old.img", Config::kPath);
     osd.key(Osd::NavPageUp); osd.key(Osd::NavSelect); osd.key(Osd::NavSelect);   // ID 0 -> none
     CHECK(strEq(cfg.hd[0], "none"));
+    osd.key(Osd::NavPageDown); osd.key(Osd::NavUp); osd.key(Osd::NavSelect); // CD-ROM picker
+    osd.key(Osd::NavDown); osd.key(Osd::NavSelect);
+    CHECK(host.cd == "Install.iso");
     osd.key(Osd::NavBack);                                                   // back to main
     go(osd, 6); osd.key(Osd::NavSelect);                                     // restart attaches them
     CHECK(host.resets == 1 && !osd.active());
@@ -293,6 +301,8 @@ static void testOsd()
     CHECK(cfg.videoWidth == 832 && cfg.videoHeight == 624);
     osd.key(Osd::NavDown); osd.key(Osd::NavRight);                           // Quadra monitor
     CHECK(strEq(cfg.monitor, "21"));
+    osd.key(Osd::NavDown); osd.key(Osd::NavRight);                           // scaling
+    CHECK(cfg.sharp == 1);
     osd.key(Osd::NavDown); osd.key(Osd::NavSelect);                          // apply
     CHECK(host.reboots == 1);
     osd.key(Osd::NavBack);

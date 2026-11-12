@@ -399,6 +399,87 @@ static void testEspUnalignedWrite()
     CHECK(disk.data[7 * 512] == 0 && disk.data[5 * 512 - 1] == 0);
 }
 
+// Run one command on the 53C96 the way the Mac's driver does: select with
+// the CDB in the FIFO, pseudo-DMA the data in, then status and message.
+static std::vector<u8> espCommand(Esp &e, int id, const std::vector<u8> &cdb, u32 want, u8 &status)
+{
+    e.write(4, (u8)id);
+    for (u8 b : cdb) e.write(2, b);
+    e.write(3, 0x41);
+    e.read(5);
+    std::vector<u8> out;
+    if (want) {
+        e.write(0, (u8)want); e.write(1, (u8)(want >> 8)); e.write(14, (u8)(want >> 16));
+        e.write(3, 0x90);
+        for (u32 i = 0; i < want; i++) out.push_back(e.dmaRead());
+        e.read(5);
+    }
+    e.write(3, 0x11);                                   // initiator command complete
+    status = e.read(2);
+    e.read(2);
+    e.read(5);
+    e.write(3, 0x12);                                   // message accepted
+    e.read(5);
+    return out;
+}
+
+// A CD-ROM image on SCSI ID 3: identity, disc change, 2048- and 512-byte
+// blocks, table of contents, write protection, lock and eject.
+static void testCdrom()
+{
+    MemStorage cd(300 * 2048);
+    for (u32 i = 0; i < cd.data.size(); i++) cd.data[i] = (u8)(i / 2048 + i % 251);
+    Esp esp;
+    esp.device(3).insertCd(&cd);
+    u8 st;
+
+    auto inq = espCommand(esp, 3, {0x12, 0, 0, 0, 36, 0}, 36, st);
+    CHECK(st == 0 && inq[0] == 5 && (inq[1] & 0x80) && memcmp(&inq[8], "SONY    ", 8) == 0);
+
+    espCommand(esp, 3, {0x00, 0, 0, 0, 0, 0}, 0, st);
+    CHECK(st == 2);                                     // unit attention: a new disc
+    auto sense = espCommand(esp, 3, {0x03, 0, 0, 0, 18, 0}, 18, st);
+    CHECK(sense[2] == 6 && sense[12] == 0x28);
+    espCommand(esp, 3, {0x00, 0, 0, 0, 0, 0}, 0, st);
+    CHECK(st == 0);
+
+    auto cap = espCommand(esp, 3, {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 8, st);
+    CHECK(be32(&cap[0]) == 299 && be32(&cap[4]) == 2048);
+
+    auto blk = espCommand(esp, 3, {0x28, 0, 0, 0, 0, 7, 0, 0, 2, 0}, 4096, st);   // 2 blocks at 7
+    CHECK(st == 0 && memcmp(blk.data(), &cd.data[7 * 2048], 4096) == 0);
+
+    auto toc = espCommand(esp, 3, {0x43, 0, 0, 0, 0, 0, 0, 0, 20, 0}, 20, st);
+    CHECK(toc[2] == 1 && toc[3] == 1 && toc[6] == 1 && toc[14] == 0xAA && be32(&toc[16]) == 300);
+
+    espCommand(esp, 3, {0x2A, 0, 0, 0, 0, 1, 0, 0, 1, 0}, 0, st);
+    CHECK(st == 2);                                     // read-only
+
+    // MODE SELECT to 512-byte blocks, as some drivers do.
+    esp.write(4, 3);
+    for (u8 b : std::vector<u8>{0x15, 0, 0, 0, 12, 0}) esp.write(2, b);
+    esp.write(3, 0x41); esp.read(5);
+    const u8 params[12] = {0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 2, 0};
+    esp.write(0, 12); esp.write(1, 0); esp.write(14, 0); esp.write(3, 0x90);
+    for (u8 b : params) esp.dmaWrite(b);
+    esp.read(5); esp.write(3, 0x11); esp.read(2); esp.read(2); esp.read(5); esp.write(3, 0x12); esp.read(5);
+    cap = espCommand(esp, 3, {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 8, st);
+    CHECK(be32(&cap[0]) == 1199 && be32(&cap[4]) == 512);
+    blk = espCommand(esp, 3, {0x28, 0, 0, 0, 0, 5, 0, 0, 1, 0}, 512, st);
+    CHECK(memcmp(blk.data(), &cd.data[5 * 512], 512) == 0);
+
+    // Locked: no eject.  Unlocked: eject, then "no medium".
+    espCommand(esp, 3, {0x1E, 0, 0, 0, 1, 0}, 0, st);
+    espCommand(esp, 3, {0x1B, 0, 0, 0, 2, 0}, 0, st);
+    CHECK(st == 2 && esp.device(3).present);
+    espCommand(esp, 3, {0x1E, 0, 0, 0, 0, 0}, 0, st);
+    espCommand(esp, 3, {0x1B, 0, 0, 0, 2, 0}, 0, st);
+    CHECK(st == 0 && !esp.device(3).present && esp.device(3).ejected);
+    espCommand(esp, 3, {0x00, 0, 0, 0, 0, 0}, 0, st);
+    sense = espCommand(esp, 3, {0x03, 0, 0, 0, 18, 0}, 18, st);
+    CHECK(sense[2] == 2 && sense[12] == 0x3A);
+}
+
 static void testMachine()
 {
     Rig r;
@@ -554,6 +635,7 @@ static void testMouseAndSound()
 
 int main()
 {
+    testCdrom();
     testEspUnalignedWrite();
     testGcr();
     testFloppy();

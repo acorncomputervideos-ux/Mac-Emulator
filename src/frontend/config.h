@@ -18,8 +18,11 @@ struct Config {
     char floppy[2][kPath];      // images inserted at power-on
     char hd[kHardDisks][kPath]; // SCSI IDs 0..6; empty = hdN.img if present
     char diskDir[kPath];        // folder the disk picker browses
+    char cdrom[kPath];          // CD-ROM image in the drive, empty = none
+    int cdromId;                // SCSI ID of the CD-ROM drive (0..6, -1 = no drive)
     int speed;                  // 1, 2, 4, 8 or 0 = unlimited
     int scale;                  // integer zoom, 0 = largest that fits
+    int sharp;                  // 1: whole-number scaling with square pixels; 0: smooth, fills the height
     int width, height;          // framebuffer size, 0 = display's native mode
     int palette;
     int sound;                  // 0 = off

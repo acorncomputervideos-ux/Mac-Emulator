@@ -4,6 +4,7 @@
 #define MACEMU_EMULATOR_H
 
 #include "types.h"
+#include "scsicmd.h"
 
 namespace macemu {
 
@@ -42,6 +43,9 @@ public:
 
     virtual Iwm &floppy() = 0;
     virtual void attachDisk(int scsiId, Storage *disk) = 0;
+    // A CD-ROM drive at this SCSI ID, holding `disc` (null: empty drive).
+    virtual ScsiDevice &scsiDevice(int scsiId) = 0;
+    void insertCdrom(int scsiId, Storage *disc) { scsiDevice(scsiId).insertCd(disc); }
     virtual void flushDisks() = 0;
     virtual Rtc &clockChip() = 0;
     virtual u64 cycles() const = 0;

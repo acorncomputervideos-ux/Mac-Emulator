@@ -78,6 +78,7 @@ CKernel::CKernel (void)
 	m_nScreenshot (0),
 	m_nEmulatedFrames (0),
 	m_nEmulatedSeen (0),
+	m_pCdrom (0),
 #ifdef ARM_ALLOW_MULTI_CORE
 	m_pCores (0),
 #endif
@@ -276,6 +277,18 @@ boolean CKernel::SetupDisplay (int nMacWidth, int nMacHeight)
 	}
 
 	unsigned nWidth = m_Config.width, nHeight = m_Config.height;
+	if ((nWidth == 0 || nHeight == 0) && m_Config.sharp)
+	{
+		// Sharp: the display is a whole multiple of the frame buffer, and
+		// the firmware scales without smoothing (scaling_kernel=8), so each
+		// Mac pixel becomes an exact square of screen pixels.
+		unsigned nFactor = m_nDisplayWidth / (unsigned) nMacWidth;
+		unsigned nFactorY = m_nDisplayHeight / (unsigned) (nMacHeight < 384 ? 384 : nMacHeight);
+		if (nFactorY < nFactor) nFactor = nFactorY;
+		if (nFactor < 1) nFactor = 1;
+		nWidth = m_nDisplayWidth / nFactor;
+		nHeight = m_nDisplayHeight / nFactor;
+	}
 	if (nWidth == 0 || nHeight == 0)
 	{
 		nHeight = nMacHeight < 384 ? 384 : nMacHeight;	// room for the menu
@@ -377,6 +390,65 @@ void CKernel::AttachDisks (void)
 	}
 
 	AttachHardDisks ();
+
+	if (m_Config.cdromId >= 0)
+	{
+		if (m_pHardDisk[m_Config.cdromId] != 0)
+		{
+			m_Logger.Write (FromKernel, LogWarning, "SCSI ID %d: the CD-ROM drive replaces the hard disk",
+					m_Config.cdromId);
+		}
+		if (m_Config.cdrom[0] == '\0' || !insertCd (m_Config.cdrom))
+		{
+			m_pMachine->insertCdrom (m_Config.cdromId, 0);	// an empty drive
+		}
+	}
+}
+
+// Put a CD-ROM image in the drive (null or "": eject).  Names from the menu
+// are relative to the card's root.
+bool CKernel::insertCd (const char *pName)
+{
+	if (m_Config.cdromId < 0)
+	{
+		return false;
+	}
+
+	PauseEmu ();
+	m_pMachine->insertCdrom (m_Config.cdromId, 0);
+	delete m_pCdrom;
+	m_pCdrom = 0;
+
+	boolean bOK = TRUE;
+	if (pName != 0 && pName[0] != '\0')
+	{
+		char Path[160] = DRIVE "/";
+		strAppend (Path, pName, sizeof Path);
+		CFileStorage *pDisc = new CFileStorage;
+		if (pDisc->Open (Path) && pDisc->size () >= 2048)
+		{
+			m_pCdrom = pDisc;
+			if (pName != m_Config.cdrom)
+			{
+				strCopy (m_Config.cdrom, pName, Config::kPath);
+			}
+			m_pMachine->insertCdrom (m_Config.cdromId, pDisc);
+			m_Logger.Write (FromKernel, LogNotice, "CD-ROM (SCSI ID %d): %s (%u MB)", m_Config.cdromId,
+					Path, pDisc->size () >> 20);
+		}
+		else
+		{
+			delete pDisc;
+			bOK = FALSE;
+		}
+	}
+	if (m_pCdrom == 0)
+	{
+		m_Config.cdrom[0] = '\0';
+	}
+
+	ResumeEmu ();
+	return bOK;
 }
 
 // (Re)attach the SCSI disks named in the settings.  "none" means no disk;
@@ -1185,6 +1257,13 @@ void CKernel::Housekeeping (void)
 			ejectDisk ((int) d);
 			ResumeEmu ();
 		}
+	}
+
+	// The Mac ejected the CD.
+	if (m_pCdrom != 0 && m_Config.cdromId >= 0 && m_pMachine->scsiDevice (m_Config.cdromId).ejected)
+	{
+		m_Logger.Write (FromKernel, LogNotice, "The Mac ejected the CD-ROM");
+		insertCd (0);
 	}
 
 	// Activity LED, and write-back once the disks have been idle for a while.
@@ -2293,6 +2372,7 @@ int CKernel::listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax)
 		boolean bDiskDir = nPass == 1;
 		if (Kind == Floppies && !bDiskDir) continue;
 		if (Kind == Roms && bDiskDir) continue;
+		if (Kind == CdImages && bDiskDir && m_Config.diskDir[0] == '\0') continue;
 
 		char Path[160] = DRIVE "/";
 		if (bDiskDir)
@@ -2314,7 +2394,13 @@ int CKernel::listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax)
 						|| (nSize > 409600 + 84 && nSize <= MaxFloppyBytes));
 				break;
 			case HardDisks:
-				bUse = bUse && nSize > 2 * 1024 * 1024 && !endsWithNoCase (Info.fname, ".zip");
+				bUse = bUse && nSize > 2 * 1024 * 1024 && !endsWithNoCase (Info.fname, ".zip")
+				       && !endsWithNoCase (Info.fname, ".iso") && !endsWithNoCase (Info.fname, ".toast")
+				       && !endsWithNoCase (Info.fname, ".cdr");
+				break;
+			case CdImages:
+				bUse = bUse && (endsWithNoCase (Info.fname, ".iso") || endsWithNoCase (Info.fname, ".toast")
+						|| endsWithNoCase (Info.fname, ".cdr"));
 				break;
 			default:
 				bUse = bUse && (nSize == 0x10000 || nSize == 0x20000 || nSize == 0x40000
@@ -2415,10 +2501,62 @@ void CKernel::resetMachine (void)
 
 // Model, ROM, memory and video changes need a fresh start of the whole
 // emulator: save everything and reboot the Pi (it is quick).
+// Sharp scaling needs the firmware's nearest-neighbour filter, which is a
+// config.txt setting read at boot: add or remove "scaling_kernel=8".
+void CKernel::UpdateFirmwareConfig (void)
+{
+	static char Text[8192];
+	FIL File;
+	UINT nRead = 0;
+	if (f_open (&File, DRIVE "/config.txt", FA_READ) != FR_OK)
+	{
+		return;
+	}
+	f_read (&File, Text, sizeof Text - 1, &nRead);
+	f_close (&File);
+	Text[nRead] = '\0';
+
+	static char Out[8192 + 64];
+	Out[0] = '\0';
+	boolean bHad = FALSE;
+	for (char *p = Text; *p; )
+	{
+		char *pEnd = p;
+		while (*pEnd && *pEnd != '\n') pEnd++;
+		boolean bKernelLine = strncmp (p, "scaling_kernel=", 15) == 0;
+		bHad |= bKernelLine;
+		if (!bKernelLine)
+		{
+			char Save = *pEnd;
+			*pEnd = '\0';
+			strAppend (Out, p, sizeof Out);
+			strAppend (Out, "\n", sizeof Out);
+			*pEnd = Save;
+		}
+		p = *pEnd ? pEnd + 1 : pEnd;
+	}
+	if (m_Config.sharp)
+	{
+		strAppend (Out, "scaling_kernel=8\n", sizeof Out);
+	}
+	else if (!bHad)
+	{
+		return;					// nothing to change
+	}
+
+	if (f_open (&File, DRIVE "/config.txt", FA_WRITE | FA_CREATE_ALWAYS) == FR_OK)
+	{
+		UINT nWritten;
+		f_write (&File, Out, strLen (Out), &nWritten);
+		f_close (&File);
+	}
+}
+
 void CKernel::saveAndReboot (void)
 {
 	PauseEmu ();					// for good
 	saveSettings ();
+	UpdateFirmwareConfig ();
 	m_pMachine->flushDisks ();
 	SavePRAM ();
 	ShowMessage ("Restarting with the new settings...", "");

@@ -12,6 +12,7 @@ void Config::setDefaults()
     videoHeight = 480;
     strCopy(monitor, "vga", sizeof monitor);
     strCopy(diskDir, "disks", kPath);
+    cdromId = 3;
     speed = 1;
     palette = 0;
     sound = 1;
@@ -38,6 +39,8 @@ void Config::sanitize()
     volume = clampInt(volume, 0, 10);
     mouseSpeed = clampInt(mouseSpeed, 1, 8);
     sound = sound ? 1 : 0;
+    sharp = sharp ? 1 : 0;
+    if (cdromId < -1 || cdromId > 6) cdromId = 3;
     altIsOption = altIsOption ? 1 : 0;
     floppyReadOnly = floppyReadOnly ? 1 : 0;
     if (strEq(network, "1")) strCopy(network, "auto", sizeof network);
@@ -103,8 +106,11 @@ void Config::parse(const char *text, u32 len)
         else if (lower(p[0]) == 'h' && lower(p[1]) == 'd' && p[2] >= '0' && p[2] <= '6' && !p[3])
             strCopy(hd[p[2] - '0'], val, kPath);
         else if (strEqNoCase(p, "disk_dir")) strCopy(diskDir, val, kPath);
+        else if (strEqNoCase(p, "cdrom")) strCopy(cdrom, val, kPath);
+        else if (strEqNoCase(p, "cdrom_id")) cdromId = strEqNoCase(val, "none") ? -1 : toInt(val);
         else if (strEqNoCase(p, "speed")) speed = strEqNoCase(val, "max") ? 0 : toInt(val);
         else if (strEqNoCase(p, "scale")) scale = toInt(val);
+        else if (strEqNoCase(p, "scaling")) sharp = strEqNoCase(val, "sharp") ? 1 : 0;
         else if (strEqNoCase(p, "width")) width = toInt(val);
         else if (strEqNoCase(p, "height")) height = toInt(val);
         else if (strEqNoCase(p, "palette")) palette = toInt(val);
@@ -163,8 +169,11 @@ u32 Config::serialize(char *out, u32 max) const
         line(out, max, key, hd[i]);
     }
     line(out, max, "disk_dir", diskDir);
+    line(out, max, "cdrom", cdrom);
+    lineInt(out, max, "cdrom_id", cdromId);
     if (speed) lineInt(out, max, "speed", speed); else line(out, max, "speed", "max");
     lineInt(out, max, "scale", scale);
+    line(out, max, "scaling", sharp ? "sharp" : "smooth");
     lineInt(out, max, "width", width);
     lineInt(out, max, "height", height);
     lineInt(out, max, "palette", palette);
