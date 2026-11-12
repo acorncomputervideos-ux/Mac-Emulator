@@ -95,7 +95,7 @@ if [ "$MODEL" = firmware ]; then
 fi
 
 cd "$TOP/src/circle"
-rm -f ../core/*.o ../frontend/*.o *.o
+rm -f ../core/*.o ../frontend/*.o *.o ../../third_party/bearssl/src/*.o ../../third_party/bearssl/src/*/*.o libbearssl.a
 make CIRCLEHOME="$CIRCLE" -j"$(nproc)"
 # Circle refuses (or silently breaks) kernels over KERNEL_MAX_SIZE (2 MB),
 # counting code, data and zeroed data.

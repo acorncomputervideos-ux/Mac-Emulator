@@ -7,6 +7,7 @@
 #include <circle/sound/pwmsoundbasedevice.h>
 #include <circle/sound/hdmisoundbasedevice.h>
 #include <circle/bcmpropertytags.h>
+#include <circle/net/ntpdaemon.h>
 #include <circle/startup.h>
 #include <circle/net/mdnsdaemon.h>
 #include <circle/bcmwatchdog.h>
@@ -554,6 +555,27 @@ void CKernel::StartMacEthernet (void)
 	}
 }
 
+// The root certificates the HTTPS helper trusts (Mozilla's list, from curl).
+void CKernel::LoadRootCertificates (void)
+{
+	FIL File;
+	if (f_open (&File, DRIVE "/certs/cacert.pem", FA_READ | FA_OPEN_EXISTING) != FR_OK)
+	{
+		m_Logger.Write (FromKernel, LogWarning, "HTTPS helper: certs/cacert.pem is missing");
+		return;
+	}
+	unsigned nSize = (unsigned) f_size (&File);
+	char *pPEM = new char[nSize + 1];
+	UINT nRead = 0;
+	if (pPEM != 0 && f_read (&File, pPEM, nSize, &nRead) == FR_OK && nRead == nSize)
+	{
+		unsigned nRoots = m_pEther->LoadRoots (pPEM, nSize);
+		m_Logger.Write (FromKernel, LogNotice, "HTTPS helper: %u root certificates", nRoots);
+	}
+	f_close (&File);
+	delete [] pPEM;
+}
+
 void CKernel::SavePRAM (void)
 {
 	if (!m_pMachine->clockChip ().pramDirty)
@@ -1002,6 +1024,13 @@ void CKernel::BootLog (boolean bForce)
 			{
 				strAppend (Line, " tcp=", sizeof Line);	// the Mac's internet connections
 				appendUint (Line, m_pEther->Connections (), sizeof Line);
+			}
+			if (m_pEther->Proxy () != 0)
+			{
+				strAppend (Line, " https=", sizeof Line);	// pages fetched / certificates refused
+				appendUint (Line, m_pEther->Proxy ()->pagesFetched, sizeof Line);
+				strAppend (Line, "/", sizeof Line);
+				appendUint (Line, m_pEther->Proxy ()->certificateErrors, sizeof Line);
 			}
 		}
 		m_Logger.Write (FromKernel, LogNotice, "%s", Line);
@@ -1654,11 +1683,19 @@ void CKernel::UpdateNetwork (void)
 
 		if (m_pEther != 0)
 		{
+			boolean bHttps = m_Config.macInternet && m_Config.httpsHelper;
 			if (m_pEther->Start (m_pNet, (u16) m_Config.macEthernet, m_Config.macEthernetPeer,
-					     m_Config.macInternet != 0))
+					     m_Config.macInternet != 0, bHttps))
 			{
 				m_Logger.Write (FromKernel, LogNotice, "Mac Ethernet: AppleTalk on UDP port %d, internet %s",
 						m_Config.macEthernet, m_Config.macInternet ? "on" : "off");
+			}
+			if (bHttps)
+			{
+				LoadRootCertificates ();
+				// The HTTPS helper checks certificates' dates: the Pi has
+				// no clock of its own, so it asks the internet.
+				new CNTPDaemon ("pool.ntp.org", m_pNet);
 			}
 			// Remember the address: next time the Mac may ask for its
 			// Ethernet address before the network is up.

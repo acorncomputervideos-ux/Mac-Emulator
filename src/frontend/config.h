@@ -39,7 +39,8 @@ struct Config {
     char ipNetmask[16];         // with ipAddress; empty = 255.255.255.0
     char ipGateway[16];         // with ipAddress; empty = none
     int macEthernet;            // UDP port carrying the Mac's Ethernet (6066), 0 = off
-    int macInternet;            // 1: TCP/IP from the Mac goes out through the Pi (NAT)
+    int macInternet;
+    int httpsHelper;            // 1: the Mac's browsers reach HTTPS sites through the Pi            // 1: TCP/IP from the Mac goes out through the Pi (NAT)
     char macEthernetPeer[40];   // a host broadcasts don't reach (IPv4), or empty
     char keyboard[4];           // "us" or "uk": layout for typing in the menu
     char date[24];              // "YYYY-MM-DD HH:MM" start-up clock, empty = build date

@@ -429,6 +429,7 @@ void NatRouter::tcpPush(Tcp &c)
 
 void NatRouter::poll()
 {
+    net.poll();
     u32 now = net.milliseconds();
 
     for (Udp &u : udp) {

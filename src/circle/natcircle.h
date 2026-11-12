@@ -29,6 +29,8 @@ public:
 
 	bool dnsServer (macemu::u8 *ip) override;
 	macemu::u32 milliseconds (void) override;
+	bool wallClock (macemu::u32 &unixTime) override;
+	void randomBytes (macemu::u8 *buf, macemu::u32 len) override;
 
 	struct TTcp
 	{

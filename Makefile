@@ -9,16 +9,30 @@ CORE     := src/core/macii.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath
 FRONTEND := src/frontend/config.cpp src/frontend/keymap.cpp src/frontend/video.cpp src/frontend/osd.cpp src/frontend/natrouter.cpp
 HEADERS  := $(wildcard src/core/*.h src/frontend/*.h)
 
+# BearSSL (third_party/bearssl, MIT licence): TLS for the HTTPS helper.
+CC       ?= gcc
+BEARSSL_SRC := $(wildcard third_party/bearssl/src/*.c third_party/bearssl/src/*/*.c)
+BEARSSL_OBJ := $(patsubst third_party/bearssl/src/%.c,$(BUILD)/bearssl/%.o,$(BEARSSL_SRC))
+BEARSSL_INC := -I third_party/bearssl/inc
+PROXY    := src/frontend/httpsproxy.cpp $(BUILD)/libbearssl.a
+
 # SingleStepTests 68000 vectors (git clone https://github.com/SingleStepTests/680x0 sst)
 SST      ?= sst/68000/v1
 SST_PER_INSTRUCTION ?= 1000
 
 .PHONY: all test cputest clean
 
-all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest $(BUILD)/hfstest $(BUILD)/nattest $(BUILD)/cputest $(BUILD)/macemu-host
+all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest $(BUILD)/hfstest $(BUILD)/nattest $(BUILD)/proxytest $(BUILD)/cputest $(BUILD)/macemu-host
 
 $(BUILD):
 	mkdir -p $(BUILD)
+
+$(BUILD)/bearssl/%.o: third_party/bearssl/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -O2 -I third_party/bearssl/inc -I third_party/bearssl/src -c $< -o $@
+
+$(BUILD)/libbearssl.a: $(BEARSSL_OBJ)
+	ar rcs $@ $^
 
 $(BUILD)/hwtest: tests/hwtest.cpp $(CORE) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/hwtest.cpp $(CORE)
@@ -41,6 +55,9 @@ $(BUILD)/webtest: tests/webtest.cpp src/circle/webserver.cpp src/circle/webserve
 $(BUILD)/nattest: tests/nattest.cpp src/frontend/natrouter.cpp src/frontend/natrouter.h src/host/natposix.h | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/nattest.cpp src/frontend/natrouter.cpp -lpthread
 
+$(BUILD)/proxytest: tests/proxytest.cpp src/frontend/httpsproxy.h src/frontend/natrouter.h src/host/natposix.h $(PROXY) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(BEARSSL_INC) -fsanitize=address,undefined -o $@ tests/proxytest.cpp $(PROXY) -lpthread
+
 $(BUILD)/hfstest: tests/hfstest.cpp src/frontend/hfs.cpp src/frontend/hfs.h | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/hfstest.cpp src/frontend/hfs.cpp
 
@@ -58,10 +75,10 @@ tests/cpu020_cases.h: tools/gen_cpu020_tests.py
 $(BUILD)/cputest: tests/cputest.cpp src/core/m68k.cpp src/core/m68k.h | $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ tests/cputest.cpp src/core/m68k.cpp
 
-$(BUILD)/macemu-host: src/host/main.cpp $(CORE) $(FRONTEND) $(HEADERS) | $(BUILD)
-	$(CXX) $(CXXFLAGS) -o $@ src/host/main.cpp $(CORE) $(FRONTEND)
+$(BUILD)/macemu-host: src/host/main.cpp $(CORE) $(FRONTEND) $(PROXY) $(HEADERS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) $(BEARSSL_INC) -o $@ src/host/main.cpp $(CORE) $(FRONTEND) $(PROXY)
 
-test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest $(BUILD)/hfstest $(BUILD)/nattest
+test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest $(BUILD)/hfstest $(BUILD)/nattest $(BUILD)/proxytest
 	$(BUILD)/hwtest
 	$(BUILD)/fetest
 	$(BUILD)/cpu020test
@@ -71,6 +88,7 @@ test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(B
 	$(BUILD)/webtest
 	$(BUILD)/hfstest $(HFS_IMAGE)
 	$(BUILD)/nattest
+	$(BUILD)/proxytest
 
 $(BUILD)/vectors.txt: tools/sst2txt.py | $(BUILD)
 	python3 tools/sst2txt.py $(SST) $(SST_PER_INSTRUCTION) > $@

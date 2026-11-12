@@ -41,6 +41,10 @@ public:
 
     virtual bool dnsServer(u8 *ip) = 0;                 // the host's DNS server
     virtual u32 milliseconds() = 0;
+    // Seconds since 1970 (UTC), false if the host does not know yet.
+    virtual bool wallClock(u32 &unixTime) { (void)unixTime; return false; }
+    virtual void randomBytes(u8 *buf, u32 len) { for (u32 i = 0; i < len; i++) buf[i] = (u8)(milliseconds() * 2654435761u >> 24); }
+    virtual void poll() {}                              // called by the router's poll()
 };
 
 class NatRouter {

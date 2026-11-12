@@ -121,6 +121,7 @@ private:
 	void LoadPRAM (void);
 	void SavePRAM (void);
 	void StartMacEthernet (void);
+	void LoadRootCertificates (void);
 	void NewNetSubSystem (boolean bWiFi);
 	void ApplyPalette (void);
 	void Fatal (const char *pLine1, const char *pLine2 = "", const char *pLine3 = "");

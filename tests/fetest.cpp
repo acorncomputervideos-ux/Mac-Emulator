@@ -444,6 +444,9 @@ static void testOsd()
     CHECK(again.macInternet == 1);
     again.parse("mac_internet=off\n", 17);
     CHECK(again.macInternet == 0);
+    CHECK(again.httpsHelper == 1);
+    again.parse("https_helper=off\n", 17);
+    CHECK(again.httpsHelper == 0);
     again.parse("mac_ethernet=on\n", 16);
     CHECK(again.macEthernet == 6066);
     again.parse("mac_ethernet=6100\n", 18);

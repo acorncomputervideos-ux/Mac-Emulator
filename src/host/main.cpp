@@ -28,6 +28,7 @@
 #include "../frontend/osd.h"
 #include "../frontend/romid.h"
 #include "natposix.h"
+#include "../frontend/httpsproxy.h"
 #include "../frontend/util.h"
 #include "../frontend/video.h"
 
@@ -180,6 +181,7 @@ static int asciiToKey(char c, bool &shift)
 struct UdpEther : EtherLink {
     int fd = -1, port = 6066;
     PosixNatSockets natSockets;
+    HttpsProxy *proxy = nullptr;        // the HTTPS helper, between the router and the sockets
     NatRouter *router = nullptr;        // ETHER_NAT=1: internet for the Mac
     sockaddr_in peer = {};
     bool log = false;
@@ -319,7 +321,19 @@ int main(int argc, char **argv)
     }
     Emulator &mac = *emu;
     static UdpEther ether;
-    if (getenv("ETHER_NAT")) ether.router = new NatRouter(ether.natSockets);
+    if (getenv("ETHER_NAT")) {
+        // HTTPS_ROOTS: root certificates for the HTTPS helper (sdcard/certs/cacert.pem).
+        ether.proxy = new HttpsProxy(ether.natSockets);
+        const char *roots = getenv("HTTPS_ROOTS") ? getenv("HTTPS_ROOTS") : "sdcard/certs/cacert.pem";
+        for (const char *path = roots; *path; ) {       // several files, separated by ':'
+            std::string one(path, strcspn(path, ":"));
+            path += one.size() + (path[one.size()] == ':');
+            FileStorage f;
+            if (f.load(one)) printf("HTTPS helper: %u root certificates from %s\n",
+                                    ether.proxy->loadRoots((const char *)f.data.data(), (u32)f.data.size()), one.c_str());
+        }
+        ether.router = new NatRouter(*ether.proxy);
+    }
     if (getenv("ETHER_LOG")) { ether.log = true; setvbuf(stdout, nullptr, _IOLBF, 0); }
     if (const char *spec = getenv("ETHER_UDP")) {
         if (!ether.open(spec)) fprintf(stderr, "no Ethernet tunnel (%s)\n", spec);

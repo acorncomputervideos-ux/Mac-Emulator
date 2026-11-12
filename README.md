@@ -146,6 +146,47 @@ Three models are emulated:
   `macemu.cfg` gives the Pi a fixed address instead of asking DHCP: for two
   Pis joined by one cable, say.
 
+**HTTPS helper: today's web for old browsers (Quadra)**
+- Type addresses as `http://...` in the Mac's browser (Netscape, MacWeb,
+  iCab, Internet Explorer). The helper, built into the emulator's router,
+  fetches the page over HTTPS from the Pi and passes it to the Mac as
+  plain HTTP:
+  - `https://` links in pages become `http://`, so following them works;
+  - text in UTF-8 is converted to Mac Roman (accents, curly quotes, dashes,
+    the euro sign; characters Mac Roman lacks become `?`);
+  - chunked replies are reassembled, and HTTPS-only headers (HSTS, Secure
+    cookies, Content Security Policy) are removed;
+  - sites with no HTTPS are fetched over plain HTTP.
+- No set-up is needed for browsers that send the site's name (Netscape 2
+  and later, Internet Explorer, iCab): the router hands the Mac's port 80
+  connections to the helper. For older browsers set the HTTP proxy to
+  `10.0.2.2` port `8080`. Opening `http://10.0.2.2:8080/` shows a help
+  page.
+- **Certificates are checked** against Mozilla's root certificates in
+  `certs/cacert.pem` on the SD card (from https://curl.se/ca/cacert.pem;
+  replace the file to update them). A site whose certificate cannot be
+  verified gets an error page explaining why; the helper never quietly
+  falls back to an unencrypted connection to that site.
+- Checking a certificate needs today's date. The Pi has no clock of its own:
+  it asks an internet time server (NTP, `pool.ntp.org`), and if that is
+  blocked, takes the date from the site's own web server.
+- The TLS (TLS 1.2) is [BearSSL](https://www.bearssl.org/) in
+  `third_party/bearssl`. `https_helper=off` in `macemu.cfg` turns the
+  helper off. The 10-second lines in `macemu.log` count pages fetched and
+  certificates refused (`https=N/M`).
+- Limits: pages arrive as the site sends them, so modern sites can still be
+  too much for an old browser (heavy scripts and styles), and pictures in
+  new formats (WebP, AVIF, SVG) do not show. Compressed replies are asked
+  not to be sent. Secure (https) addresses typed into the browser cannot
+  work: the browser's own old SSL is refused by today's sites; type
+  `http://` instead.
+- Checked by tests: a local server (chunked UTF-8 pages, links, cookies and
+  headers rewritten, Mac Roman), and real sites over HTTPS with the
+  certificate checked, with and without a clock, through the proxy port and
+  through port 80, plus a refused untrusted certificate. The Pi kernel
+  loads the root certificates and starts the helper (QEMU). Not yet tried
+  from a real Mac browser or on a real Pi.
+
 **Ethernet for the Mac (Quadra)**
 - The Quadra's built-in SONIC Ethernet chip is emulated: descriptors and
   buffers in the Mac's memory, the address filter (CAM), interrupts through
@@ -192,10 +233,8 @@ Three models are emulated:
   Connections into the Mac from outside are not possible, and pings
   beyond 10.0.2.2 get no answer.
 - Most web sites today need HTTPS with modern encryption, which browsers
-  of the time cannot do. Plain-HTTP sites work (for example
-  `http://frogfind.com`, `http://68k.news`, `http://theoldnet.com`), as
-  does a proxy on another computer that converts pages for old browsers
-  (such as *WebOne* or *MacProxy*). FTP downloads work directly.
+  of the time cannot do: the **HTTPS helper** below bridges that. FTP
+  downloads work directly.
 - `mac_internet=off` in `macemu.cfg` turns the router off.
 - Checked by a test that plays the Mac's part through the router to real
   servers: ARP, DHCP, ping, UDP, DNS and a 200 KB TCP transfer with
@@ -454,3 +493,9 @@ The Wi-Fi chip firmware in `sdcard/firmware/` comes from Raspberry Pi's
 [firmware-nonfree](https://github.com/RPi-Distro/firmware-nonfree) and is
 redistributed under its own licence (`firmware/LICENCE.firmware-nonfree`).
 The WPA supplicant (Circle's port of hostap) is BSD licensed.
+
+BearSSL (`third_party/bearssl`, TLS for the HTTPS helper) is MIT licensed
+(`third_party/bearssl/LICENSE.txt`); its version is in
+`third_party/bearssl/VERSION`. The root certificates in
+`sdcard/certs/cacert.pem` are Mozilla's, extracted by the curl project, under
+the Mozilla Public License 2.0.

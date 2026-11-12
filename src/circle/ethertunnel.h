@@ -20,6 +20,7 @@
 #include <circle/types.h>
 #include "../core/sonic.h"
 #include "../frontend/natrouter.h"
+#include "../frontend/httpsproxy.h"
 #include "natcircle.h"
 
 class CEtherTunnel : public macemu::EtherLink
@@ -34,7 +35,11 @@ public:
 	// Once the network is up.  nPort: the AppleTalk tunnel's UDP port, or 0
 	// for none.  pPeer: a host that also gets every broadcast ("a.b.c.d"),
 	// or 0.  bInternet: route the Mac's TCP/IP through the Pi (NatRouter).
-	boolean Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer = 0, boolean bInternet = FALSE);
+	// bHttps: the HTTPS helper for the Mac's web browsers (with bInternet).
+	boolean Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer = 0, boolean bInternet = FALSE,
+		       boolean bHttps = FALSE);
+	unsigned LoadRoots (const char *pPEM, unsigned nLength);	// root certificates, for the HTTPS helper
+	macemu::HttpsProxy *Proxy (void) const	{ return m_pProxy; }
 	void Update (void);				// move frames; call often
 	boolean Running (void) const		{ return m_pNet != 0; }
 	boolean Internet (void) const		{ return m_pRouter != 0; }
@@ -77,6 +82,7 @@ private:
 	CNetSubSystem *m_pNet;
 	CSocket *m_pSocket;			// the AppleTalk tunnel, or 0
 	CNatSockets *m_pNatSockets;
+	macemu::HttpsProxy *m_pProxy;		// the HTTPS helper, or 0
 	macemu::NatRouter *m_pRouter;		// internet for the Mac, or 0
 	u16 m_nPort;
 	u8 m_OwnIP[4];

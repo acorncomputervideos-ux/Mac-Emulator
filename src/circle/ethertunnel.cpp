@@ -9,6 +9,7 @@ CEtherTunnel::CEtherTunnel (void)
 :	m_pNet (0),
 	m_pSocket (0),
 	m_pNatSockets (0),
+	m_pProxy (0),
 	m_pRouter (0),
 	m_nPort (0),
 	m_bHavePeer (FALSE),
@@ -46,6 +47,7 @@ CEtherTunnel::CEtherTunnel (void)
 CEtherTunnel::~CEtherTunnel (void)
 {
 	delete m_pRouter;
+	delete m_pProxy;
 	delete m_pNatSockets;
 	delete m_pSocket;
 	delete [] m_pTx;
@@ -63,7 +65,13 @@ void CEtherTunnel::SetLastIP (const u8 *pLastIP)
 	}
 }
 
-boolean CEtherTunnel::Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer, boolean bInternet)
+unsigned CEtherTunnel::LoadRoots (const char *pPEM, unsigned nLength)
+{
+	return m_pProxy != 0 ? m_pProxy->loadRoots (pPEM, nLength) : 0;
+}
+
+boolean CEtherTunnel::Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer, boolean bInternet,
+			     boolean bHttps)
 {
 	if (m_pNet != 0 || pNet == 0)
 	{
@@ -90,7 +98,15 @@ boolean CEtherTunnel::Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer, 
 	if (bInternet)
 	{
 		m_pNatSockets = new CNatSockets (pNet);
-		m_pRouter = new macemu::NatRouter (*m_pNatSockets);
+		if (bHttps)
+		{
+			m_pProxy = new macemu::HttpsProxy (*m_pNatSockets);
+			m_pRouter = new macemu::NatRouter (*m_pProxy);
+		}
+		else
+		{
+			m_pRouter = new macemu::NatRouter (*m_pNatSockets);
+		}
 	}
 
 	pNet->GetConfig ()->GetIPAddress ()->CopyTo (m_OwnIP);

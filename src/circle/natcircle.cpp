@@ -4,6 +4,7 @@
 #include <circle/netdevice.h>
 #include <circle/sched/task.h>
 #include <circle/timer.h>
+#include <circle/bcmrandom.h>
 #include <circle/util.h>
 
 // Opens one TCP connection, then ends (the scheduler deletes ended tasks).
@@ -247,4 +248,27 @@ bool CNatSockets::dnsServer (u8 *ip)
 macemu::u32 CNatSockets::milliseconds (void)
 {
 	return (macemu::u32) (CTimer::GetClockTicks64 () / 1000);
+}
+
+// Set by the NTP daemon once the network is up; before that the Pi does not
+// know the date (it has no battery-backed clock).
+bool CNatSockets::wallClock (macemu::u32 &unixTime)
+{
+	unsigned nTime = CTimer::Get ()->GetUniversalTime ();
+	unixTime = nTime;
+	return nTime > 1700000000u;
+}
+
+// The SoC's hardware random number generator, mixed with the cycle clock.
+void CNatSockets::randomBytes (macemu::u8 *buf, macemu::u32 len)
+{
+	static CBcmRandomNumberGenerator Random;
+	for (macemu::u32 i = 0; i < len; i += 4)
+	{
+		u32 v = Random.GetNumber () ^ (u32) CTimer::GetClockTicks64 () * 2654435761u;
+		for (unsigned k = 0; k < 4 && i + k < len; k++)
+		{
+			buf[i + k] = (u8) (v >> (8 * k));
+		}
+	}
 }

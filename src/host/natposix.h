@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <ctime>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -96,6 +97,13 @@ public:
         }
         memcpy(ip, dns, 4);
         return true;
+    }
+    bool clockKnown = true;             // tests: a host without a clock (no NTP yet)
+    bool wallClock(u32 &t) override { t = (u32)time(nullptr); return clockKnown; }
+    void randomBytes(u8 *buf, u32 len) override {
+        FILE *f = fopen("/dev/urandom", "rb");
+        if (!f || fread(buf, 1, len, f) != len) for (u32 i = 0; i < len; i++) buf[i] = (u8)rand();
+        if (f) fclose(f);
     }
     u32 milliseconds() override {
         timespec t;
