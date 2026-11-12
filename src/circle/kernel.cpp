@@ -1422,7 +1422,7 @@ void CKernel::UpdateInfo (void)
 
 	p = m_InfoLine[1];
 	p[0] = '\0';
-	strAppend (p, "Speed ", 64);
+	strAppend (p, "Built " __DATE__ "   Speed ", 64);	// the date shows which version runs
 	appendUint (p, m_nSpeedPercent, 64);
 	strAppend (p, "%   SCSI:", 64);
 	boolean bAny = FALSE;
@@ -1759,12 +1759,10 @@ void CKernel::UpdateNetwork (void)
 				strCopy (m_NetLine[1], bLink ? "Joined, but the password exchange fails."
 							     : "Network not found: check the name (case!).", sizeof m_NetLine[1]);
 			}
-			if (m_WpaLast[0] != '\0')
-			{
-				strCopy (m_NetLine[2], "Wi-Fi says: ", sizeof m_NetLine[2]);	// its latest message
-				strAppend (m_NetLine[2], m_WpaLast, sizeof m_NetLine[2]);
-			}
 		}
+		// The WPA supplicant's latest message, whatever the state.
+		strCopy (m_NetLine[2], "Wi-Fi says: ", sizeof m_NetLine[2]);
+		strAppend (m_NetLine[2], m_WpaLast[0] ? m_WpaLast : "(nothing yet)", sizeof m_NetLine[2]);
 	}
 
 	if (m_bNetRunning && m_pWebServer != 0)
