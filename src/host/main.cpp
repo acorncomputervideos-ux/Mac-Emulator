@@ -275,7 +275,7 @@ int main(int argc, char **argv)
     surf.swapRB = false;
     setPalette(surf, cfg.palette);
     Layout layout = layoutFor(surf, 512, 342, cfg.scale);
-    std::vector<u8> prev(0x100000);
+    std::vector<u8> prev(kPreviousFrameBytes);
     int shownW = 0, shownH = 0;
     u32 shownClut = 0;
     auto draw = [&](bool force) {
@@ -325,6 +325,40 @@ int main(int argc, char **argv)
                 if (shift != shiftHeld) { mac.keyEvent(MK_Shift, shift); shiftHeld = shift; }
                 mac.keyEvent(key, true); typeState = 1;
             } else { mac.keyEvent(key, false); typeState = 0; typed++; }
+        }
+        // MOUSE_SCRIPT="F:park;F:to X,Y;F:down;F:up;..." - from frame F park the
+        // cursor top-left, walk to (X, Y) (1 pixel a frame: no acceleration), press, release.
+        if (const char *script = getenv("MOUSE_SCRIPT")) {
+            static int curX = 0, curY = 0, toX = -1, toY = -1;
+            for (const char *p = script; *p; ) {
+                int at = atoi(p);
+                const char *c = strchr(p, ':');
+                if (!c) break;
+                c++;
+                if (at == f) {
+                    if (!strncmp(c, "park", 4)) { mac.mouseMove(-2000, -2000); curX = curY = 0; toX = -1; }
+                    else if (!strncmp(c, "to ", 3)) sscanf(c + 3, "%d,%d", &toX, &toY);
+                    else if (!strncmp(c, "warp ", 5)) {    // set the cursor (low-memory globals)
+                        int x = 0, y = 0;
+                        sscanf(c + 5, "%d,%d", &x, &y);
+                        for (u32 g : {0x828u, 0x82Cu}) { putBe16(&ram[g], (u16)y); putBe16(&ram[g + 2], (u16)x); }
+                        ram[0x8CE] = ram[0x8CF];        // CrsrNew = CrsrCouple
+                        curX = x; curY = y; toX = -1;
+                    }
+                    else if (!strncmp(c, "down", 4)) mac.mouseButton(true);
+                    else if (!strncmp(c, "up", 2)) mac.mouseButton(false);
+                }
+                const char *semi = strchr(p, ';');
+                if (!semi) break;
+                p = semi + 1;
+            }
+            if (toX >= 0 && (curX != toX || curY != toY)) {
+                int dx = toX - curX, dy = toY - curY;
+                dx = dx > 1 ? 1 : dx < -1 ? -1 : dx;
+                dy = dy > 1 ? 1 : dy < -1 ? -1 : dy;
+                mac.mouseMove(dx, dy);
+                curX += dx; curY += dy;
+            }
         }
         // Scripted click: park the cursor in the top-left corner, walk it to
         // (clickX, clickY) one pixel per frame (no mouse acceleration), press,

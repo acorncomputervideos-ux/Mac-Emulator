@@ -95,6 +95,8 @@ Three models are emulated:
     restarts the Pi with them.
   - *Display, sound and input*: speed (1×–8×, unlimited), colour scheme,
     sound, volume, mouse speed and key layout.
+  - *Screen scaling* (Machine page): Smooth fills the screen; Sharp keeps
+    square pixels at a whole-number zoom.
   - *Network*: connection type, Wi-Fi name, password and country, keyboard
     layout for typing them, and the web file manager's address.
   - Restart the Mac, interrupt switch, screenshot, save settings.
@@ -119,6 +121,21 @@ Three models are emulated:
 - *Connection* chooses Automatic (Wi-Fi when a Wi-Fi network is set up,
   otherwise the cable), Wi-Fi, Ethernet or Off. One of them is used at a time.
 - Nothing waits for the network: it comes up while the Mac starts.
+
+**CD-ROM**
+- A CD-ROM drive at SCSI ID 3 that behaves like an AppleCD 300. Choose an
+  `.iso`, `.toast` or `.cdr` image on the F12 menu's *Hard disks* page; the
+  Mac can eject it. Mac OS needs Apple's *Apple CD-ROM* extension, as a
+  real Mac does (with *Foreign File Access* and *ISO 9660 File Access* for
+  PC CDs).
+
+**Files in and out of Mac disks**
+- On the web page, *[open]* next to a disk image shows its folders and files;
+  download any file as MacBinary (`.bin`: both forks, type and creator) or
+  just its data fork.
+- *Send files to the Mac*: drop files on the page and they arrive on a new
+  800K floppy ("Transfer 1", ...) in floppy drive 2. MacBinary files keep
+  their icons and resource forks; `.txt` files get Mac line endings.
 
 **Web file manager and software update**
 - Open `http://macemu.local/` in a browser (or the address shown on the

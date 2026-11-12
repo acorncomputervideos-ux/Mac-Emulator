@@ -121,7 +121,7 @@ int blitScreen(Surface &s, const Layout &l, const VideoFrame &f, u8 *previous, b
     int drawn = 0;
     for (int row = 0; row < visH; row++) {
         const u8 *src = f.base + (u32)row * f.rowBytes;
-        if (previous) {
+        if (previous && ((u32)row + 1) * usedBytes <= (u32)kPreviousFrameBytes) {
             u8 *prev = previous + (u32)row * usedBytes;
             if (!force && !memCompare(prev, src, usedBytes)) continue;
             memCopy(prev, src, usedBytes);

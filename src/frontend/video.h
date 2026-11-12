@@ -60,6 +60,9 @@ void drawText(Surface &s, const Font &f, int x, int y, const char *text, u8 fg, 
 // Draw the Mac screen.  With `previous` (rowBytes * height bytes) only rows
 // that changed since the last call are redrawn; `force` redraws everything.
 // Returns the number of Mac rows drawn.
+// `previous` holds kPreviousFrameBytes: the largest frame (1152 x 870 in
+// millions of colours).  Rows beyond it are always redrawn.
+enum { kPreviousFrameBytes = 1152 * 870 * 4 };
 int blitScreen(Surface &s, const Layout &l, const VideoFrame &f, u8 *previous, bool force);
 
 // 24-bit Windows BMP of the Mac screen.

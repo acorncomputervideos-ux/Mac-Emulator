@@ -634,7 +634,7 @@ TShutdownMode CKernel::Run (void)
 	}
 
 	m_pRAM = new u8[m_Config.ramKB * 1024];
-	m_pPrevScreen = new u8[0x100000];
+	m_pPrevScreen = new u8[kPreviousFrameBytes];
 	boolean bOK = FALSE;
 	if (m_pRAM != 0 && m_pPrevScreen != 0)
 	{
