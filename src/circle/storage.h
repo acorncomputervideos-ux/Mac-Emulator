@@ -13,12 +13,14 @@
 class CDiskProxy
 {
 public:
-	enum TOp { OpRead, OpWrite, OpFlush };
+	enum TOp { OpRead, OpWrite, OpFlush, OpCall };
 
 	// TRUE when called on a core other than 0.
 	static boolean Remote (void);
 	static bool Call (macemu::Storage *pStorage, TOp Op, u32 nOffset, void *pBuffer, u32 nLength);
 	static void Service (void);			// core 0: carry out a waiting request
+	// Any work for core 0 (the SD card is only touched from there).
+	static void Run (void (*pFunc) (void *pParam), void *pParam);
 
 private:
 	static macemu::Storage * volatile s_pStorage;

@@ -71,6 +71,7 @@ void Quadra::reset()
     putBe32(ram, be32(rom));
     putBe32(ram + 4, 0x40800000 + be32(rom + 4));
     cpu.hardReset();
+    if (shared) shared->reset();
     updateIrq();
 }
 

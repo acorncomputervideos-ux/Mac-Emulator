@@ -40,6 +40,7 @@ static const char PageUpload[] =
 "<div id=drop>Drop disk images or ROMs here, or <input type=file id=pick multiple></div>"
 "<p>Put them in <select id=dir>"
 "<option value='@DISKDIR@/'>the @DISKDIR@ folder (floppies and hard disks)</option>"
+"@SHAREOPT@"
 "<option value=''>the top of the card (ROMs, hd0.img ...)</option></select></p>"
 "<div id=st></div><progress id=pr value=0 max=1 hidden></progress>"
 "<p class=n>Open the menu (F12) on the Mac and pick the new disk under Floppy or Hard disks. "
@@ -453,6 +454,18 @@ void CWebServer::SendIndex (CSocket *pSocket)
 			OutHtml (pDiskDir);
 			p += 9;
 		}
+		else if (strncmp (p, "@SHAREOPT@", 10) == 0)
+		{
+			// The shared folder: what goes there is on the Mac's desktop at once.
+			const char *pShared = m_pHost->SharedDir ();
+			if (pShared[0] != '\0')
+			{
+				Out ("<option value='");
+				OutHtml (pShared);
+				Out ("/'>the shared folder (the Mac's \"Shared\" disk: there at once)</option>");
+			}
+			p += 10;
+		}
 		else
 		{
 			char Ch[2] = {*p++, '\0'};
@@ -464,6 +477,10 @@ void CWebServer::SendIndex (CSocket *pSocket)
 	if (pDiskDir[0] != '\0')
 	{
 		ListFolder (pDiskDir, TRUE);
+	}
+	if (m_pHost->SharedDir ()[0] != '\0')
+	{
+		ListFolder (m_pHost->SharedDir (), TRUE);	// (its files; folders inside are the Mac's business)
 	}
 
 	// Free space.
@@ -1314,7 +1331,8 @@ void CWebServer::MakeFloppy (CSocket *pSocket, const char *pQuery)
 void CWebServer::MakeCd (CSocket *pSocket, const char *pQuery, const char *pFolder)
 {
 	struct TSource { char Path[200]; u32 nData, nRsrc; };	// where each fork starts in its file
-	static TSource Source[macemu::kHfsFloppyMaxFiles];
+	static TSource *Source = 0;				// (on the heap: the kernel image is limited)
+	if (Source == 0) Source = new TSource[macemu::kHfsFloppyMaxFiles];
 	static macemu::HfsNewFile List[macemu::kHfsFloppyMaxFiles];
 	static u32 ForkPos[2 * macemu::kHfsFloppyMaxFiles];
 	int nCount = 0;

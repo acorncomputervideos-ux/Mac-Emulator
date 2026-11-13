@@ -25,6 +25,8 @@
 #include "../core/quadra.h"
 #include "../core/jit.h"
 #include "../core/state.h"
+#include "hostfs_posix.h"
+#include "sharetest.h"
 #include "../core/keys.h"
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
@@ -262,7 +264,7 @@ int main(int argc, char **argv)
     bool menu = false, traceIo = false;
     int tracePc = 0;
     u32 watchPc = 0;
-    std::string floppy[2], hd[7], cd, saveState, loadState;
+    std::string floppy[2], hd[7], cd, saveState, loadState, shareDir;
     for (int i = 2; i < argc; i++) {
         std::string a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : "";
@@ -272,6 +274,7 @@ int main(int argc, char **argv)
         else if (a == "--floppy2") { floppy[1] = v; i++; }
         else if (a == "--cd") { cd = v; i++; }
         else if (a == "--save-state") { saveState = v; i++; }   // the Quadra, after the frames
+        else if (a == "--share") { shareDir = v; i++; }         // a host directory as the Mac's shared folder
         else if (a == "--load-state") { loadState = v; i++; }   // ... and before them
         else if (a.size() == 5 && a.compare(0, 4, "--hd") == 0 && a[4] >= '0' && a[4] <= '6') { hd[a[4] - '0'] = v; i++; }
         else if (a == "--frames") { frames = atoi(v); i++; }
@@ -447,6 +450,18 @@ int main(int argc, char **argv)
         while (*p && *p != ':') { heldKeys.push_back((int)strtol(p, (char **)&p, 16)); if (*p == ',') p++; }
         if (*p == ':') holdFrames = atoi(p + 1);
     }
+    PosixHostFS *shareFs = 0;
+    SharedFolder *share = 0;
+    if (!shareDir.empty() && quad) {
+        shareFs = new PosixHostFS(shareDir);
+        share = new SharedFolder(quad->cpu, *shareFs);
+        quad->attachSharedFolder(share);
+        if (getenv("SHARE_TEST")) {
+            ShareTest *t = new ShareTest(*share, quad->cpu, shareDir);
+            share->onIdle = &ShareTest::idle;
+            share->idleCtx = t;
+        }
+    }
     if (!loadState.empty()) {
         FILE *sf = fopen(loadState.c_str(), "rb");
         FileState st(sf, false);
@@ -507,6 +522,26 @@ int main(int argc, char **argv)
                 mac.keyEvent(key, true); typeState = 1;
             } else { mac.keyEvent(key, false); typeState = 0; typed++; }
         }
+        // SHARE_ADD=frame:name puts a file in the shared folder then (as the web page would).
+        if (const char *sa = getenv("SHARE_ADD")) {
+            if (f == atoi(sa) && strchr(sa, ':') && !shareDir.empty()) {
+                FILE *nf = fopen((shareDir + "/" + (strchr(sa, ':') + 1)).c_str(), "wb");
+                if (nf) { fputs("Added while the Mac was running\n", nf); fclose(nf); }
+            }
+        }
+        // TYPE2=text from frame TYPE2_AT: a second bit of typing (say, once a window is open).
+        if (const char *t2 = getenv("TYPE2")) {
+            static size_t typed2 = 0;
+            static int state2 = 0;
+            int at2 = getenv("TYPE2_AT") ? atoi(getenv("TYPE2_AT")) : frames - 200;
+            if (f >= at2 && f % 4 == 0 && typed2 < strlen(t2)) {
+                bool sh = false;
+                int key = asciiToKey(t2[typed2], sh);
+                if (key < 0) typed2++;
+                else if (state2 == 0) { if (sh) mac.keyEvent(MK_Shift, true); mac.keyEvent(key, true); state2 = 1; }
+                else { mac.keyEvent(key, false); if (sh) mac.keyEvent(MK_Shift, false); state2 = 0; typed2++; }
+            }
+        }
         // MOUSE_SCRIPT="F:park;F:to X,Y;F:down;F:up;..." - from frame F park the
         // cursor top-left, walk to (X, Y) (1 pixel a frame: no acceleration), press, release.
         if (const char *script = getenv("MOUSE_SCRIPT")) {
@@ -553,6 +588,10 @@ int main(int argc, char **argv)
             if (f >= walk && f < walk + steps) mac.mouseMove(f - walk < clickX ? 1 : 0, f - walk < clickY ? 1 : 0);
             if (f == press) mac.mouseButton(true);
             if (f == press + hold) mac.mouseButton(false);
+            if (getenv("DOUBLE_CLICK")) {                // and again, to open what was clicked
+                if (f == press + hold + 4) mac.mouseButton(true);
+                if (f == press + 2 * hold + 4) mac.mouseButton(false);
+            }
         }
 
         for (int d = 0; d < 2; d++)
@@ -620,6 +659,14 @@ int main(int argc, char **argv)
         if (sf && quad) { mac.flushDisks(); quad->state(st); }
         if (sf) fclose(sf);
         if (!sf || !quad || !st.ok) fprintf(stderr, "cannot save the state %s\n", saveState.c_str());
+    }
+    if (share) printf("shared folder: %s, %u calls\n", share->status, share->callsServed);
+    if (quad && getenv("MMU_PROBE")) {
+        u32 probe = (u32)strtoul(getenv("MMU_PROBE"), 0, 16);
+        bool fault = false;
+        u32 phys = quad->mmu.translate(probe, false, true, true, fault);
+        printf("mmu tc %08X itt %08X %08X dtt %08X %08X srp %08X: %08X -> %08X%s\n", quad->mmu.tc, quad->mmu.itt[0], quad->mmu.itt[1],
+               quad->mmu.dtt[0], quad->mmu.dtt[1], quad->mmu.srp, probe, phys, fault ? " FAULT" : "");
     }
     printf("ran %d frames, %llu cycles, PRAM %s%s\n", frames, (unsigned long long)mac.cycles(),
            mac.clockChip().pramDirty ? "modified" : "untouched", mac.poweredOff() ? ", powered off" : "");

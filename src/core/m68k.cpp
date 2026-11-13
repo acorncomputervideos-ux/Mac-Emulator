@@ -419,10 +419,29 @@ void M68K::busErrorException()
     bus->busError = false;                              // a fault while stacking is ignored
 }
 
+void M68K::save(Context &x) const
+{
+    for (int i = 0; i < 8; i++) { x.d[i] = d[i]; x.a[i] = a[i]; }
+    x.pc = pc; x.instPC = instPC; x.usp = usp; x.isp = isp; x.msp = msp;
+    x.sr = getSR(); x.opcode = opcode; x.cyc = cyc; x.stopped = stopped; x.traceNext = traceNext;
+}
+
+void M68K::restore(const Context &x)
+{
+    setSR(x.sr);
+    usp = x.usp; isp = x.isp; msp = x.msp;
+    for (int i = 0; i < 8; i++) { d[i] = x.d[i]; a[i] = x.a[i]; }
+    pc = x.pc; instPC = x.instPC; opcode = x.opcode; cyc = x.cyc; stopped = x.stopped; traceNext = x.traceNext;
+}
+
 void M68K::illegal()
 {
     int grp = opcode >> 12;
-    if (grp == 0xA) lastTrap = opcode;                  // for logs: the Mac OS call last made
+    if (grp == 7 && hostCall && hostCall(hookCtx, *this, opcode)) return;
+    if (grp == 0xA) {
+        if (trapHook) trapHook(hookCtx, *this, opcode);
+        lastTrap = opcode;                              // for logs: the Mac OS call last made
+    }
     exception(grp == 0xA ? 10 : grp == 0xF ? 11 : 4, instPC, 10);
 }
 

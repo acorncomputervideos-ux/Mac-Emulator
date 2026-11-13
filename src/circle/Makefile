@@ -7,9 +7,9 @@
 
 CIRCLEHOME ?= ../../circle
 
-OBJS	= main.o kernel.o storage.o webserver.o usbpowerkey.o ethertunnel.o natcircle.o jitmem.o \
+OBJS	= main.o kernel.o storage.o webserver.o usbpowerkey.o ethertunnel.o natcircle.o jitmem.o hostfs_fat.o \
 	  ../core/m68k.o ../core/fpu.o ../core/fmath.o ../core/via.o ../core/iwm.o ../core/scsi.o ../core/scsicmd.o ../core/rtc.o \
-	  ../core/adb.o ../core/asc.o ../core/nubusvideo.o ../core/mmu040.o ../core/dafb.o ../core/esp.o ../core/quadra.o ../core/jit.o ../core/state.o ../core/scc.o ../core/sonic.o \
+	  ../core/adb.o ../core/asc.o ../core/nubusvideo.o ../core/mmu040.o ../core/dafb.o ../core/esp.o ../core/quadra.o ../core/jit.o ../core/state.o ../core/sharedfs.o ../core/scc.o ../core/sonic.o \
 	  ../core/mac.o ../core/macii.o \
 	  ../frontend/config.o ../frontend/keymap.o ../frontend/video.o ../frontend/osd.o ../frontend/hfs.o ../frontend/natrouter.o ../frontend/httpsproxy.o
 

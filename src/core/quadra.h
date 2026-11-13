@@ -28,6 +28,7 @@
 #include "dafb.h"
 #include "scc.h"
 #include "sonic.h"
+#include "sharedfs.h"
 #include "emulator.h"
 
 namespace macemu {
@@ -101,6 +102,10 @@ public:
     Dafb dafb;
     Scc scc;
     Sonic sonic;
+
+    // The shared folder (optional): a host folder as a disk on the desktop.
+    SharedFolder *shared = 0;
+    void attachSharedFolder(SharedFolder *s) { shared = s; if (s) s->attach(); }
 
 private:
     struct Via1Host : Via::Host {

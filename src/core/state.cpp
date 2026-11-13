@@ -159,6 +159,10 @@ void Quadra::state(StateIO &s)
     iwm.state(s); esp.state(s); rtc.state(s); asc.state(s);
     adb.state(s); keyboard.state(s); mouse.state(s);
     dafb.state(s); scc.state(s); sonic.state(s);
+    bool hasShared = shared != 0;
+    s.b(hasShared);
+    if (hasShared != (shared != 0)) { s.ok = false; return; }   // saved with a shared folder: needs one
+    if (shared) shared->state(s);
     s.tag("END ");
 }
 

@@ -356,7 +356,8 @@ static bool hfsBuild(u8 *out, u32 outBytes, bool whole, u32 sectors, u32 blockSi
     memCopy(thread.data + 15, vol, strLen(vol));
 
     // Leaves: pack records in order.
-    static u8 cat[64][512];
+    static u8 (*cat)[512] = 0;                         // (on the heap: the Pi's kernel image is limited)
+    if (!cat) cat = new u8[64][512];
     int leafStart = 1, nodes = 1;
     {
         int first = 0;

@@ -5,9 +5,9 @@ CXX      ?= g++
 CXXFLAGS ?= -O2 -g -Wall -Wextra
 BUILD    := build
 
-CORE     := src/core/macii.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/scsicmd.cpp src/core/rtc.cpp src/core/adb.cpp src/core/asc.cpp src/core/nubusvideo.cpp src/core/mmu040.cpp src/core/dafb.cpp src/core/esp.cpp src/core/quadra.cpp src/core/scc.cpp src/core/sonic.cpp src/core/mac.cpp src/core/jit.cpp src/core/state.cpp
+CORE     := src/core/macii.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/scsicmd.cpp src/core/rtc.cpp src/core/adb.cpp src/core/asc.cpp src/core/nubusvideo.cpp src/core/mmu040.cpp src/core/dafb.cpp src/core/esp.cpp src/core/quadra.cpp src/core/scc.cpp src/core/sonic.cpp src/core/mac.cpp src/core/jit.cpp src/core/state.cpp src/core/sharedfs.cpp
 FRONTEND := src/frontend/config.cpp src/frontend/keymap.cpp src/frontend/video.cpp src/frontend/osd.cpp src/frontend/natrouter.cpp
-HEADERS  := $(wildcard src/core/*.h src/frontend/*.h)
+HEADERS  := $(wildcard src/core/*.h src/frontend/*.h src/host/*.h)
 
 # BearSSL (third_party/bearssl, MIT licence): TLS for the HTTPS helper.
 CC       ?= gcc
@@ -22,7 +22,7 @@ SST_PER_INSTRUCTION ?= 1000
 
 .PHONY: all test cputest clean
 
-all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest $(BUILD)/hfstest $(BUILD)/nattest $(BUILD)/proxytest $(BUILD)/cputest $(BUILD)/macemu-host
+all: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest $(BUILD)/hfstest $(BUILD)/nattest $(BUILD)/proxytest $(BUILD)/sharedfstest $(BUILD)/cputest $(BUILD)/macemu-host
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -61,6 +61,9 @@ $(BUILD)/proxytest: tests/proxytest.cpp src/frontend/httpsproxy.h src/frontend/n
 $(BUILD)/hfstest: tests/hfstest.cpp src/frontend/hfs.cpp src/frontend/hfs.h | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/hfstest.cpp src/frontend/hfs.cpp
 
+$(BUILD)/sharedfstest: tests/sharedfstest.cpp src/core/sharedfs.cpp src/core/m68k.cpp src/core/jit.cpp $(HEADERS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/sharedfstest.cpp src/core/sharedfs.cpp src/core/m68k.cpp src/core/jit.cpp
+
 $(BUILD)/mmutest: tests/mmutest.cpp src/core/m68k.cpp src/core/mmu040.cpp $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/mmutest.cpp src/core/m68k.cpp src/core/jit.cpp src/core/mmu040.cpp
 
@@ -78,7 +81,7 @@ $(BUILD)/cputest: tests/cputest.cpp src/core/m68k.cpp src/core/m68k.h | $(BUILD)
 $(BUILD)/macemu-host: src/host/main.cpp $(CORE) $(FRONTEND) $(PROXY) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) $(BEARSSL_INC) -o $@ src/host/main.cpp $(CORE) $(FRONTEND) $(PROXY)
 
-test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest $(BUILD)/hfstest $(BUILD)/nattest $(BUILD)/proxytest
+test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(BUILD)/maciitest $(BUILD)/mmutest $(BUILD)/webtest $(BUILD)/hfstest $(BUILD)/nattest $(BUILD)/proxytest $(BUILD)/sharedfstest
 	$(BUILD)/hwtest
 	$(BUILD)/fetest
 	$(BUILD)/cpu020test
@@ -89,6 +92,7 @@ test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(B
 	$(BUILD)/hfstest $(HFS_IMAGE)
 	$(BUILD)/nattest
 	$(BUILD)/proxytest
+	$(BUILD)/sharedfstest
 
 # The JIT against the interpreter, on AArch64 (here through qemu-aarch64):
 #   make jittest   (needs aarch64-linux-gnu-g++ and qemu-user)

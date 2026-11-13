@@ -184,6 +184,24 @@ public:
     // The JIT (AArch64 hosts): runs the usual instructions as translated
     // blocks, with exactly the same results.  Null: the interpreter only.
     class Jit *jit = 0;
+
+    // The emulator's own code inside the Mac: opcodes $71xx (illegal on
+    // every 68k) go to hostCall, which returns true if it took them.
+    bool (*hostCall)(void *ctx, M68K &c, u16 op) = 0;
+    // Called before an A-line trap (a Mac OS call) is taken.
+    void (*trapHook)(void *ctx, M68K &c, u16 op) = 0;
+    void *hookCtx = 0;
+
+    // The registers and the like, to run 68k code for the host and then
+    // carry on as if nothing happened.
+    struct Context {
+        u32 d[8], a[8], pc, instPC, usp, isp, msp;
+        u16 sr, opcode;
+        int cyc;
+        bool stopped, traceNext;
+    };
+    void save(Context &x) const;
+    void restore(const Context &x);
     // Accesses that took the slow way (devices, TLB misses): the JIT's sign
     // that interrupts or the address map may have changed.
     u32 slowAccesses = 0;

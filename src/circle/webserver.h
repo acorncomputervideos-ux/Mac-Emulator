@@ -22,6 +22,7 @@ public:
 	// Called on the web server's task: must not touch the emulator directly.
 	virtual boolean FileInUse (const char *pPath) = 0;	// relative to the card's root
 	virtual const char *DiskDir (void) = 0;
+	virtual const char *SharedDir (void) { return ""; }	// the Mac's shared folder, or ""
 	virtual const char *Version (void) = 0;			// shown on the page
 	virtual macemu::u32 MacTime (void) = 0;			// now, in the Mac's clock
 	virtual macemu::u32 MaxFloppyBytes (void) = 0;		// 819200, or 1474560 with a SuperDrive

@@ -286,6 +286,30 @@ Three models are emulated:
   temporary file first, so a broken transfer never leaves half a file.
 - Transfers are fastest while the F12 menu is open (the Mac is paused).
 
+**Shared folder (Quadra, Mac OS 7.5 and later)**
+- The folder `shared` on the card is a disk named **Shared** on the Mac's
+  desktop, read and written by both sides. Put files in it from the web page
+  (the upload box's *the shared folder*) or a computer and they are on the
+  Mac within seconds, an open window included; save or copy files to it on
+  the Mac and they are on the card. Any size, folders too.
+- Resource forks and Finder info (type, creator, icons, positions) go in
+  AppleDouble `._name` files beside each file, as macOS keeps them on cards
+  like this, so applications copied in from a modern Mac or out to one keep
+  them. A file without one gets its type from its name (`.txt` is TEXT ...).
+- Names: Mac characters as Unicode on the card; ones the card cannot hold
+  (`/ ? * : " < > |`, a leading or trailing dot) as `%XX`. Names longer
+  than the Mac's 31 characters are shortened with a `#` and a code.
+- The Finder keeps its desktop file there (`Desktop`, `._Desktop`).
+- `shared_folder=` in `macemu.cfg` (a folder name, or `none`). It needs the
+  File System Manager of Mac OS 7.5; on older systems the log says so.
+- How: at the first WaitNextEvent the emulator registers a file system with
+  Mac OS's File System Manager, installs a small driver for its drive and
+  mounts the volume; the File Manager then hands every call for it to the
+  emulator (src/core/sharedfs.cpp). The host runner's `--share DIR` with
+  `SHARE_TEST=1` checks it through Mac OS's own File Manager (42 checks:
+  both forks, Finder info, folders, moving, renaming, deleting, odd names,
+  files made on the host).
+
 **Hibernate (Quadra)**
 - *Hibernate: save the Mac, turn off* on the menu's main page freezes the
   running Mac (memory, CPU and every chip) to `macemu.state` on the card and

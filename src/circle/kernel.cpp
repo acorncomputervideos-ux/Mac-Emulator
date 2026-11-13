@@ -2,6 +2,7 @@
 
 #include "kernel.h"
 #include "../core/state.h"
+#include "hostfs_fat.h"
 #include <circle/util.h>
 #include <circle/usb/usbhid.h>
 #include <circle/synchronize.h>
@@ -55,6 +56,8 @@ CKernel::CKernel (void)
 	m_pMacII (0),
 	m_pQuadra (0),
 	m_pJit (0),
+	m_pShareFS (0),
+	m_pShared (0),
 	m_pOsd (0),
 	m_pROM (0),
 	m_nROMSize (0),
@@ -720,6 +723,7 @@ TShutdownMode CKernel::Run (void)
 			if (bOK)
 			{
 				UpdateJit ();
+				StartSharedFolder ();
 			}
 		}
 		else if (m_pMacII != 0)
@@ -894,6 +898,7 @@ TShutdownMode CKernel::Run (void)
 		}
 
 		Housekeeping ();
+		ReportSharedFolder ();
 		QueueSound ();
 		UpdateScreen ();
 		Present ();
@@ -1018,6 +1023,11 @@ void CKernel::BootLog (boolean bForce)
 		strAppend (Line, "MHz temp=", sizeof Line);
 		appendUint (Line, m_CPUThrottle.GetTemperature (), sizeof Line);
 		strAppend (Line, "C", sizeof Line);
+		if (m_pShared != 0)
+		{
+			strAppend (Line, m_pShared->mounted ? " share=up/" : " share=down/", sizeof Line);
+			appendUint (Line, m_pShared->callsServed, sizeof Line);
+		}
 		if (m_pJit != 0)
 		{
 			// Blocks made, % of instructions run in blocks, flushes.
@@ -1058,8 +1068,9 @@ void CKernel::BootLog (boolean bForce)
 		m_Logger.Write (FromKernel, LogNotice, "%s", Line);
 	}
 
-	static char Text[LOGGER_BUFSIZE];
-	int nLength = m_Logger.Read (Text, sizeof Text - 1);
+	static char *Text = 0;				// (on the heap: the kernel image is limited)
+	if (Text == 0) Text = new char[LOGGER_BUFSIZE + 1];
+	int nLength = m_Logger.Read (Text, LOGGER_BUFSIZE);
 	if (nLength <= 0 || m_nLogBytes > 2 * 1024 * 1024)
 	{
 		return;
@@ -1704,6 +1715,36 @@ void CKernel::ResumeHibernation (void)
 		return;
 	}
 	m_Logger.Write (FromKernel, LogNotice, "Resumed the hibernated Mac");
+}
+
+// ----------------------------------------------------------------- shared folder
+
+// A folder on the card as a disk on the Mac's desktop (the Quadra, Mac OS
+// 7.5 and later); it appears once Mac OS has started.
+void CKernel::StartSharedFolder (void)
+{
+	if (m_pQuadra == 0 || m_Config.sharedFolder[0] == '\0')
+	{
+		return;
+	}
+	char Root[160] = DRIVE "/";
+	strAppend (Root, m_Config.sharedFolder, sizeof Root);
+	f_mkdir (Root);
+	m_pShareFS = new CFatHostFS (Root);
+	m_pShared = new macemu::SharedFolder (m_pQuadra->cpu, *m_pShareFS);
+	m_pQuadra->attachSharedFolder (m_pShared);
+	m_Logger.Write (FromKernel, LogNotice, "Shared folder: %s", Root);
+}
+
+// The shared folder's state, in the log when it changes.
+void CKernel::ReportSharedFolder (void)
+{
+	static const char *pLast = 0;
+	if (m_pShared != 0 && m_pShared->status != pLast)
+	{
+		pLast = m_pShared->status;
+		m_Logger.Write (FromKernel, LogNotice, "Shared folder: %s", pLast);
+	}
 }
 
 // ----------------------------------------------------------------- JIT

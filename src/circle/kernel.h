@@ -108,6 +108,7 @@ public:
 	// CWebServerHost
 	boolean FileInUse (const char *pPath) override;
 	const char *DiskDir (void) override		{ return m_Config.diskDir; }
+	const char *SharedDir (void) override		{ return m_pShared != 0 ? m_Config.sharedFolder : ""; }
 	const char *Version (void) override		{ return "built " __DATE__ " " __TIME__; }
 	macemu::u32 MacTime (void) override		{ return m_pMachine->clockChip ().seconds; }
 	macemu::u32 MaxFloppyBytes (void) override	{ return m_pQuadra != 0 ? 1474560 : 819200; }
@@ -157,6 +158,8 @@ private:
 	void UpdateInfo (void);
 	void StartNetwork (void);
 	void UpdateJit (void);
+	void StartSharedFolder (void);
+	void ReportSharedFolder (void);
 	void ResumeHibernation (void);
 	boolean WriteHibernation (void);
 	void StartEthernet (void);
@@ -203,6 +206,8 @@ private:
 	macemu::MacII		*m_pMacII;
 	macemu::Quadra		*m_pQuadra;
 	macemu::Jit		*m_pJit;
+	class CFatHostFS	*m_pShareFS;
+	macemu::SharedFolder	*m_pShared;
 	macemu::Osd		*m_pOsd;
 	macemu::Surface		m_Surface;
 	macemu::Layout		m_Layout;

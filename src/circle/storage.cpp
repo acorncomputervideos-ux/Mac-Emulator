@@ -40,6 +40,16 @@ bool CDiskProxy::Call (macemu::Storage *pStorage, TOp Op, u32 nOffset, void *pBu
 	return bResult;
 }
 
+void CDiskProxy::Run (void (*pFunc) (void *pParam), void *pParam)
+{
+	if (!Remote ())
+	{
+		pFunc (pParam);
+		return;
+	}
+	Call ((macemu::Storage *) (void *) pFunc, OpCall, 0, pParam, 0);
+}
+
 void CDiskProxy::Service (void)
 {
 	if (s_nState != 1)
@@ -53,6 +63,7 @@ void CDiskProxy::Service (void)
 	{
 	case OpRead:	bResult = pStorage->read (s_nOffset, s_pBuffer, s_nLength);	break;
 	case OpWrite:	bResult = pStorage->write (s_nOffset, s_pBuffer, s_nLength);	break;
+	case OpCall:	((void (*) (void *)) (void *) pStorage) (s_pBuffer);		break;
 	default:	pStorage->flush ();						break;
 	}
 	s_bResult = bResult;
