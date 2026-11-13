@@ -280,7 +280,8 @@ Three models are emulated:
   (`ENET_TEST=1` in the host runner): the Slot Manager finds the built-in
   Ethernet, its `.ENET` driver opens and sends, and MacTCP 2.0.6 set to
   Ethernet and *Server* gets 10.0.2.15 from the router after a restart.
-  Not yet a page loaded in a browser through MacTCP, nor on a real Pi.
+  And on a real Pi 400: Netscape 3.04 on 7.5.3 with MacTCP loads pages
+  through the router and the HTTPS helper.
 
 **1.44 MB floppies (Quadra)**
 - The Quadra's drives are SuperDrives (FDHD): 1.44 MB MFM disks as well as
