@@ -152,6 +152,21 @@ static void testFloppy()
     CHECK(!hfsMakeFloppy(m.d.data(), "X", &huge, 1, 0));
 }
 
+// Blank floppies (the menu's New blank floppy): no files, both sizes.
+static void testBlank()
+{
+    for (u32 bytes : {819200u, 1474560u}) {
+        Mem m;
+        m.d.assign(bytes, 0xEE);
+        CHECK(hfsMakeVolume(m.d.data(), bytes, "Blank 1", nullptr, 0, 0xE0000000u));
+        HfsVolume v;
+        CHECK(v.open(&m));
+        CHECK(strcmp(v.name(), "Blank 1") == 0);
+        HfsEntry e[4];
+        CHECK(v.list(2, e, 4) == 0);
+    }
+}
+
 // A big volume built in pieces (the web page's transfer CD).
 static void testBigVolume()
 {
@@ -208,6 +223,7 @@ static void testBigVolume()
 
 int main(int argc, char **argv)
 {
+    testBlank();
     testFloppy();
     testBigVolume();
     testImage(argc > 1 ? argv[1] : "build/hfstest-image.hda");

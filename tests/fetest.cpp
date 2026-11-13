@@ -227,6 +227,8 @@ struct FakeHost : OsdHost {
     void powerOff() override { offs++; }
     bool hibernate() override { return false; }
     bool screenshot() override { shots++; return true; }
+    int blanks = 0; bool blankHd = false;
+    bool newFloppy(bool hd, char *name, unsigned max) override { blanks++; blankHd = hd; strCopy(name, "Blank 1.dsk", max); return true; }
     const char *infoLine(int) override { return "info"; }
     const char *networkLine(int n) override { return n == 0 ? "http://192.168.1.20/" : "net"; }
 };
@@ -282,12 +284,14 @@ static void testOsd()
     osd.key(Osd::NavDown); osd.key(Osd::NavSelect);
     CHECK(host.cd == "Install.iso");
     osd.key(Osd::NavBack);                                                   // back to main
-    go(osd, 6); osd.key(Osd::NavSelect);                                     // restart attaches them
+    go(osd, 7); osd.key(Osd::NavSelect);                                     // restart asks first
+    CHECK(host.resets == 0 && osd.active());
+    osd.key(Osd::NavSelect);                                                 // restart attaches them
     CHECK(host.resets == 1 && !osd.active());
 
     // Machine page: model, ROM, memory and video need a reboot.
     osd.open();
-    go(osd, 3); osd.key(Osd::NavSelect);
+    go(osd, 4); osd.key(Osd::NavSelect);
     CHECK(!osd.rebootPending());
     osd.key(Osd::NavRight);                                                  // model auto -> plus
     CHECK(strEq(cfg.machine, "plus") && osd.rebootPending());
@@ -310,7 +314,7 @@ static void testOsd()
     osd.key(Osd::NavBack);
 
     // Display, sound and input.
-    go(osd, 4); osd.key(Osd::NavSelect);
+    go(osd, 5); osd.key(Osd::NavSelect);
     osd.key(Osd::NavRight);
     CHECK(cfg.speed == 2 && host.changes == 1);
     osd.key(Osd::NavRight); osd.key(Osd::NavRight); osd.key(Osd::NavRight);
@@ -343,7 +347,7 @@ static void testOsd()
         setPalette(s, 0);
         for (int pageIdx = 0; pageIdx < 5; pageIdx++) {
             osd.open();
-            if (pageIdx) { go(osd, 1 + pageIdx); osd.key(Osd::NavSelect); }
+            if (pageIdx) { go(osd, pageIdx == 1 ? 2 : 2 + pageIdx); osd.key(Osd::NavSelect); }
             osd.draw(s, font);
         }
         osd.open(); osd.key(Osd::NavSelect); osd.draw(s, font);              // picker
@@ -358,25 +362,32 @@ static void testOsd()
     osd.key(Osd::NavPageUp); osd.key(Osd::NavUp); osd.key(Osd::NavSelect);   // wraps to Resume, past headings
     CHECK(!osd.active());
     osd.open();
-    go(osd, 9); osd.key(Osd::NavSelect);
+    go(osd, 10); osd.key(Osd::NavSelect);
     CHECK(host.saves == 1 && osd.active());
-    go(osd, 8); osd.key(Osd::NavSelect);
+    go(osd, 9); osd.key(Osd::NavSelect);
     CHECK(host.shots == 1);
-    go(osd, 7); osd.key(Osd::NavSelect);
+    go(osd, 8); osd.key(Osd::NavSelect);
     CHECK(host.nmis == 1 && !osd.active());
     osd.open();
-    go(osd, 10); osd.key(Osd::NavSelect);                       // hibernate: this host cannot
+    go(osd, 11); osd.key(Osd::NavSelect); osd.key(Osd::NavSelect);   // hibernate: this host cannot
     CHECK(osd.active());
-    go(osd, 11); osd.key(Osd::NavSelect);
+    go(osd, 12); osd.key(Osd::NavSelect);
+    CHECK(host.offs == 0);                                      // asks first
+    osd.key(Osd::NavDown); osd.key(Osd::NavUp); osd.key(Osd::NavSelect);
+    CHECK(host.offs == 0);                                      // moving away forgets it
+    osd.key(Osd::NavSelect);
     CHECK(host.offs == 1);
     osd.open();
-    go(osd, 12); osd.key(Osd::NavSelect);
+    go(osd, 13); osd.key(Osd::NavSelect);
     CHECK(!osd.active());
+    osd.open();                                                 // a blank floppy, 1.44 MB
+    go(osd, 3); osd.key(Osd::NavRight); osd.key(Osd::NavSelect);
+    CHECK(host.blanks == 1 && host.blankHd && osd.active());
 
     // Network page: connection type, Wi-Fi name and password typed in.
     Osd net(cfg, host);
     net.open();
-    go(net, 5); net.key(Osd::NavSelect);
+    go(net, 6); net.key(Osd::NavSelect);
     CHECK(strEq(cfg.network, "auto"));
     net.key(Osd::NavRight);
     CHECK(strEq(cfg.network, "ethernet") && net.rebootPending());

@@ -140,7 +140,7 @@ public:
     boolean FileInUse(const char *p) override { return strcmp(p, "hd0.img") == 0 || strcmp(p, "disks/inuse.dsk") == 0; }
     const char *DiskDir() override { return "disks"; }
     const char *SharedDir() override { return "shared"; }
-    void StatusText(char *o, unsigned n) override { snprintf(o, n, "Mac\tQuadra 650 & <b>\nNetwork\tup\n"); }
+    void StatusText(char *o, unsigned n) override { snprintf(o, n, "Mac\tQuadra 650 & <b>\nFloppy drive 1\tSys.dsk\t0\nNetwork\tup\n"); }
     const char *Version() override { return "test <1>"; }
     macemu::u32 MacTime() override { return 0xE0000000u; }
     macemu::u32 MaxFloppyBytes() override { return 1474560; }
@@ -231,12 +231,15 @@ int main(int argc, char **argv)
 
     // The emulator's main loop: carries out flush and restart requests.
     static std::atomic<int> flushes(0), restarts(0);   // static: the server threads outlive main()
-    static std::string inserted;
+    static std::string inserted, driveName;
+    static std::atomic<int> driveWhich(-9);
     std::thread([server] {
         for (;;) {
             if (server->FlushRequested()) { flushes++; server->FlushDone(); }
             if (server->RestartRequested()) { restarts++; server->RestartDone(); }
             if (const char *n = server->InsertRequested()) { inserted = n; server->InsertDone(true); }
+            int w; const char *dn;
+            if (server->DriveRequested(&w, &dn)) { driveName = dn; driveWhich = w; server->DriveDone("done & dusted"); }
             usleep(5000);
         }
     }).detach();
@@ -299,6 +302,26 @@ int main(int argc, char **argv)
     r = request("PUT", "/files/disks/New%20Disk.img", "small");
     CHECK(r.code == 201);
     CHECK(readFile("disks/New Disk.img") == "small");
+
+    // Insert and eject from the page: buttons for floppy-sized images and
+    // drives with a disk; the request reaches the main loop.
+    r = request("GET", "/");
+    writeFile("disks/Free Floppy.dsk", std::string(819200, 'F'));
+    writeFile("disks/Big.hda", std::string(2000000, 'H'));
+    writeFile("disks/Games.iso", std::string(4096, 'C'));
+    r = request("GET", "/");
+    CHECK(r.body.find("drv('any','Free%20Floppy.dsk')") != std::string::npos);
+    CHECK(r.body.find("drv('any','Big.hda')") == std::string::npos);      // a hard disk
+    CHECK(r.body.find("drv('cd','Games.iso')") != std::string::npos);
+    CHECK(r.body.find("drv('0','')") != std::string::npos);
+    CHECK(r.body.find("drv('any','inuse.dsk')") == std::string::npos);    // in use
+    r = request("POST", "/drive?d=any&name=Free%20Floppy.dsk");
+    CHECK(r.code == 200 && r.body.find("done & dusted") != std::string::npos);
+    CHECK(driveWhich == -1 && driveName == "Free Floppy.dsk");
+    r = request("POST", "/drive?d=cd&name=");
+    CHECK(r.code == 200 && driveWhich == 2 && driveName.empty());
+    r = request("POST", "/drive?d=0&name=..%2Fhd0.img");
+    CHECK(r.code == 400);
 
     // Download.
     r = request("GET", "/files/mac.rom");

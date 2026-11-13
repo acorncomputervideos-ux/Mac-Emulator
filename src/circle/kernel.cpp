@@ -21,6 +21,7 @@
 #include "../frontend/keymap.h"
 #include "../frontend/util.h"
 #include "../frontend/romid.h"
+#include "../frontend/hfs.h"
 
 using macemu::Machine; using macemu::Osd; using macemu::Config; using macemu::Scsi;
 using namespace macemu;
@@ -141,6 +142,7 @@ CKernel::CKernel (void)
 		m_HardDiskPath[i][0] = '\0';
 	}
 	m_InfoLine[0][0] = m_InfoLine[1][0] = '\0';
+	m_SavedFloppy[0][0] = m_SavedFloppy[1][0] = m_SavedCdrom[0] = '\0';
 	strCopy (m_InfoLine[2], "Built " __DATE__, sizeof m_InfoLine[2]);	// shows which version runs
 	strCopy (m_NetLine[0], "Network: off (Connection is set to Off)", sizeof m_NetLine[0]);
 	m_NetLine[1][0] = m_NetLine[2][0] = '\0';
@@ -193,6 +195,13 @@ boolean CKernel::Initialize (void)
 
 boolean CKernel::LoadConfig (void)
 {
+	// Files written whole (WriteFileSafely): finish one the power interrupted.
+	static const char *Files[] = {CONFIG_FILE, PRAM_FILE, WPA_CONFIG, DRIVE "/config.txt"};
+	for (const char *pFile : Files)
+	{
+		RecoverFile (pFile);
+	}
+
 	FIL File;
 	if (f_open (&File, CONFIG_FILE, FA_READ | FA_OPEN_EXISTING) != FR_OK)
 	{
@@ -395,6 +404,11 @@ void CKernel::SetupSound (void)
 
 void CKernel::AttachDisks (void)
 {
+	// As macemu.cfg has them (RememberDisks keeps it up to date).
+	strCopy (m_SavedFloppy[0], m_Config.floppy[0], sizeof m_SavedFloppy[0]);
+	strCopy (m_SavedFloppy[1], m_Config.floppy[1], sizeof m_SavedFloppy[1]);
+	strCopy (m_SavedCdrom, m_Config.cdrom, sizeof m_SavedCdrom);
+
 	for (unsigned d = 0; d < 2; d++)
 	{
 		if (m_Config.floppy[d][0] != '\0' && !insertDisk ((int) d, m_Config.floppy[d]))
@@ -590,12 +604,8 @@ void CKernel::SavePRAM (void)
 		return;
 	}
 
-	FIL File;
-	if (f_open (&File, PRAM_FILE, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK)
+	if (WriteFileSafely (PRAM_FILE, m_pMachine->clockChip ().pram, sizeof m_pMachine->clockChip ().pram))
 	{
-		UINT nWritten;
-		f_write (&File, m_pMachine->clockChip ().pram, sizeof m_pMachine->clockChip ().pram, &nWritten);
-		f_close (&File);
 		m_pMachine->clockChip ().pramDirty = false;
 	}
 }
@@ -954,6 +964,7 @@ TShutdownMode CKernel::Run (void)
 			m_nEmulatedSeen = nFrames;
 			m_nStatsTime = nNow;
 			UpdateInfo ();
+			RememberDisks ();
 		}
 	}
 
@@ -1392,6 +1403,7 @@ void CKernel::Housekeeping (void)
 		{
 			PauseEmu ();
 			m_pMachine->floppy ().ejectedByGuest[d] = false;
+			m_Logger.Write (FromKernel, LogNotice, "The Mac ejected floppy %u", d + 1);
 			ejectDisk ((int) d);
 			ResumeEmu ();
 		}
@@ -1776,18 +1788,27 @@ void CKernel::StatusText (char *pOut, unsigned nMax)
 		for (const char *q = p; *q; q++) if (*q == '/') p = q + 1;
 		Line (Name, p);
 	}
+	// Drives: a third field names the page's Eject for them.
 	for (unsigned d = 0; d < 2; d++)
 	{
+		const char *pName = m_FloppyName[d][0] != '\0' ? m_FloppyName[d] : "(empty)";
+		strCopy (V, pName, sizeof V);
 		if (m_FloppyName[d][0] != '\0')
 		{
-			Line (d == 0 ? "Floppy drive 1" : "Floppy drive 2", m_FloppyName[d]);
+			strAppend (V, d == 0 ? "\t0" : "\t1", sizeof V);
 		}
+		Line (d == 0 ? "Floppy drive 1" : "Floppy drive 2", V);
 	}
-	if (m_pCdrom != 0)
+	if (m_Config.cdromId >= 0)
 	{
-		const char *p = m_Config.cdrom;
+		const char *p = m_pCdrom != 0 ? m_Config.cdrom : "(empty)";
 		for (const char *q = p; *q; q++) if (*q == '/') p = q + 1;
-		Line ("CD-ROM", p);
+		strCopy (V, p, sizeof V);
+		if (m_pCdrom != 0)
+		{
+			strAppend (V, "\tcd", sizeof V);
+		}
+		Line ("CD-ROM", V);
 	}
 	if (m_pShared != 0)
 	{
@@ -2045,14 +2066,7 @@ boolean CKernel::WriteWiFiConfig (const char *pPath)
 	strAppend (Text, m_Config.wifiPassword, sizeof Text);
 	strAppend (Text, "\"\n\tkey_mgmt=WPA-PSK\n\tscan_ssid=1\n}\n", sizeof Text);
 
-	FIL File;
-	if (f_open (&File, pPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
-	{
-		return FALSE;
-	}
-	UINT nWritten;
-	boolean bOK = f_write (&File, Text, strLen (Text), &nWritten) == FR_OK && nWritten == strLen (Text);
-	return f_close (&File) == FR_OK && bOK;
+	return WriteFileSafely (pPath, Text, strLen (Text));
 }
 
 void CKernel::UpdateNetwork (void)
@@ -2119,6 +2133,13 @@ void CKernel::UpdateNetwork (void)
 			{
 				m_pWebServer->InsertDone (insertDisk (1, pName));
 			}
+		}
+
+		int nWhich;
+		const char *pDriveName;
+		if (m_pWebServer->DriveRequested (&nWhich, &pDriveName))
+		{
+			m_pWebServer->DriveDone (WebDrive (nWhich, pDriveName));
 		}
 
 		if (m_pWebServer->RebootRequested ())
@@ -3210,12 +3231,203 @@ void CKernel::UpdateFirmwareConfig (void)
 		return;					// nothing to change
 	}
 
-	if (f_open (&File, DRIVE "/config.txt", FA_WRITE | FA_CREATE_ALWAYS) == FR_OK)
+	WriteFileSafely (DRIVE "/config.txt", Out, strLen (Out));
+}
+
+// Insert or eject from the web page (see CWebServer::DriveRequested).
+const char *CKernel::WebDrive (int nWhich, const char *pName)
+{
+	boolean bCdBusy = m_pCdrom != 0 && m_Config.cdromId >= 0 && m_pMachine->scsiDevice (m_Config.cdromId).locked;
+	if (nWhich == 2)
 	{
-		UINT nWritten;
-		f_write (&File, Out, strLen (Out), &nWritten);
-		f_close (&File);
+		if (m_Config.cdromId < 0)
+		{
+			return "This Mac has no CD-ROM drive (cdrom_id in macemu.cfg).";
+		}
+		if (bCdBusy)
+		{
+			return "The Mac is using the CD: drag it to the Trash on the Mac first.";
+		}
+		if (pName[0] == '\0')
+		{
+			insertCd (0);
+			return "Ejected the CD.";
+		}
+		char Path[160];
+		strCopy (Path, m_Config.diskDir, sizeof Path);
+		strAppend (Path, "/", sizeof Path);
+		strAppend (Path, pName, sizeof Path);
+		return insertCd (Path) ? "The CD is in the CD-ROM drive." : "Cannot open that CD image.";
 	}
+
+	if (pName[0] == '\0')
+	{
+		if (nWhich < 0 || m_pFloppy[nWhich] == 0)
+		{
+			return "That drive is empty.";
+		}
+		ejectDisk (nWhich);
+		return "Ejected the floppy.";
+	}
+	if (nWhich < 0)
+	{
+		nWhich = m_pFloppy[0] == 0 ? 0 : m_pFloppy[1] == 0 ? 1 : -1;
+		if (nWhich < 0)
+		{
+			return "Both floppy drives are full: eject one first.";
+		}
+	}
+	if (!insertDisk (nWhich, pName))
+	{
+		return "Not a usable floppy (400K, 800K; 1.44 MB on a Quadra).";
+	}
+	return nWhich == 0 ? "The floppy is in floppy drive 1." : "The floppy is in floppy drive 2.";
+}
+
+// A file written whole, so that losing the power never leaves half of it:
+// the new contents go to NAME.new, which then replaces NAME.  RecoverFile
+// finishes the job at start-up if the power went in between.
+boolean CKernel::WriteFileSafely (const char *pPath, const void *pData, unsigned nLength)
+{
+	char New[96];
+	strCopy (New, pPath, sizeof New);
+	strAppend (New, ".new", sizeof New);
+
+	FIL File;
+	if (f_open (&File, New, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	{
+		return FALSE;
+	}
+	UINT nWritten = 0;
+	boolean bOK = f_write (&File, pData, nLength, &nWritten) == FR_OK && nWritten == nLength;
+	bOK = f_close (&File) == FR_OK && bOK;
+	if (!bOK)
+	{
+		f_unlink (New);
+		return FALSE;
+	}
+	f_unlink (pPath);
+	return f_rename (New, pPath) == FR_OK;
+}
+
+void CKernel::RecoverFile (const char *pPath)
+{
+	char New[96];
+	strCopy (New, pPath, sizeof New);
+	strAppend (New, ".new", sizeof New);
+	FILINFO Info;
+	if (f_stat (New, &Info) != FR_OK)
+	{
+		return;
+	}
+	if (f_stat (pPath, &Info) == FR_OK)
+	{
+		f_unlink (New);				// the old file is whole; the new one may not be
+	}
+	else
+	{
+		f_rename (New, pPath);			// it was written whole, then the power went
+	}
+}
+
+// The floppies and the CD in the drives, kept in macemu.cfg for the next
+// start-up (only those lines: other settings are saved by Save settings).
+void CKernel::RememberDisks (void)
+{
+	if (   strEq (m_SavedFloppy[0], m_Config.floppy[0]) && strEq (m_SavedFloppy[1], m_Config.floppy[1])
+	    && strEq (m_SavedCdrom, m_Config.cdrom))
+	{
+		return;
+	}
+	strCopy (m_SavedFloppy[0], m_Config.floppy[0], sizeof m_SavedFloppy[0]);
+	strCopy (m_SavedFloppy[1], m_Config.floppy[1], sizeof m_SavedFloppy[1]);
+	strCopy (m_SavedCdrom, m_Config.cdrom, sizeof m_SavedCdrom);
+
+	static Config Saved;
+	static char Buffer[8192];
+	Saved.setDefaults ();
+	FIL File;
+	if (f_open (&File, CONFIG_FILE, FA_READ | FA_OPEN_EXISTING) == FR_OK)
+	{
+		UINT nRead = 0;
+		f_read (&File, Buffer, sizeof Buffer - 1, &nRead);
+		f_close (&File);
+		Saved.parse (Buffer, nRead);
+	}
+	strCopy (Saved.floppy[0], m_Config.floppy[0], Config::kPath);
+	strCopy (Saved.floppy[1], m_Config.floppy[1], Config::kPath);
+	strCopy (Saved.cdrom, m_Config.cdrom, Config::kPath);
+	u32 nLength = Saved.serialize (Buffer, sizeof Buffer);
+	WriteFileSafely (CONFIG_FILE, Buffer, nLength);
+}
+
+// A new, empty, initialized floppy ("Blank 1.dsk" ...) in the disk folder,
+// put in a drive (the first empty one; drive 2 when both are full).
+bool CKernel::newFloppy (bool bHighDensity, char *pName, unsigned nMax)
+{
+	u32 nBytes = bHighDensity ? 1474560 : 819200;
+	if (nBytes > MaxFloppyBytes ())
+	{
+		return false;
+	}
+	char Name[32];
+	char Path[160];
+	FILINFO Info;
+	unsigned n = 1;
+	for (; n < 1000; n++)
+	{
+		strCopy (Name, "Blank ", sizeof Name);
+		appendUint (Name, n, sizeof Name);
+		strAppend (Name, ".dsk", sizeof Name);
+		strCopy (Path, DRIVE "/", sizeof Path);
+		strAppend (Path, m_Config.diskDir, sizeof Path);
+		strAppend (Path, "/", sizeof Path);
+		strAppend (Path, Name, sizeof Path);
+		if (f_stat (Path, &Info) != FR_OK)
+		{
+			break;
+		}
+	}
+	char Volume[16] = "Blank ";
+	appendUint (Volume, n, sizeof Volume);
+
+	u8 *pImage = new u8[nBytes];
+	if (pImage == 0)
+	{
+		return false;
+	}
+	bool bOK = macemu::hfsMakeVolume (pImage, nBytes, Volume, 0, 0, MacTime ());
+	FIL File;
+	if (bOK)
+	{
+		char Dir[96] = DRIVE "/";
+		strAppend (Dir, m_Config.diskDir, sizeof Dir);
+		f_mkdir (Dir);
+		bOK = f_open (&File, Path, FA_WRITE | FA_CREATE_NEW) == FR_OK;
+	}
+	if (bOK)
+	{
+		UINT nWritten = 0;
+		bOK = f_write (&File, pImage, nBytes, &nWritten) == FR_OK && nWritten == nBytes;
+		bOK = f_close (&File) == FR_OK && bOK;
+		if (!bOK)
+		{
+			f_unlink (Path);
+		}
+	}
+	delete [] pImage;
+	if (!bOK)
+	{
+		return false;
+	}
+
+	int nDrive = m_pFloppy[0] == 0 ? 0 : 1;
+	if (!insertDisk (nDrive, Name))
+	{
+		return false;
+	}
+	strCopy (pName, Name, nMax);
+	return true;
 }
 
 void CKernel::saveAndReboot (void)
@@ -3254,16 +3466,14 @@ bool CKernel::saveSettings (void)
 	static char Buffer[4096];
 	u32 nLength = m_Config.serialize (Buffer, sizeof Buffer);
 
-	FIL File;
-	if (f_open (&File, CONFIG_FILE, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	if (!WriteFileSafely (CONFIG_FILE, Buffer, nLength))
 	{
 		return false;
 	}
-
-	UINT nWritten = 0;
-	boolean bOK = f_write (&File, Buffer, nLength, &nWritten) == FR_OK && nWritten == nLength;
-
-	return f_close (&File) == FR_OK && bOK;
+	strCopy (m_SavedFloppy[0], m_Config.floppy[0], sizeof m_SavedFloppy[0]);
+	strCopy (m_SavedFloppy[1], m_Config.floppy[1], sizeof m_SavedFloppy[1]);
+	strCopy (m_SavedCdrom, m_Config.cdrom, sizeof m_SavedCdrom);
+	return true;
 }
 
 bool CKernel::screenshot (void)

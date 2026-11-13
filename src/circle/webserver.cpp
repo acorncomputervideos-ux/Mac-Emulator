@@ -90,11 +90,14 @@ static const char PageTail[] =
 "x.open('PUT','/files/'+j.d+encodeURIComponent(f.name));x.send(f)}"
 "function send(fl){if(SHARE&&!$('tfl').checked)add(fl,SHARE+'/','tst','tpr');else transfer(fl)}"
 "function stat(){fetch('/status').then(function(r){return r.text()}).then(function(t){var h='';"
-"t.split('\\n').forEach(function(l){var c=l.split('\\t');if(c.length==2)h+='<tr><td class=k>'+esc(c[0])+'</td><td>'+esc(c[1])+'</td></tr>'});"
+"t.split('\\n').forEach(function(l){var c=l.split('\\t');if(c.length>1)h+='<tr><td class=k>'+esc(c[0])+'</td><td>'+esc(c[1])"
+"+(c[2]?' <button onclick=\\\"drv(\\''+c[2]+'\\',\\'\\')\\\">Eject</button>':'')+'</td></tr>'});"
 "$('stat').innerHTML=h}).catch(function(){})}setInterval(stat,5000);"
 "function del(n){if(!confirm('Delete '+n+'?'))return;"
 "fetch('/files/'+n,{method:'DELETE'}).then(function(r){return r.text().then(function(t){"
 "if(r.ok)location.reload();else alert(t)})})}"
+"function drv(w,n){$('dst').textContent='...';fetch('/drive?d='+w+'&name='+n,{method:'POST'})"
+".then(function(r){return r.text()}).then(function(t){$('dst').textContent=t;stat()})}"
 "function restart(){fetch('/restart',{method:'POST'}).then(function(r){return r.text()}).then(alert)}"
 // The update: unzip in the browser, send each file, then reboot the Pi.
 "var keep=/^(macemu\\.cfg|macemu\\.pram|wpa_supplicant\\.conf|macemu-wifi\\.conf|disks\\/.*|screenshots\\/.*|.*\\.rom)$/i;"
@@ -169,6 +172,9 @@ CWebServer::CWebServer (CNetSubSystem *pNet, const char *pDrive, CWebServerHost 
 {
 	m_Activity[0] = '\0';
 	m_InsertName[0] = '\0';
+	m_bDriveRequest = FALSE;
+	m_nDriveWhich = 0;
+	m_DriveName[0] = m_DriveReply[0] = '\0';
 	SetName ("web");
 }
 
@@ -250,6 +256,12 @@ void CWebServer::Serve (CSocket *pSocket)
 		{
 			SendAll (pSocket, Text, strLen (Text));
 		}
+		return;
+	}
+
+	if (strEq (Request.Method, "POST") && strEq (pPath, "drive"))
+	{
+		DriveRequest (pSocket, Request.Query);
 		return;
 	}
 
@@ -498,7 +510,7 @@ void CWebServer::SendIndex (CSocket *pSocket)
 	// What the Mac is doing (refreshed by the page every few seconds).
 	Out ("<section><h2>This Mac</h2><table id=stat>");
 	OutStatusRows ();
-	Out ("</table><p><button onclick=restart()>Restart the Mac</button> "
+	Out ("</table><p id=dst class=n></p><p><button onclick=restart()>Restart the Mac</button> "
 	     "<span class=n>Saves the disks and starts the Mac again with the disks chosen in the menu.</span></p></section>");
 
 	// Sending files: to the shared folder when there is one.
@@ -609,7 +621,24 @@ void CWebServer::ListFolder (const char *pFolder, boolean bDiskDir, const char *
 			}
 			Out ("</td><td class=s>");
 			OutSize (Info.fsize);
-			Out ("</td><td class=a><button onclick=\"del('");
+			Out ("</td><td class=a>");
+			if (bDiskDir && strEq (pFolder, m_pHost->DiskDir ()) && !m_pHost->FileInUse (Name))
+			{
+				// Floppies (up to 1.44 MB, DiskCopy header included) and CDs go in a drive from here.
+				boolean bCd = endsWithNoCase (Info.fname, ".iso") || endsWithNoCase (Info.fname, ".toast")
+					      || endsWithNoCase (Info.fname, ".cdr");
+				boolean bFloppy = !bCd && Info.fsize >= 400 * 1024 && Info.fsize <= m_pHost->MaxFloppyBytes () + 84
+						  && LooksLikeDisk (Info.fname, Info.fsize);
+				if (bCd || bFloppy)
+				{
+					Out ("<button onclick=\"drv('");
+					Out (bCd ? "cd" : "any");
+					Out ("','");
+					OutUrl (Info.fname);
+					Out ("')\">Insert</button> ");
+				}
+			}
+			Out ("<button onclick=\"del('");
 			OutUrl (Name);
 			Out ("')\">Delete</button></td></tr>");
 			nCount++;
@@ -624,6 +653,45 @@ void CWebServer::ListFolder (const char *pFolder, boolean bDiskDir, const char *
 		Out ("<tr><td class=n>No files.</td></tr>");
 	}
 	Out ("</table></section>");
+}
+
+// ----------------------------------------------------------------- drives
+
+// POST /drive?d=any|0|1|cd&name=NAME (in the disk folder; empty: eject).
+void CWebServer::DriveRequest (CSocket *pSocket, const char *pQuery)
+{
+	char Which[8], Name[128];
+	if (!QueryValue (pQuery, "d", Which, sizeof Which) || !QueryValue (pQuery, "name", Name, sizeof Name)
+	    || strchr (Name, '/') != 0 || strchr (Name, '\\') != 0 || (Name[0] == '.' && Name[1] == '.'))
+	{
+		SendStatus (pSocket, 400, "Bad request");
+		return;
+	}
+	int nWhich = strEq (Which, "cd") ? 2 : strEq (Which, "0") ? 0 : strEq (Which, "1") ? 1 : -1;
+
+	// The main loop does it; wait a moment for it.
+	strCopy (m_DriveName, Name, sizeof m_DriveName);
+	m_nDriveWhich = nWhich;
+	m_DriveReply[0] = '\0';
+	m_bDriveRequest = TRUE;
+	unsigned nStart = CTimer::Get ()->GetTicks ();
+	while (m_bDriveRequest && CTimer::Get ()->GetTicks () - nStart < 3 * HZ)
+	{
+		CScheduler::Get ()->MsSleep (20);
+	}
+	if (m_bDriveRequest)
+	{
+		m_bDriveRequest = FALSE;
+		SendStatus (pSocket, 503, "The Mac is busy: try again, or use the F12 menu.");
+		return;
+	}
+	SendStatus (pSocket, 200, m_DriveReply);
+}
+
+void CWebServer::DriveDone (const char *pReply)
+{
+	strCopy (m_DriveReply, pReply, sizeof m_DriveReply);
+	m_bDriveRequest = FALSE;
 }
 
 // ----------------------------------------------------------------- transfers
@@ -1957,11 +2025,22 @@ void CWebServer::OutStatusRows (void)
 		if (*pTab)
 		{
 			*pTab = '\0';
+			char *pAct = pTab + 1;
+			while (*pAct && *pAct != '\t') pAct++;
+			char cAct = *pAct;
+			*pAct = '\0';
 			Out ("<tr><td class=k>");
 			OutHtml (pLine);
 			Out ("</td><td>");
 			OutHtml (pTab + 1);
+			if (cAct)
+			{
+				Out (" <button onclick=\"drv('");
+				OutHtml (pAct + 1);
+				Out ("','')\">Eject</button>");
+			}
 			Out ("</td></tr>");
+			*pAct = cAct;
 			*pTab = '\t';
 		}
 		*pEnd = Save;

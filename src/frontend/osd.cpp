@@ -21,6 +21,8 @@ Osd::Osd(Config &config, OsdHost &h) : cfg(config), host(h)
     message[0] = 0;
     editItem = -1;
     editBuf[0] = 0;
+    confirmItem = -1;
+    newHighDensity = false;
 }
 
 void Osd::open()
@@ -30,6 +32,7 @@ void Osd::open()
     page = PageMain;
     message[0] = 0;
     editItem = -1;
+    confirmItem = -1;
 }
 
 void Osd::say(const char *text)
@@ -39,7 +42,7 @@ void Osd::say(const char *text)
 
 int Osd::items(Page p, int *out) const
 {
-    static const int main[] = {ItHeadDisks, ItFloppy1, ItFloppy2, ItDisksPage,
+    static const int main[] = {ItHeadDisks, ItFloppy1, ItFloppy2, ItDisksPage, ItNewFloppy,
                                ItHeadSettings, ItMachinePage, ItPrefsPage, ItNetworkPage,
                                ItHeadMac, ItReset, ItInterrupt, ItScreenshot, ItSave, ItHibernate, ItPowerOff, ItResume};
     static const int disks[] = {ItHeadScsi, ItHd0, ItHd0 + 1, ItHd0 + 2, ItHd0 + 3, ItHd0 + 4, ItHd0 + 5, ItHd6,
@@ -104,6 +107,7 @@ void Osd::adjust(int item, int dir)
         break;
     }
     case ItJit: cfg.jit = !cfg.jit; break;
+    case ItNewFloppy: newHighDensity = !newHighDensity; return;
     case ItPalette: cfg.palette = cycle(cfg.palette, dir, 0, kPaletteCount - 1); break;
     case ItSound: cfg.sound = !cfg.sound; break;
     case ItVolume:
@@ -211,7 +215,31 @@ void Osd::openPicker(PickTarget target, int id)
 
 void Osd::activate(int item)
 {
+    // What cannot be undone asks first: Enter once more to do it.
+    if (item == ItReset || item == ItHibernate || item == ItPowerOff) {
+        if (confirmItem != item) {
+            confirmItem = item;
+            say(item == ItReset ? "Press Enter again to restart the Mac"
+                : item == ItHibernate ? "Press Enter again to save the Mac and turn off"
+                : "Press Enter again to turn off the Pi");
+            return;
+        }
+        confirmItem = -1;
+        message[0] = 0;
+    }
     switch (item) {
+    case ItNewFloppy: {
+        char name[OsdHost::kNameLen];
+        if (host.newFloppy(newHighDensity, name, sizeof name)) {
+            char m[64] = "Made ";
+            strAppend(m, name, sizeof m);
+            strAppend(m, ": it is in a floppy drive", sizeof m);
+            say(m);
+        } else {
+            say(newHighDensity ? "Could not make it (1.44 MB needs a Quadra)" : "Could not make it (is the card full?)");
+        }
+        break;
+    }
     case ItFloppy1: openPicker(PickFloppy1, 0); break;
     case ItFloppy2: openPicker(PickFloppy2, 1); break;
     case ItDisksPage: page = PageDisks; break;
@@ -334,6 +362,7 @@ void Osd::key(Nav nav)
         return;
     }
     if (page == PagePicker) { pickerKey(nav); return; }
+    if (nav != NavSelect) confirmItem = -1;
     int list[kMaxItems];
     int n = items(page, list);
     int &s = sel[page];
@@ -370,6 +399,7 @@ void Osd::label(int item, char *out, u32 max)
         break;
     }
     case ItDisksPage: strAppend(out, "Hard disks and CD-ROM  >", max); break;
+    case ItNewFloppy: field("New blank floppy", newHighDensity ? "1.44 MB  (Enter: make)" : "800K  (Enter: make)"); break;
     case ItMachinePage: strAppend(out, "Machine, ROM and memory  >", max); break;
     case ItPrefsPage: strAppend(out, "Speed, display, sound, input  >", max); break;
     case ItNetworkPage: strAppend(out, "Network and sharing  >", max); break;

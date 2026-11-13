@@ -30,6 +30,8 @@ public:
     virtual void powerOff() = 0;                        // save everything and turn the Pi off
     virtual bool hibernate() = 0;                       // save the running Mac and turn off (false: cannot)
     virtual bool screenshot() = 0;
+    // A new initialized floppy (800K, or 1.44 MB) in the disk folder, put in a drive; its name.
+    virtual bool newFloppy(bool highDensity, char *name, unsigned max) = 0;
     virtual const char *infoLine(int n) = 0;            // n = 0..1 status lines, 2: version (title bar)
     virtual const char *networkLine(int n) = 0;         // n = 0..2, network status
 };
@@ -62,7 +64,7 @@ private:
     enum Page { PageMain, PageDisks, PageMachine, PagePrefs, PageNetwork, PagePicker };
     enum Item {
         // main
-        ItFloppy1, ItFloppy2, ItDisksPage, ItMachinePage, ItPrefsPage, ItNetworkPage,
+        ItFloppy1, ItFloppy2, ItDisksPage, ItNewFloppy, ItMachinePage, ItPrefsPage, ItNetworkPage,
         ItReset, ItInterrupt, ItScreenshot, ItSave, ItHibernate, ItPowerOff, ItResume,
         // hard disks
         ItHd0, ItHd6 = ItHd0 + 6, ItCdrom, ItDisksBack,
@@ -91,6 +93,8 @@ private:
     char names[kMaxFiles][OsdHost::kNameLen];
     char message[64];
     int editItem;                       // -1 when not editing
+    int confirmItem;                    // asked "Enter again?" for this item, or -1
+    bool newHighDensity;
     char editBuf[64];
 
     int items(Page p, int *out) const;

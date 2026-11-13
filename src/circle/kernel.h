@@ -103,6 +103,7 @@ public:
 	bool screenshot (void) override;
 	void powerOff (void) override;
 	bool hibernate (void) override;
+	bool newFloppy (bool bHighDensity, char *pName, unsigned nMax) override;
 	const char *infoLine (int nLine) override	{ return m_InfoLine[nLine < 0 || nLine > 2 ? 0 : nLine]; }
 
 	// CWebServerHost
@@ -124,6 +125,10 @@ private:
 	void AttachHardDisks (void);
 	void LoadPRAM (void);
 	void SavePRAM (void);
+	boolean WriteFileSafely (const char *pPath, const void *pData, unsigned nLength);
+	void RecoverFile (const char *pPath);
+	void RememberDisks (void);
+	const char *WebDrive (int nWhich, const char *pName);
 	void StartMacEthernet (void);
 	void LoadRootCertificates (void);
 	void NewNetSubSystem (boolean bWiFi);
@@ -282,6 +287,8 @@ private:
 	u64			m_nStatsTime;
 	unsigned		m_nSpeedPercent;
 	char			m_InfoLine[3][64];
+	char			m_SavedFloppy[2][macemu::Config::kPath];	// as macemu.cfg has them
+	char			m_SavedCdrom[macemu::Config::kPath];
 	char			m_NetLine[3][64];
 	char			m_ROMName[32];
 

@@ -137,6 +137,7 @@ struct Host : OsdHost {
     void saveAndReboot() override {}
     const char *networkLine(int n) override { return n == 0 ? "Web file manager: http://192.168.1.20/" : n == 1 ? "Open it from a browser on your network" : ""; }
     bool screenshot() override { return true; }
+    bool newFloppy(bool, char *, unsigned) override { return false; }
     const char *infoLine(int n) override {
         return n == 0 ? mac.modelName() : n == 1 ? "Shared disk: on   Web: http://192.168.1.20/" : "Built today";
     }
@@ -628,7 +629,7 @@ int main(int argc, char **argv)
             osd.close();
             osd.open();
             osd.key(Osd::NavPageUp);
-            for (int k = 0; k < 2 + pg; k++) osd.key(Osd::NavDown);
+            for (int k = 0; k < (pg ? 3 + pg : 2); k++) osd.key(Osd::NavDown);
             osd.key(Osd::NavSelect);
             std::fill(pixels.begin(), pixels.end(), 0);
             draw(true);

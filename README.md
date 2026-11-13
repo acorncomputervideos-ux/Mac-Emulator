@@ -109,7 +109,10 @@ Three models are emulated:
   sections, and the bottom line lists the keys (arrows move and change,
   Enter opens, Esc closes or goes back).
   - *Disks*: Floppy 1 / Floppy 2 insert or eject a floppy from the `disks`
-    folder. *Hard disks and CD-ROM* chooses the image for each SCSI ID 0–6
+    folder; the floppies and the CD in the drives are there again at the
+    next start-up. *New blank floppy* makes an empty, ready-to-use disk
+    (800K, or 1.44 MB on a Quadra) as `disks/Blank N.dsk` and puts it in a
+    drive. *Hard disks and CD-ROM* chooses the image for each SCSI ID 0–6
     (from the top of the card or the `disks` folder; *Restart the Mac* to
     use them) and the CD in the drive (at once).
   - *Machine, ROM and memory*: model (auto, Plus, II, Quadra), ROM file,
@@ -123,7 +126,8 @@ Three models are emulated:
     country, the layout for typing them, the web page's address; and for
     the Mac: its internet, the HTTPS helper and the shared disk, on or off.
   - *The Mac*: restart, interrupt switch, screenshot, save settings,
-    hibernate, turn off the Pi.
+    hibernate, turn off the Pi. Restart, hibernate and turn off ask for
+    Enter a second time.
 - **Power key** (Pi 400: Fn+F10; Pi 5: the power button; keyboards with a
   power key): the Mac II and Quadra ask "Shut Down?"; shutting the Mac down
   turns the Pi off on a Pi 400 or Pi 5, and the power key starts it again.
@@ -137,7 +141,9 @@ Three models are emulated:
 - **F10** saves a screenshot to `screenshots/macNNN.bmp` on the SD card.
 - **F9** presses the interrupt switch.
 - The ACT LED shows disk activity.
-- Settings live in a plain-text `macemu.cfg`.
+- Settings live in a plain-text `macemu.cfg`. It, the PRAM and the Wi-Fi
+  file are written to a new file that then replaces the old one, so
+  pulling the power while saving never leaves a damaged file.
 
 **Network: Wi-Fi or Ethernet**
 - Wi-Fi (Pi 3, 3+, 4, 400, 5, Zero W and Zero 2 W): open the F12 menu,
@@ -288,6 +294,9 @@ Three models are emulated:
 - *This Mac* shows what the Mac is doing (model and speed, the disks in
   each drive, the shared disk, the network), refreshed every few seconds,
   with a button to restart it.
+- *Insert* next to a floppy or CD image in the disks folder puts it in a
+  drive; *Eject* next to a drive in *This Mac* takes it out (a CD only once
+  the Mac has let go of it: drag it to the Trash first).
 - Upload (drag and drop, up to 4 GB, with a progress bar per file),
   download and delete disk images and ROMs, and see the card's free space.
 - *Update the emulator*: drop a new `MacEmulator-SD.zip` on the page. The

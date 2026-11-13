@@ -48,6 +48,12 @@ public:
 	// A transfer floppy to put in floppy drive 2 (a name in the disk folder), or 0.
 	const char *InsertRequested (void) const	{ return m_InsertName[0] ? m_InsertName : 0; }
 	void InsertDone (boolean bOK)		{ m_bInsertOK = bOK; m_InsertName[0] = '\0'; }
+	// Insert or eject from the page: which is 0 or 1 (a floppy drive), -1
+	// (the first empty floppy drive) or 2 (the CD-ROM drive); the name is
+	// in the disk folder, "" to eject.  The reply is shown on the page.
+	boolean DriveRequested (int *pWhich, const char **ppName) const
+		{ *pWhich = m_nDriveWhich; *ppName = m_DriveName; return m_bDriveRequest; }
+	void DriveDone (const char *pReply);
 
 	// What is happening, for the menu: "" when idle.
 	const char *Activity (void) const	{ return m_Activity; }
@@ -57,7 +63,7 @@ private:
 	{
 		char Method[8];
 		char Path[192];		// decoded, without the leading '/'
-		char Query[64];
+		char Query[192];
 		u64 nContentLength;
 		boolean bHaveLength;
 	};
@@ -110,6 +116,11 @@ private:
 	volatile boolean m_bRebootRequest;
 	char m_InsertName[64];
 	volatile boolean m_bInsertOK;
+	volatile boolean m_bDriveRequest;
+	int m_nDriveWhich;
+	char m_DriveName[128];
+	char m_DriveReply[128];
+	void DriveRequest (CSocket *pSocket, const char *pQuery);
 	char m_Activity[64];
 
 	u8 *m_pBuffer;				// transfer buffer
