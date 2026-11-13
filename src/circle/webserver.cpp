@@ -78,16 +78,27 @@ static const char PageTail[] =
 "function $(i){return document.getElementById(i)}"
 "function esc(t){return t.replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}"
 "function add(fl,d,s,p){for(var i=0;i<fl.length;i++)q.push({f:fl[i],d:d,s:s,p:p});next()}"
+"function sleep(ms){return new Promise(function(z){setTimeout(z,ms)})}"
+// Files go in pieces of 256 KB, each its own short request with a few tries:
+// one long transfer can stall on the Pi's network.
+"async function put(u,b,pr){var P=262144,at=0,n=b.size,t='';"
+"do{var e=Math.min(at+P,n),k=0;"
+"for(;;){var c=new AbortController(),tm=setTimeout(function(){c.abort()},10000);"
+"try{var r=await fetch(u+'?at='+at+'&total='+n,{method:'PUT',body:b.slice(at,e),signal:c.signal});"
+"t=await r.text();clearTimeout(tm);"
+"if(r.status==409&&t.slice(0,5)=='have '){at=+t.slice(5);e=Math.min(at+P,n);continue}"
+"if(!r.ok)throw t||('error '+r.status);break}"
+"catch(x){clearTimeout(tm);if(typeof x=='string')throw x;"
+"if(++k>5)throw 'the connection to the Pi keeps failing. Check the Wi-Fi and try again.';await sleep(1000)}}"
+"at=e;if(pr)pr(at,n)}while(at<n);return t}"
 "function next(){if(busy)return;var j=q.shift();if(!j)return;"
-"busy=1;var f=j.f,x=new XMLHttpRequest(),p=$(j.p),st=$(j.s);p.hidden=false;p.value=0;"
+"busy=1;var f=j.f,p=$(j.p),st=$(j.s);p.hidden=false;p.value=0;p.max=1;"
 "st.textContent='Sending '+f.name+' ...';"
-"x.upload.onprogress=function(e){if(e.lengthComputable){p.max=e.total;p.value=e.loaded;"
-"st.textContent='Sending '+f.name+': '+Math.floor(e.loaded*100/e.total)+'%'}};"
-"x.onloadend=function(){busy=0;p.hidden=true;"
-"if(x.status==201||x.status==200){st.innerHTML='<span class=ok>&#10003;</span> '+esc(f.name)+': '+esc(x.responseText);"
-"if(!q.length)setTimeout(function(){location.reload()},1500)}"
-"else{st.textContent=f.name+': '+(x.responseText||'failed')}next()};"
-"x.open('PUT','/files/'+j.d+encodeURIComponent(f.name));x.send(f)}"
+"put('/files/'+j.d+encodeURIComponent(f.name),f,function(a,n){p.max=n||1;p.value=a;"
+"st.textContent='Sending '+f.name+': '+(n?Math.floor(a*100/n):100)+'%'})"
+".then(function(t){st.innerHTML='<span class=ok>&#10003;</span> '+esc(f.name)+': '+esc(t);"
+"if(!q.length)setTimeout(function(){location.reload()},1500)})"
+".catch(function(x){st.textContent=f.name+': '+x}).finally(function(){busy=0;p.hidden=true;next()})}"
 "function send(fl){if(SHARE&&!$('tfl').checked)add(fl,SHARE+'/','tst','tpr');else transfer(fl)}"
 "function stat(){if(busy||xfer||q.length)return;fetch('/status').then(function(r){return r.text()}).then(function(t){var h='';"
 "t.split('\\n').forEach(function(l){var c=l.split('\\t');if(c.length>1)h+='<tr><td class=k>'+esc(c[0])+'</td><td>'+esc(c[1])"
@@ -126,8 +137,8 @@ static const char PageTail[] =
 "if(!fl.some(function(f){return /^kernel.*\\.img$/.test(f.name)}))throw 'There is no emulator in this zip file.';"
 "p.hidden=false;p.max=fl.length;"
 "for(var i=0;i<fl.length;i++){var f=fl[i];p.value=i;st.textContent='Installing '+f.name+' ('+(i+1)+' of '+fl.length+')';"
-"var r=await fetch('/update/'+f.name.split('/').map(encodeURIComponent).join('/'),{method:'PUT',body:await inflate(f)});"
-"if(!r.ok)throw f.name+': '+await r.text()}"
+"try{await put('/update/'+f.name.split('/').map(encodeURIComponent).join('/'),new Blob([await inflate(f)]))}"
+"catch(x){throw f.name+': '+x}}"
 "p.value=fl.length;st.textContent='Installed. The Pi is restarting; this page will come back in a minute.';"
 "await fetch('/reboot',{method:'POST'});setTimeout(function(){location.reload()},30000)}"
 "catch(x){st.textContent='Update stopped: '+x}xfer--}"
@@ -135,8 +146,7 @@ static const char PageTail[] =
 "if(fl.length>64)throw 'Send at most 64 files at a time.';"
 "await fetch('/makefloppy?clear=1',{method:'POST'});"
 "for(var i=0;i<fl.length;i++){st.textContent='Sending '+fl[i].name+' ...';"
-"var r=await fetch('/files/transfer/'+encodeURIComponent(fl[i].name),{method:'PUT',body:fl[i]});"
-"if(!r.ok)throw fl[i].name+': '+await r.text()}"
+"try{await put('/files/transfer/'+encodeURIComponent(fl[i].name),fl[i])}catch(x){throw fl[i].name+': '+x}}"
 "st.textContent='Making the disk for the Mac ...';var r=await fetch('/makefloppy?insert=2',{method:'POST'});"
 "st.textContent=await r.text();if(r.ok)setTimeout(function(){location.reload()},2500)}"
 "catch(x){st.textContent='Stopped: '+(x instanceof TypeError?'the connection to the Pi was lost. Check the Wi-Fi and try again.':x)}xfer--}"
@@ -217,7 +227,7 @@ void CWebServer::Run (void)
 		ForeignIP.Format (&From);
 		CLogger::Get ()->Write (FromWeb, LogNotice, "Connection from %s", (const char *) From);
 
-		pConnection->SetOptionReceiveTimeout (20 * 1000000);
+		pConnection->SetOptionReceiveTimeout (10 * 1000000);	// (the page tries a piece again after 10 s)
 		pConnection->SetOptionSendTimeout (20 * 1000000);
 		Serve (pConnection);
 		delete pConnection;		// closes the connection
@@ -843,6 +853,16 @@ void CWebServer::SendFile (CSocket *pSocket, const char *pPath)
 	f_close (&File);
 }
 
+static u64 ParseNumber (const char *p)
+{
+	u64 n = 0;
+	while (*p >= '0' && *p <= '9' && n <= MaxFileSize)
+	{
+		n = n * 10 + (u64) (*p++ - '0');
+	}
+	return n;
+}
+
 void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *pPath, boolean bUpdate)
 {
 	if (!pRequest->bHaveLength || pRequest->nContentLength > MaxFileSize)
@@ -872,11 +892,55 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 	strCopy (TempPath, Path, sizeof TempPath);
 	strAppend (TempPath, ".part", sizeof TempPath);
 
-	FIL File;
-	if (f_open (&File, TempPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	// In pieces (?at=OFFSET&total=SIZE): the page sends big files as many
+	// short requests, retrying any that fail, as one long transfer can stall
+	// on the Pi's network.  The first piece starts the temporary file, each
+	// goes where it says (one sent twice is harmless), the last finishes it.
+	char Value[24];
+	boolean bPieces = QueryValue (pRequest->Query, "at", Value, sizeof Value);
+	u64 nAt = bPieces ? ParseNumber (Value) : 0;
+	u64 nWhole = pRequest->nContentLength;
+	if (bPieces)
 	{
-		SendStatus (pSocket, 500, "Cannot create the file.");
-		return;
+		nWhole = QueryValue (pRequest->Query, "total", Value, sizeof Value) ? ParseNumber (Value) : 0;
+		if (nWhole > MaxFileSize || nAt + pRequest->nContentLength > nWhole)
+		{
+			SendStatus (pSocket, 400, "Bad request");
+			return;
+		}
+	}
+
+	FIL File;
+	if (nAt == 0)
+	{
+		if (f_open (&File, TempPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+		{
+			SendStatus (pSocket, 500, "Cannot create the file.");
+			return;
+		}
+	}
+	else
+	{
+		if (f_open (&File, TempPath, FA_WRITE) != FR_OK)
+		{
+			SendStatus (pSocket, 409, "have 0");		// start again
+			return;
+		}
+		u64 nHave = f_size (&File);
+		if (nHave < nAt)
+		{
+			f_close (&File);
+			char Have[32] = "have ";
+			appendUint (Have, (u32) nHave, sizeof Have);
+			SendStatus (pSocket, 409, Have);		// go on from there
+			return;
+		}
+		if (f_lseek (&File, nAt) != FR_OK || f_truncate (&File) != FR_OK)
+		{
+			f_close (&File);
+			SendStatus (pSocket, 500, "Cannot write the file.");
+			return;
+		}
 	}
 
 	const char *pName = pPath;
@@ -884,11 +948,13 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 	{
 		if (*p == '/') pName = p + 1;
 	}
-	CLogger::Get ()->Write (FromWeb, LogNotice, "Receiving %s (%u bytes)", pPath,
-				(unsigned) pRequest->nContentLength);
+	if (nAt == 0)
+	{
+		CLogger::Get ()->Write (FromWeb, LogNotice, "Receiving %s (%u bytes)", pPath, (unsigned) nWhole);
+	}
 
 	u64 nLeft = pRequest->nContentLength;
-	u64 nTotal = nLeft;
+	u64 nPiece = nLeft;
 	m_nBodyUnread = 0;				// read below
 	boolean bOK = TRUE;
 
@@ -927,7 +993,8 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 		}
 		nHave = 0;
 
-		unsigned nPercent = nTotal ? (unsigned) ((nTotal - nLeft) * 100 / nTotal) : 100;
+		u64 nDone = nAt + nPiece - nLeft;
+		unsigned nPercent = nWhole ? (unsigned) (nDone * 100 / nWhole) : 100;
 		if (nPercent != nLastPercent)
 		{
 			nLastPercent = nPercent;
@@ -942,9 +1009,18 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 	f_close (&File);
 	if (!bOK)
 	{
-		f_unlink (TempPath);
-		CLogger::Get ()->Write (FromWeb, LogWarning, "Transfer of %s broken off", pPath);
+		if (!bPieces)
+		{
+			f_unlink (TempPath);
+		}
+		CLogger::Get ()->Write (FromWeb, LogWarning, "Transfer of %s broken off at %u of %u bytes%s", pPath,
+					(unsigned) (nAt + nPiece - nLeft), (unsigned) nWhole, bPieces ? " (the page tries again)" : "");
 		return;				// the connection is gone: no answer
+	}
+	if (bPieces && nAt + nPiece < nWhole)
+	{
+		SendStatus (pSocket, 200, "piece");
+		return;
 	}
 
 	f_unlink (Path);

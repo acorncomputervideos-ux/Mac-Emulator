@@ -78,7 +78,7 @@ static std::string hostPath(const char *path)
 FRESULT f_open(FIL *fp, const char *path, int mode)
 {
     if ((mode & FA_CREATE_NEW) && access(hostPath(path).c_str(), F_OK) == 0) return FR_EXIST;
-    fp->f = fopen(hostPath(path).c_str(), (mode & FA_WRITE) ? "wb" : "rb");
+    fp->f = fopen(hostPath(path).c_str(), (mode & (FA_CREATE_ALWAYS | FA_CREATE_NEW)) ? "wb" : (mode & FA_WRITE) ? "r+b" : "rb");
     if (!fp->f) return FR_NO_FILE;
     struct stat st;
     fstat(fileno(fp->f), &st);
@@ -113,6 +113,14 @@ FRESULT f_findfirst(DIR *dp, FILINFO *fi, const char *path, const char *)
     dp->d = opendir(dp->path);
     if (!dp->d) return FR_NO_FILE;
     return f_findnext(dp, fi);
+}
+FRESULT f_truncate(FIL *fp)
+{
+    fflush(fp->f);
+    long at = ftell(fp->f);
+    if (ftruncate(fileno(fp->f), at) != 0) return FR_DISK_ERR;
+    fp->size = (unsigned long long)at;
+    return FR_OK;
 }
 FRESULT f_lseek(FIL *fp, unsigned long long ofs) { return fseek(fp->f, (long)ofs, SEEK_SET) == 0 ? FR_OK : FR_DISK_ERR; }
 FRESULT f_stat(const char *path, FILINFO *fi)
@@ -285,6 +293,12 @@ int main(int argc, char **argv)
         CHECK(readFile("shared/Caf\x82") == "data!");   // the card's code page 850
         std::string ad = readFile("shared/._Caf\x82");
         CHECK(ad.size() == 85 && ad.substr(82) == "RSC" && ad.substr(50, 8) == "TEXTttxt");
+        // The same in two pieces: unpacked when the last arrives.
+        r = request("PUT", "/files/shared/two.bin?at=0&total=" + std::to_string(bin.size()), bin.substr(0, 200));
+        CHECK(r.code == 200);
+        r = request("PUT", "/files/shared/two.bin?at=200&total=" + std::to_string(bin.size()), bin.substr(200));
+        CHECK(r.code == 201 && r.body.find("unpacked") == std::string::npos);   // Caf\x82 is there already: kept
+        CHECK(readFile("shared/two.bin") == bin);
         // Not MacBinary: kept as it is.
         r = request("PUT", "/files/shared/plain.bin", "just bytes");
         CHECK(r.code == 201 && readFile("shared/plain.bin") == "just bytes");
@@ -322,6 +336,32 @@ int main(int argc, char **argv)
     CHECK(r.code == 200 && driveWhich == 2 && driveName.empty());
     r = request("POST", "/drive?d=0&name=..%2Fhd0.img");
     CHECK(r.code == 400);
+
+    // Uploads in pieces (?at=&total=), as the page sends them: the file
+    // appears only with the last piece; a piece sent twice is harmless;
+    // after a gap the server says where to go on.
+    {
+        std::string big;
+        for (int i = 0; i < 700000; i++) big += (char)(i * 13 + (i >> 11));
+        const size_t P = 262144;
+        r = request("PUT", "/files/disks/Pieces.img?at=0&total=700000", big.substr(0, P));
+        CHECK(r.code == 200 && readFile("disks/Pieces.img") == "<missing>");
+        r = request("PUT", "/files/disks/Pieces.img?at=0&total=700000", big.substr(0, P));   // again
+        CHECK(r.code == 200);
+        r = request("PUT", "/files/disks/Pieces.img?at=524288&total=700000", big.substr(2 * P));   // a gap
+        CHECK(r.code == 409 && r.body.find("have 262144") != std::string::npos);
+        r = request("PUT", "/files/disks/Pieces.img?at=262144&total=700000", big.substr(P, P));
+        CHECK(r.code == 200);
+        r = request("PUT", "/files/disks/Pieces.img?at=262144&total=700000", big.substr(P, P));   // reply lost: again
+        CHECK(r.code == 200);
+        r = request("PUT", "/files/disks/Pieces.img?at=524288&total=700000", big.substr(2 * P));
+        CHECK(r.code == 201);
+        CHECK(readFile("disks/Pieces.img") == big && readFile("disks/Pieces.img.part") == "<missing>");
+        r = request("PUT", "/files/disks/Over.img?at=0&total=10", std::string(20, 'x'));
+        CHECK(r.code == 400);
+        r = request("PUT", "/files/disks/Empty.img?at=0&total=0", "");
+        CHECK(r.code == 201 && readFile("disks/Empty.img").empty());
+    }
 
     // Download.
     r = request("GET", "/files/mac.rom");

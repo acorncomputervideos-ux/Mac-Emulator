@@ -1,6 +1,7 @@
 // The shared folder through the real Mac OS File Manager (SHARE_TEST=1 with
 // --share DIR): once Mac OS is up, File Manager calls on the volume, and
-// what they did checked on both sides.
+// what they did checked on both sides.  DIR starts with a file "ReadMe.txt"
+// and an empty folder "Folder" in it (Mac OS 7.5 or later on the disk).
 #ifndef MACEMU_SHARETEST_H
 #define MACEMU_SHARETEST_H
 
@@ -8,6 +9,9 @@
 #include <cstring>
 #include <string>
 #include <unistd.h>
+#include <fcntl.h>
+#include <ctime>
+#include <sys/stat.h>
 #include "../core/sharedfs.h"
 
 namespace macemu {
@@ -77,6 +81,22 @@ struct ShareTest {
         pb(0);
         w32(mem + PB + 18, mem + NAME);
         check(call(0xA207) == 0 && getp(mem + NAME) == "Shared", "HGetVInfo names the volume");
+        {
+            // Files changing on the host move the modification date on, never the creation date.
+            u32 created = r32(mem + PB + 30), modified = r32(mem + PB + 34);
+            FILE *f = fopen((dir + "/new on host.txt").c_str(), "w");
+            if (f) { fputs("x", f); fclose(f); }
+            struct timespec later[2] = {{time(0) + 3600, 0}, {time(0) + 3600, 0}};
+            utimensat(AT_FDCWD, (dir + "/new on host.txt").c_str(), later, 0);
+            sf.forgetListings();
+            pb(0);
+            w32(mem + PB + 18, mem + NAME);
+            call(0xA207);
+            (void) modified;                            // (moves on at the next poll, for the Finder)
+            check(r32(mem + PB + 30) == created, "the volume's creation date stays");
+            remove((dir + "/new on host.txt").c_str());
+            sf.forgetListings();
+        }
 
         // A file: create, type, data
         pb("Test File");

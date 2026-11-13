@@ -139,8 +139,15 @@ bool endsNoCase(const char *s, const char *e)
 
 
 // Files the Mac does not see: dot files (AppleDouble "._", .DS_Store ...;
-// a name starting with '.' would also look like a driver to Mac OS).
-bool hidden(const char *name) { return name[0] == '.'; }
+// a name starting with '.' would also look like a driver to Mac OS), and
+// the web page's uploads still on their way ("NAME.part").
+bool hidden(const char *name)
+{
+    if (name[0] == '.') return true;
+    u32 n = 0;
+    while (name[n]) n++;
+    return n > 5 && name[n - 5] == '.' && name[n - 4] == 'p' && name[n - 3] == 'a' && name[n - 2] == 'r' && name[n - 1] == 't';
+}
 
 // Type and creator for files without Finder info.
 void guessType(const char *name, u32 &type, u32 &creator)
@@ -1057,7 +1064,9 @@ s16 SharedFolder::getVolInfo(u32 pb, bool hfs)
             if (pathOf(L->ids[i], path, sizeof path) && fs.stat(path, s2)) { if (s2.dir) dirs++; else files++; }
         }
     u64 freeBlocks = fs.freeBytes() / kAlBlk;
-    w32(pb + ioVCrDate, t);
+    // The creation date never changes while mounted: the Finder tells disks
+    // apart by it (a new one closed the Shared disk's windows).
+    w32(pb + ioVCrDate, vcbAddr ? r32(vcbAddr + vcbCrDate) : t);
     w32(pb + ioVLsMod, t);
     w16(pb + ioVAtrb, 0);
     w16(pb + ioVNmFls, (u16)files);

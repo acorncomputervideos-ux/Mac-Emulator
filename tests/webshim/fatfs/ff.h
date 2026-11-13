@@ -28,6 +28,7 @@ FRESULT f_findnext(DIR *dp, FILINFO *fi);
 FRESULT f_closedir(DIR *dp);
 FRESULT f_mkdir(const char *path);
 FRESULT f_lseek(FIL *fp, unsigned long long ofs);
+FRESULT f_truncate(FIL *fp);
 FRESULT f_stat(const char *path, FILINFO *fi);
 FRESULT f_getfree(const char *path, DWORD *clusters, FATFS **fs);
 #endif
