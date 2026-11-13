@@ -152,9 +152,64 @@ static void testFloppy()
     CHECK(!hfsMakeFloppy(m.d.data(), "X", &huge, 1, 0));
 }
 
+// A big volume built in pieces (the web page's transfer CD).
+static void testBigVolume()
+{
+    std::vector<std::vector<u8>> forks;
+    std::vector<HfsNewFile> list;
+    const u32 sizes[][2] = {{40u << 20, 300000}, {0, 5000}, {12345, 0}, {3u << 20, 1u << 20}};
+    for (int i = 0; i < 4; i++) {
+        HfsNewFile f = {};
+        snprintf(f.name, sizeof f.name, "Big file %d", 4 - i);
+        f.type = 0x4150504C; f.creator = 0x54455354 + (u32)i; f.flags = 0x2000;
+        f.dataLen = sizes[i][0]; f.rsrcLen = sizes[i][1];
+        list.push_back(f);
+        for (int k = 0; k < 2; k++) {
+            std::vector<u8> b(sizes[i][k]);
+            for (size_t j = 0; j < b.size(); j++) b[j] = (u8)(j * 7 + i * 13 + k * 101 + (j >> 12));
+            forks.push_back(b);
+        }
+    }
+    std::vector<u8> meta(256 * 1024);
+    std::vector<u32> pos(2 * list.size());
+    u32 metaBytes = 0, volBytes = 0;
+    CHECK(hfsPlanVolume(meta.data(), (u32)meta.size(), "Transfer 7", list.data(), (int)list.size(), 0xE0000000u,
+                        pos.data(), metaBytes, volBytes));
+    CHECK(volBytes % 2048 == 0 && metaBytes <= meta.size());
+    CHECK(volBytes >= (44u << 20) && volBytes < (46u << 20));          // just big enough
+    Mem m;
+    m.d.assign(volBytes, 0);
+    memcpy(m.d.data(), meta.data(), metaBytes);
+    for (size_t i = 0; i < forks.size(); i++) {
+        CHECK(pos[i] >= metaBytes && pos[i] + forks[i].size() <= volBytes - 1024);
+        if (!forks[i].empty()) memcpy(&m.d[pos[i]], forks[i].data(), forks[i].size());
+    }
+    memcpy(&m.d[volBytes - 1024], &meta[1024], 512);
+
+    HfsVolume v;
+    CHECK(v.open(&m));
+    CHECK(!strcmp(v.name(), "Transfer 7"));
+    HfsEntry e[8];
+    int n = v.list(2, e, 8);
+    CHECK(n == 4);
+    for (int i = 0; i < n; i++) {
+        int k = 4 - (e[i].name[9] - '0');               // "Big file 4" is list[0]
+        CHECK(e[i].dataLen == sizes[k][0] && e[i].rsrcLen == sizes[k][1] && e[i].creator == 0x54455354 + (u32)k);
+        std::vector<u8> d(sizes[k][0]), r(sizes[k][1]);
+        CHECK(v.readFork(e[i], false, 0, d.data(), (u32)d.size()) && d == forks[2 * k]);
+        CHECK(v.readFork(e[i], true, 0, r.data(), (u32)r.size()) && r == forks[2 * k + 1]);
+    }
+    if (const char *out = getenv("HFSTEST_BIG")) {
+        FILE *f = fopen(out, "wb");
+        fwrite(m.d.data(), 1, m.d.size(), f);
+        fclose(f);
+    }
+}
+
 int main(int argc, char **argv)
 {
     testFloppy();
+    testBigVolume();
     testImage(argc > 1 ? argv[1] : "build/hfstest-image.hda");
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

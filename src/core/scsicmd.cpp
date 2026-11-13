@@ -32,6 +32,32 @@ static bool cdCommand(ScsiDevice &d, const u8 *cdb, u8 *buf, ScsiResult &r)
     case 0x43: {                                         // READ TOC: one data track
         bool msf = (cdb[1] & 2) != 0;
         u32 alloc = be16(cdb + 7);
+        // The format: in the top bits of the control byte on SCSI-2 drives
+        // like Apple's (and in byte 2 on later ones).  1: sessions,
+        // 2: the full TOC (the Q sub-channel's points).
+        int format = (cdb[9] >> 6) ? (cdb[9] >> 6) : (cdb[2] & 0x0F);
+        if (format == 1) {                               // one session, starting at track 1, LBA 0
+            memFill(buf, 0, 12);
+            buf[1] = 10; buf[2] = 1; buf[3] = 1;
+            buf[5] = 0x14; buf[6] = 1;
+            if (msf) lbaToMsf(0, buf + 8);
+            r = reply(12, alloc);
+            return true;
+        }
+        if (format == 2) {                               // A0, A1, A2 and track 1
+            memFill(buf, 0, 48);
+            buf[1] = 46; buf[2] = 1; buf[3] = 1;
+            const u8 points[4] = {0xA0, 0xA1, 0xA2, 1};
+            for (int i = 0; i < 4; i++) {
+                u8 *d = buf + 4 + 11 * i;
+                d[0] = 1; d[1] = 0x14; d[3] = points[i];
+                if (points[i] == 0xA0 || points[i] == 0xA1) d[8] = 1;   // first / last track: 1
+                else if (points[i] == 0xA2) { u8 m[4]; lbaToMsf(blocks2k, m); d[8] = m[1]; d[9] = m[2]; d[10] = m[3]; }
+                else { u8 m[4]; lbaToMsf(0, m); d[8] = m[1]; d[9] = m[2]; d[10] = m[3]; }
+            }
+            r = reply(48, alloc);
+            return true;
+        }
         memFill(buf, 0, 20);
         buf[2] = 1; buf[3] = 1;                          // first and last track
         u8 *t = buf + 4;
@@ -103,7 +129,11 @@ ScsiResult scsiExecute(ScsiDevice &d, const u8 *cdb, u8 *buf, u8 senseKey, u8 se
         }
         ScsiResult r;
         if (op == 0x1B || op == 0x1E) { cdCommand(d, cdb, buf, r); return r; }
-        if (!d.present || !d.storage) return status(2, 2, 0x3A);   // no medium
+        // MODE SENSE works with or without a disc: the Apple CD-ROM driver
+        // asks for Apple's page at start-up, and only an Apple drive it
+        // recognises is watched for discs put in later.
+        bool modeSense = op == 0x1A || op == 0x5A;
+        if (!modeSense && (!d.present || !d.storage)) return status(2, 2, 0x3A);   // no medium
         if (cdCommand(d, cdb, buf, r)) return r;
     }
 
@@ -163,6 +193,12 @@ ScsiResult scsiExecute(ScsiDevice &d, const u8 *cdb, u8 *buf, u8 senseKey, u8 se
                 buf[n] = 0x0E; buf[n + 1] = 14; buf[n + 2] = 4;
                 buf[n + 8] = 1; buf[n + 9] = 0xFF; buf[n + 10] = 2; buf[n + 11] = 0xFF;
                 n += 16;
+            }
+            if (page == 0x30 || page == 0x3F) {          // Apple's page: the Apple CD-ROM driver
+                static const char apple[] = "APPLE COMPUTER, INC   ";   // only takes drives that have it
+                buf[n] = 0x30; buf[n + 1] = 22;
+                memCopy(buf + n + 2, apple, 22);
+                n += 24;
             }
         }
         if (ten) { buf[0] = (u8)((n - 2) >> 8); buf[1] = (u8)(n - 2); return reply(n, be16(cdb + 7)); }

@@ -420,6 +420,48 @@ int main(int argc, char **argv)
         r = request("POST", "/makefloppy");
         CHECK(r.code == 200 && r.body.find("Transfer 3.dsk") != std::string::npos);
         CHECK(readFile("disks/Transfer 3.dsk").size() == 1474560);
+
+        // Too much for any floppy: a CD of the size needed, both forks kept.
+        std::string mb(128, '\0');
+        const char *app = "Big App";
+        mb[1] = (char)strlen(app);
+        memcpy(&mb[2], app, strlen(app));
+        memcpy(&mb[65], "APPLTEST", 8);
+        mb[73] = 0x20;                                                 // has a bundle
+        const macemu::u32 dl = 3000000, rl = 2500000;
+        for (int i = 0; i < 4; i++) { mb[83 + i] = (char)(dl >> (24 - 8 * i)); mb[87 + i] = (char)(rl >> (24 - 8 * i)); }
+        std::string dataFork(dl, 'D'), rsrcFork(rl, 'R');
+        for (macemu::u32 i = 0; i < dl; i += 4096) dataFork[i] = (char)(i >> 12);
+        for (macemu::u32 i = 0; i < rl; i += 4096) rsrcFork[i] = (char)(i >> 13);
+        mb += dataFork;
+        mb.resize(128 + macemu::macBinaryPad(dl), '\0');
+        mb += rsrcFork;
+        r = request("PUT", "/files/transfer/Big App.bin", mb);
+        CHECK(r.code == 201);
+        r = request("PUT", "/files/transfer/movie.mov", std::string(2000000, 'M'));
+        CHECK(r.code == 201);
+        inserted.clear();
+        r = request("POST", "/makefloppy?insert=2");
+        CHECK(r.code == 200 && r.body.find("Transfer 4.toast") != std::string::npos && r.body.find("CD-ROM") != std::string::npos);
+        CHECK(inserted == "Transfer 4.toast");
+        std::string cd = readFile("disks/Transfer 4.toast");
+        CHECK(cd.size() % 2048 == 0 && cd.size() > 7500000 && cd.size() < 7700000);
+        st.d = &cd;
+        macemu::HfsVolume cv;
+        CHECK(cv.open(&st) && !strcmp(cv.name(), "Transfer 4"));
+        n = cv.list(2, e, 8);
+        CHECK(n == 2);
+        for (int i = 0; i < n; i++) {
+            if (!strcmp(e[i].name, "Big App")) {
+                CHECK(e[i].type == 0x4150504C && e[i].dataLen == dl && e[i].rsrcLen == rl);
+                std::string d2(dl, 0), r2(rl, 0);
+                CHECK(cv.readFork(e[i], false, 0, &d2[0], dl) && d2 == dataFork);
+                CHECK(cv.readFork(e[i], true, 0, &r2[0], rl) && r2 == rsrcFork);
+            } else {
+                CHECK(!strcmp(e[i].name, "movie.mov") && e[i].dataLen == 2000000 && e[i].rsrcLen == 0);
+            }
+        }
+        CHECK(readFile("transfer/movie.mov") == "<missing>");
     }
 
     // Restart the Mac.

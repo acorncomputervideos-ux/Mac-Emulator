@@ -262,9 +262,16 @@ Three models are emulated:
 - On the web page, *[open]* next to a disk image shows its folders and files;
   download any file as MacBinary (`.bin`: both forks, type and creator) or
   just its data fork.
-- *Send files to the Mac*: drop files on the page and they arrive on a new
-  800K floppy ("Transfer 1", ...) in floppy drive 2. MacBinary files keep
-  their icons and resource forks; `.txt` files get Mac line endings.
+- *Send files to the Mac*: drop files of any size on the page. Small ones
+  arrive on a new floppy ("Transfer 1", ...) in floppy drive 2; bigger ones
+  (up to 2 GB) on a new CD-ROM disk (`Transfer 1.toast`, ...) put straight
+  in the CD-ROM drive (`cdrom_id`, SCSI ID 3 by default; the Mac needs the
+  Apple CD-ROM extension, as 7.5 has). Drag the files to the hard disk.
+  MacBinary files (`.bin`) keep their icons, resource forks, type, creator
+  and Finder flags; `.txt` files get Mac line endings. Up to 64 files at a
+  time. Eject a transfer CD (drag it to the Trash) before sending the next.
+  The Finder may say it could not rebuild the CD's desktop file: click OK,
+  the files are all there (it says the same of CDs made by other tools).
 
 **Web file manager and software update**
 - Open `http://macemu.local/` in a browser (or the address shown on the

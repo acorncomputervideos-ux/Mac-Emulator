@@ -62,6 +62,7 @@ struct HfsNewFile {
     u32 type, creator;
     const u8 *data; u32 dataLen;
     const u8 *rsrc; u32 rsrcLen;
+    u16 flags;                  // Finder flags (bundle, custom icon ...)
 };
 
 // Build an 800K (819200-byte) HFS floppy image in `out`.  Returns false if
@@ -71,8 +72,21 @@ enum { kHfsFloppyBytes = 819200, kHfsFloppyMaxFiles = 64 };
 // The same for 819200 (800K) or 1474560 (1.44 MB) bytes.
 bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile *files, int count, u32 macNow);
 
+// A volume of any size (to 2 GB) for files too big to hold in memory,
+// written in pieces: `meta` (metaMax bytes) gets the start of the volume
+// (metaBytes); the caller writes each file's data fork at forkPos[2*i] and
+// resource fork at forkPos[2*i+1] (only the lengths in `files` are used),
+// a copy of the 512 bytes at offset 1024 at volumeBytes - 1024, and zeros
+// elsewhere, for volumeBytes in all (whole 2 KB sectors: fit for a CD).
+bool hfsPlanVolume(u8 *meta, u32 metaMax, const char *volumeName, const HfsNewFile *files, int count, u32 macNow,
+                   u32 *forkPos, u32 &metaBytes, u32 &volumeBytes);
+
 // MacBinary II.
 bool macBinaryParse(const u8 *file, u32 len, HfsNewFile &out);     // false: not MacBinary
+// From the 128-byte header alone (`len`: the whole file's size): name,
+// type, creator, Finder flags and the forks' lengths.  The data fork
+// starts at 128, the resource fork at 128 + macBinaryPad(dataLen).
+bool macBinaryHeaderParse(const u8 *hdr, u32 len, HfsNewFile &out);
 void macBinaryHeader(const HfsEntry &e, u8 *hdr128);
 inline u32 macBinaryPad(u32 n) { return (n + 127) & ~127u; }
 

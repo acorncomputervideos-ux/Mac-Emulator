@@ -48,8 +48,9 @@ static const char PageUpload[] =
 static const char PageTail[] =
 "<section><h2>Send files to the Mac</h2>"
 "<div id=tdrop>Drop files here, or <input type=file id=tpick multiple></div>"
-"<p class=n>They go on a new floppy (800K, or 1.44 MB on a Quadra if needed) in the disks folder, which goes straight into floppy drive 2. "
-"MacBinary files (.bin) keep their icons and resource forks. To get files out of a disk, click [open] next to it.</p>"
+"<p class=n>Any size. Small files go on a new floppy in floppy drive 2; bigger ones on a new CD-ROM disk (\"Transfer 1\", ...) in the CD-ROM drive. "
+"Either appears on the Mac's desktop: drag the files to your hard disk. MacBinary files (.bin) keep their icons and resource forks. "
+"To get files out of a disk, click [open] next to it.</p>"
 "<div id=tst></div></section>"
 "<section><h2>Mac</h2><button onclick=restart()>Restart the Mac</button>"
 " <span class=n>Saves the disks and starts the Mac again with the disks chosen in the menu.</span></section>"
@@ -108,14 +109,12 @@ static const char PageTail[] =
 "await fetch('/reboot',{method:'POST'});setTimeout(function(){location.reload()},30000)}"
 "catch(x){st.textContent='Update stopped: '+x}}"
 "async function transfer(fl){var st=$('tst');try{"
-"var t=0;for(var i=0;i<fl.length;i++)t+=fl[i].size;"
-"if(t>1400*1024)throw 'Those files come to '+Math.round(t/1024)+'K: a floppy holds about 1400K (800K on Macs without a SuperDrive). '+"
-"'Send fewer at a time, or copy a bigger file to the card as a disk image.';"
+"if(fl.length>64)throw 'Send at most 64 files at a time.';"
 "await fetch('/makefloppy?clear=1',{method:'POST'});"
 "for(var i=0;i<fl.length;i++){st.textContent='Sending '+fl[i].name+' ...';"
 "var r=await fetch('/files/transfer/'+encodeURIComponent(fl[i].name),{method:'PUT',body:fl[i]});"
 "if(!r.ok)throw fl[i].name+': '+await r.text()}"
-"st.textContent='Making the floppy ...';var r=await fetch('/makefloppy?insert=2',{method:'POST'});"
+"st.textContent='Making the disk for the Mac ...';var r=await fetch('/makefloppy?insert=2',{method:'POST'});"
 "st.textContent=await r.text();if(r.ok)setTimeout(function(){location.reload()},2500)}"
 "catch(x){st.textContent='Stopped: '+(x instanceof TypeError?'the connection to the Pi was lost. Check the Wi-Fi and try again.':x)}}"
 "var td=$('tdrop');$('tpick').onchange=function(){transfer(this.files)};"
@@ -1136,6 +1135,35 @@ void CWebServer::MakeFloppy (CSocket *pSocket, const char *pQuery)
 		return;
 	}
 
+	// Too much for a floppy (or too many files): a CD of any size instead.
+	{
+		u64 nTotal = 0;
+		unsigned nFiles = 0;
+		if (f_findfirst (&Directory, &Info, Folder, "*") == FR_OK)
+		{
+			while (Info.fname[0] != '\0')
+			{
+				if (!(Info.fattrib & AM_DIR))
+				{
+					nTotal += Info.fsize;
+					nFiles++;
+				}
+				if (f_findnext (&Directory, &Info) != FR_OK) break;
+			}
+			f_closedir (&Directory);
+		}
+		if (nFiles > macemu::kHfsFloppyMaxFiles)
+		{
+			SendStatus (pSocket, 413, "Send at most 64 files at a time.");
+			return;
+		}
+		if (nTotal > m_pHost->MaxFloppyBytes () - 40 * 1024)
+		{
+			MakeCd (pSocket, pQuery, Folder);
+			return;
+		}
+	}
+
 	// Read the files (they must fit on 800K together).
 	enum { MaxBytes = 1600 * 1024 };
 	static u8 *pFiles = 0, *pImage = 0;
@@ -1233,9 +1261,7 @@ void CWebServer::MakeFloppy (CSocket *pSocket, const char *pQuery)
 		if (   m_pHost->MaxFloppyBytes () < nBytes
 		    || !macemu::hfsMakeVolume (pImage, nBytes, Volume, List, nCount, m_pHost->MacTime ()))
 		{
-			SendStatus (pSocket, 413, m_pHost->MaxFloppyBytes () < nBytes
-				    ? "Those files do not fit on an 800K floppy. Send fewer at a time."
-				    : "Those files do not fit on a 1.44 MB floppy. Send fewer at a time.");
+			MakeCd (pSocket, pQuery, Folder);
 			return;
 		}
 	}
@@ -1270,6 +1296,245 @@ void CWebServer::MakeFloppy (CSocket *pSocket, const char *pQuery)
 		}
 		strAppend (Reply, m_InsertName[0] ? " (the Mac is busy: insert it from the F12 menu)."
 				  : m_bInsertOK ? " and put it in floppy drive 2." : " (could not insert it: see the F12 menu).",
+			   sizeof Reply);
+		m_InsertName[0] = '\0';
+	}
+	else
+	{
+		strAppend (Reply, ".", sizeof Reply);
+	}
+	SendStatus (pSocket, 200, Reply);
+}
+
+// The files in SD:/transfer/ as a CD-ROM image of any size ("Transfer
+// 1.toast", ... in the disk folder), put in the Mac's CD-ROM drive.  The
+// files are too big to hold in memory: the volume's metadata is built
+// first, then each fork copied from its file on the card.
+void CWebServer::MakeCd (CSocket *pSocket, const char *pQuery, const char *pFolder)
+{
+	struct TSource { char Path[200]; u32 nData, nRsrc; };	// where each fork starts in its file
+	static TSource Source[macemu::kHfsFloppyMaxFiles];
+	static macemu::HfsNewFile List[macemu::kHfsFloppyMaxFiles];
+	static u32 ForkPos[2 * macemu::kHfsFloppyMaxFiles];
+	int nCount = 0;
+
+	DIR Directory;
+	FILINFO Info;
+	if (f_findfirst (&Directory, &Info, pFolder, "*") == FR_OK)
+	{
+		while (Info.fname[0] != '\0' && nCount < macemu::kHfsFloppyMaxFiles)
+		{
+			if (!(Info.fattrib & AM_DIR) && !endsWithNoCase (Info.fname, ".part"))
+			{
+				if (Info.fsize > 0x7FFFF000u)
+				{
+					f_closedir (&Directory);
+					SendStatus (pSocket, 413, "A file for the Mac can be 2 GB at most.");
+					return;
+				}
+				TSource &S = Source[nCount];
+				macemu::HfsNewFile &F = List[nCount];
+				strCopy (S.Path, pFolder, sizeof S.Path);
+				strAppend (S.Path, "/", sizeof S.Path);
+				strAppend (S.Path, Info.fname, sizeof S.Path);
+				u8 Header[128];
+				UINT nRead = 0;
+				FIL File;
+				if (f_open (&File, S.Path, FA_READ) == FR_OK)
+				{
+					f_read (&File, Header, sizeof Header, &nRead);
+					f_close (&File);
+				}
+				if (nRead == sizeof Header && macemu::macBinaryHeaderParse (Header, (u32) Info.fsize, F))
+				{
+					S.nData = 128;
+					S.nRsrc = 128 + macemu::macBinaryPad (F.dataLen);
+				}
+				else
+				{
+					memset (&F, 0, sizeof F);
+					strCopy (F.name, Info.fname, sizeof F.name);
+					F.dataLen = (u32) Info.fsize;
+					F.type = 0x3F3F3F3F;		// ????
+					F.creator = 0x3F3F3F3F;
+					static const struct { const char *pExt; u32 nType, nCreator; } Types[] = {
+						{".txt", 0x54455854, 0x74747874}, {".text", 0x54455854, 0x74747874},	// TEXT ttxt
+						{".hqx", 0x54455854, 0x53495478}, {".sit", 0x53495444, 0x53495421},	// SITD SIT!
+						{".pict", 0x50494354, 0x74747874}, {".gif", 0x47494666, 0x3F3F3F3F},
+						{".jpg", 0x4A504547, 0x3F3F3F3F}, {".jpeg", 0x4A504547, 0x3F3F3F3F},
+					};
+					for (unsigned t = 0; t < sizeof Types / sizeof Types[0]; t++)
+					{
+						if (endsWithNoCase (Info.fname, Types[t].pExt))
+						{
+							F.type = Types[t].nType;
+							F.creator = Types[t].nCreator;
+						}
+					}
+					S.nData = 0;
+					S.nRsrc = 0;
+				}
+				nCount++;
+			}
+			if (f_findnext (&Directory, &Info) != FR_OK) break;
+		}
+		f_closedir (&Directory);
+	}
+	if (nCount == 0)
+	{
+		SendStatus (pSocket, 400, "No files were sent.");
+		return;
+	}
+
+	// A new name in the disk folder: Transfer 1.toast, ...
+	char Name[64], Path[200];
+	for (unsigned i = 1; ; i++)
+	{
+		strCopy (Name, "Transfer ", sizeof Name);
+		appendUint (Name, i, sizeof Name);
+		strCopy (Path, m_pHost->DiskDir (), sizeof Path);
+		strAppend (Path, "/", sizeof Path);
+		strAppend (Path, Name, sizeof Path);
+		char Full[220];
+		FullPath (Full, sizeof Full, Path);
+		strAppend (Full, ".dsk", sizeof Full);
+		boolean bTaken = f_stat (Full, &Info) == FR_OK;
+		Full[strLen (Full) - 4] = '\0';
+		strAppend (Full, ".toast", sizeof Full);
+		if (!bTaken && f_stat (Full, &Info) != FR_OK)
+		{
+			strCopy (Path, Full, sizeof Path);
+			break;
+		}
+	}
+	char Volume[28];
+	strCopy (Volume, Name, sizeof Volume);
+	strAppend (Name, ".toast", sizeof Name);
+
+	// The metadata: the first part of the volume.
+	enum { MetaMax = 256 * 1024 };
+	static u8 *pMeta = 0;
+	if (pMeta == 0) pMeta = new u8[MetaMax];
+	u32 nMetaBytes = 0, nVolumeBytes = 0;
+	if (!macemu::hfsPlanVolume (pMeta, MetaMax, Volume, List, nCount, m_pHost->MacTime (),
+				    ForkPos, nMetaBytes, nVolumeBytes))
+	{
+		SendStatus (pSocket, 413, "Those files are too big for one disk (2 GB at most). Send fewer at a time.");
+		return;
+	}
+
+	char Dir[160];
+	FullPath (Dir, sizeof Dir, m_pHost->DiskDir ());
+	f_mkdir (Dir);
+	FIL Out;
+	if (f_open (&Out, Path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	{
+		SendStatus (pSocket, 507, "Cannot make the disk (is the card full?).");
+		return;
+	}
+	CLogger::Get ()->Write (FromWeb, LogNotice, "Making %s (%u files, %u KB)", Name, nCount, nVolumeBytes / 1024);
+
+	// Write the volume front to back: metadata, the forks in order of
+	// their place (zeros between), zeros, the spare copy of the volume
+	// header, a last empty sector.
+	boolean bOK = TRUE;
+	u32 nAt = 0;
+	UINT nWritten;
+	bOK = f_write (&Out, pMeta, nMetaBytes, &nWritten) == FR_OK && nWritten == nMetaBytes;
+	nAt = nMetaBytes;
+	u8 *pBuf = m_pBuffer;
+	for (int nDone = 0; bOK && nDone < 2 * nCount; nDone++)
+	{
+		int nNext = -1;					// the lowest fork still to write
+		for (int i = 0; i < 2 * nCount; i++)
+		{
+			u32 nLen = i & 1 ? List[i / 2].rsrcLen : List[i / 2].dataLen;
+			if (nLen != 0 && ForkPos[i] >= nAt && (nNext < 0 || ForkPos[i] < ForkPos[nNext]))
+			{
+				nNext = i;
+			}
+		}
+		if (nNext < 0)
+		{
+			break;
+		}
+		memset (pBuf, 0, BufferSize);
+		while (bOK && nAt < ForkPos[nNext])
+		{
+			u32 n = ForkPos[nNext] - nAt > BufferSize ? BufferSize : ForkPos[nNext] - nAt;
+			bOK = f_write (&Out, pBuf, n, &nWritten) == FR_OK && nWritten == n;
+			nAt += n;
+		}
+		const TSource &S = Source[nNext / 2];
+		u32 nLen = nNext & 1 ? List[nNext / 2].rsrcLen : List[nNext / 2].dataLen;
+		FIL In;
+		if (!bOK || f_open (&In, S.Path, FA_READ) != FR_OK)
+		{
+			bOK = FALSE;
+			break;
+		}
+		bOK = f_lseek (&In, nNext & 1 ? S.nRsrc : S.nData) == FR_OK;
+		for (u32 nLeft = nLen; bOK && nLeft > 0; )
+		{
+			UINT nRead = 0;
+			u32 n = nLeft > BufferSize ? BufferSize : nLeft;
+			bOK = f_read (&In, pBuf, n, &nRead) == FR_OK && nRead == n
+			      && f_write (&Out, pBuf, n, &nWritten) == FR_OK && nWritten == n;
+			nLeft -= n;
+			nAt += n;
+			CScheduler::Get ()->Yield ();		// the screen, keyboard and network carry on
+			strCopy (m_Activity, "Making ", sizeof m_Activity);
+			strAppend (m_Activity, Name, sizeof m_Activity);
+			strAppend (m_Activity, " ", sizeof m_Activity);
+			appendUint (m_Activity, (unsigned) ((u64) nAt * 100 / nVolumeBytes), sizeof m_Activity);
+			strAppend (m_Activity, "%", sizeof m_Activity);
+		}
+		f_close (&In);
+	}
+	memset (pBuf, 0, BufferSize);
+	while (bOK && nAt < nVolumeBytes - 1024)
+	{
+		u32 n = nVolumeBytes - 1024 - nAt > BufferSize ? BufferSize : nVolumeBytes - 1024 - nAt;
+		bOK = f_write (&Out, pBuf, n, &nWritten) == FR_OK && nWritten == n;
+		nAt += n;
+	}
+	if (bOK)
+	{
+		memcpy (pBuf, pMeta + 1024, 512);
+		memset (pBuf + 512, 0, 512);
+		bOK = f_write (&Out, pBuf, 1024, &nWritten) == FR_OK && nWritten == 1024;
+	}
+	bOK = f_close (&Out) == FR_OK && bOK;
+	m_Activity[0] = '\0';
+	if (!bOK)
+	{
+		f_unlink (Path);
+		SendStatus (pSocket, 507, "Cannot write the disk (is the card full?).");
+		return;
+	}
+	ClearTransfer ();
+
+	char Reply[200] = "Made ";
+	strAppend (Reply, Name, sizeof Reply);
+	strAppend (Reply, " (", sizeof Reply);
+	appendUint (Reply, (nVolumeBytes + 1023) / 1024 / 1024, sizeof Reply);
+	strAppend (Reply, " MB) in the ", sizeof Reply);
+	strAppend (Reply, m_pHost->DiskDir (), sizeof Reply);
+	strAppend (Reply, " folder", sizeof Reply);
+	char Value[16];
+	if (QueryValue (pQuery, "insert", Value, sizeof Value))
+	{
+		m_bInsertOK = FALSE;
+		strCopy (m_InsertName, Name, sizeof m_InsertName);
+		unsigned nStart = CTimer::Get ()->GetTicks ();
+		while (m_InsertName[0] && CTimer::Get ()->GetTicks () - nStart < 3 * HZ)
+		{
+			CScheduler::Get ()->MsSleep (20);
+		}
+		strAppend (Reply, m_InsertName[0] ? " (the Mac is busy: insert it from the F12 menu, Hard disks page)."
+				  : m_bInsertOK ? " and put it in the CD-ROM drive: it appears on the Mac's desktop."
+				  : " but could not put it in the CD-ROM drive: eject the CD on the Mac (drag it to the Trash), "
+				    "then pick it in the F12 menu.",
 			   sizeof Reply);
 		m_InsertName[0] = '\0';
 	}

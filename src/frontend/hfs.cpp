@@ -252,7 +252,7 @@ struct Rec {
     u32 dataLen;
 };
 
-const u32 kAlBlSt = 4, kXtBlocks = 4;
+const u32 kXtNodes = 4;                                 // the extents B-tree: 4 nodes (it stays empty)
 
 u32 keyBytes(const Rec &r) { return (u32)(1 + 6 + strLen(r.name) + 1) & ~1u; }   // even
 u32 recBytes(const Rec &r) { return keyBytes(r) + r.dataLen; }
@@ -282,12 +282,24 @@ bool hfsMakeFloppy(u8 *out, const char *volumeName, const HfsNewFile *files, int
     return hfsMakeVolume(out, kHfsFloppyBytes, volumeName, files, count, now);
 }
 
-bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile *files, int count, u32 now)
+// The volume of `sectors` 512-byte sectors with allocation blocks of
+// `blockSize` bytes.  `out` holds the first `outBytes` of it: the `whole`
+// volume (file data copied in), or just the start (`metaBytes`: the
+// metadata, the file data's place given in forkPos) for one written in
+// pieces.
+static bool hfsBuild(u8 *out, u32 outBytes, bool whole, u32 sectors, u32 blockSize, const char *volumeName,
+                     const HfsNewFile *files, int count, u32 now, u32 *forkPos, u32 *metaBytes)
 {
-    if (bytes != 819200 && bytes != 1474560) return false;
-    const u32 kSectors = bytes / 512, kAllocBlocks = kSectors - kAlBlSt - 2;
-    if (count < 0 || count > kHfsFloppyMaxFiles) return false;
-    memFill(out, 0, bytes);
+    const u32 kSectors = sectors, B = blockSize, kSecPerBlock = B / 512;
+    if (B < 512 || B % 512 || count < 0 || count > kHfsFloppyMaxFiles) return false;
+    const u32 bitmapSectors = ((kSectors - 5) / kSecPerBlock + 4095) / 4096;
+    u32 kAlBlSt = 3 + bitmapSectors;
+    if (B % 2048 == 0) kAlBlSt = (kAlBlSt + 3) & ~3u;   // a CD: blocks on whole 2 KB sectors
+    const u32 kAllocBlocks = (kSectors - kAlBlSt - 2) / kSecPerBlock;
+    if (kAllocBlocks > 65535) return false;
+    if (whole && outBytes < kSectors * 512) return false;
+    const u32 kXtBlocks = (kXtNodes * 512 + B - 1) / B;
+    memFill(out, 0, whole ? kSectors * 512 : outBytes);
 
     char vol[28];
     strCopy(vol, volumeName, sizeof vol);
@@ -385,8 +397,11 @@ bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile 
     int leaves = nodes - leafStart;
     u32 catNodesPlanned = (u32)(leaves * 2 + 8);        // room for the index nodes, and free nodes
     if (catNodesPlanned > 60) catNodesPlanned = 60;
-    u32 catBlocks = catNodesPlanned;
+    u32 catBlocks = (catNodesPlanned * 512 + B - 1) / B;
+    u32 catNodes = catBlocks * B / 512;                 // the whole file is nodes
     u32 next = kXtBlocks + catBlocks;                   // first allocation block for file data
+    if (metaBytes) *metaBytes = kAlBlSt * 512 + next * B;
+    if (!whole && kAlBlSt * 512 + next * B > outBytes) return false;
 
     // File records, now that the data's place is known.
     static Rec frec[kHfsFloppyMaxFiles];
@@ -402,19 +417,20 @@ bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile 
         p[0] = 2;
         putBe32(p + 4, f.type);
         putBe32(p + 8, f.creator);
+        putBe16(p + 12, f.flags);
         putBe32(p + 20, 16 + (u32)k);
-        u32 db = (f.dataLen + 511) / 512, rb = (f.rsrcLen + 511) / 512;
-        if (next + db + rb > kAllocBlocks) return false;
-        putBe32(p + 26, f.dataLen); putBe32(p + 30, db * 512);
-        putBe32(p + 36, f.rsrcLen); putBe32(p + 40, rb * 512);
+        u32 db = (f.dataLen + B - 1) / B, rb = (f.rsrcLen + B - 1) / B;
+        if (db > 65535 || rb > 65535 || next + db + rb > kAllocBlocks) return false;
+        putBe32(p + 26, f.dataLen); putBe32(p + 30, db * B);
+        putBe32(p + 36, f.rsrcLen); putBe32(p + 40, rb * B);
         putBe32(p + 44, now); putBe32(p + 48, now);
         if (db) { putBe16(p + 74, (u16)next); putBe16(p + 76, (u16)db); }
-        u8 *dst = out + kAlBlSt * 512 + next * 512;
-        if (f.dataLen) memCopy(dst, f.data, f.dataLen);
+        if (forkPos) forkPos[2 * fi] = kAlBlSt * 512 + next * B;
+        if (whole && f.dataLen) memCopy(out + kAlBlSt * 512 + next * B, f.data, f.dataLen);
         next += db;
         if (rb) { putBe16(p + 86, (u16)next); putBe16(p + 88, (u16)rb); }
-        dst = out + kAlBlSt * 512 + next * 512;
-        if (f.rsrcLen) memCopy(dst, f.rsrc, f.rsrcLen);
+        if (forkPos) forkPos[2 * fi + 1] = kAlBlSt * 512 + next * B;
+        if (whole && f.rsrcLen) memCopy(out + kAlBlSt * 512 + next * B, f.rsrc, f.rsrcLen);
         next += rb;
     }
 
@@ -488,8 +504,8 @@ bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile 
         putBe32(r + 14, (u32)(leafStart + leaves - 1));
         putBe16(r + 18, 512);
         putBe16(r + 20, 37);
-        putBe32(r + 22, catNodesPlanned);
-        putBe32(r + 26, catNodesPlanned - (u32)nodes);
+        putBe32(r + 22, catNodes);
+        putBe32(r + 26, catNodes - (u32)nodes);
         for (int i = 0; i < nodes; i++) setBit(h + 248, (u32)i);
         const u32 offs[4] = {14, 120, 248, 504};
         setOffsets(h, offs, 3);
@@ -502,14 +518,13 @@ bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile 
         xt[8] = 1;
         putBe16(r + 18, 512);
         putBe16(r + 20, 7);
-        putBe32(r + 22, kXtBlocks);
-        putBe32(r + 26, kXtBlocks - 1);
+        putBe32(r + 22, kXtBlocks * B / 512);
+        putBe32(r + 26, kXtBlocks * B / 512 - 1);
         setBit(xt + 248, 0);
         const u32 offs[4] = {14, 120, 248, 504};
         setOffsets(xt, offs, 3);
     }
-    for (u32 i = 0; i < catNodesPlanned; i++)
-        if ((int)i < nodes) memCopy(out + kAlBlSt * 512 + (kXtBlocks + i) * 512, cat[i], 512);
+    for (int i = 0; i < nodes; i++) memCopy(out + kAlBlSt * 512 + kXtBlocks * B + (u32)i * 512, cat[i], 512);
 
     // Volume bitmap and master directory block (and its copy near the end).
     for (u32 b = 0; b < next; b++) setBit(out + 3 * 512, b);
@@ -521,23 +536,51 @@ bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile 
     putBe16(m + 14, 3);                                 // bitmap at sector 3
     putBe16(m + 16, (u16)next);
     putBe16(m + 18, (u16)kAllocBlocks);
-    putBe32(m + 20, 512);
-    putBe32(m + 24, 2048);
+    putBe32(m + 20, B);
+    putBe32(m + 24, 4 * B);
     putBe16(m + 28, (u16)kAlBlSt);
     putBe32(m + 30, 16 + (u32)count);
     putBe16(m + 34, (u16)(kAllocBlocks - next));
     m[36] = (u8)strLen(vol);
     memCopy(m + 37, vol, strLen(vol));
     putBe32(m + 70, 1);                                 // write count
-    putBe32(m + 74, kXtBlocks * 512);
-    putBe32(m + 78, catBlocks * 512);
+    putBe32(m + 74, kXtBlocks * B);
+    putBe32(m + 78, catBlocks * B);
     putBe32(m + 84, (u32)count);
-    putBe32(m + 130, kXtBlocks * 512);
+    putBe32(m + 130, kXtBlocks * B);
     putBe16(m + 134, 0); putBe16(m + 136, (u16)kXtBlocks);
-    putBe32(m + 146, catBlocks * 512);
+    putBe32(m + 146, catBlocks * B);
     putBe16(m + 150, (u16)kXtBlocks); putBe16(m + 152, (u16)catBlocks);
-    memCopy(out + (kSectors - 2) * 512, m, 512);
+    if (whole) memCopy(out + (kSectors - 2) * 512, m, 512);   // the spare copy (else the caller writes it)
     return true;
+}
+
+bool hfsMakeVolume(u8 *out, u32 bytes, const char *volumeName, const HfsNewFile *files, int count, u32 now)
+{
+    if (bytes != 819200 && bytes != 1474560) return false;
+    return hfsBuild(out, bytes, true, bytes / 512, 512, volumeName, files, count, now, 0, 0);
+}
+
+bool hfsPlanVolume(u8 *meta, u32 metaMax, const char *volumeName, const HfsNewFile *files, int count, u32 now,
+                   u32 *forkPos, u32 &metaBytes, u32 &volumeBytes)
+{
+    // The smallest allocation block (a multiple of 2048, as on real CDs) that keeps the
+    // block count within HFS's 65535; the volume just big enough, in
+    // whole 2 KB CD sectors.
+    for (u32 B = 2048; B <= 64 * 1024 * 1024; B += 2048) {   // whole CD sectors, as on real CDs
+        u64 blocks = (kXtNodes * 512 + B - 1) / B + (60 * 512 + B - 1) / B;
+        for (int i = 0; i < count; i++) blocks += (files[i].dataLen + (u64)B - 1) / B + (files[i].rsrcLen + (u64)B - 1) / B;
+        if (blocks > 65000) continue;
+        u64 dataSectors = blocks * (B / 512);
+        u64 sectors = ((3 + (blocks + 4095) / 4096 + 3) & ~3ull) + dataSectors + 2;
+        sectors = (sectors + 3) & ~3ull;                // a whole number of 2048-byte sectors
+        if (sectors * 512 > 0x7FFFF800ull) return false;   // 2 GB: HFS's limit
+        volumeBytes = (u32)(sectors * 512);
+        if (!hfsBuild(meta, metaMax, false, (u32)sectors, B, volumeName, files, count, now, forkPos, &metaBytes)) return false;
+        meta[1024 + 10] |= 0x80;                        // locked: a CD (the Finder then keeps its
+        return true;                                    // desktop database elsewhere)
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------- MacBinary
@@ -554,10 +597,18 @@ static u16 crc16(const u8 *p, u32 n)
 
 bool macBinaryParse(const u8 *f, u32 len, HfsNewFile &out)
 {
+    if (!macBinaryHeaderParse(f, len, out)) return false;
+    if (out.dataLen > 0x7FFFFF || out.rsrcLen > 0x7FFFFF) return false;
+    out.data = f + 128;
+    out.rsrc = f + 128 + macBinaryPad(out.dataLen);
+    return true;
+}
+
+bool macBinaryHeaderParse(const u8 *f, u32 len, HfsNewFile &out)
+{
     if (len < 128 || f[0] != 0 || f[74] != 0 || f[82] != 0 || f[1] < 1 || f[1] > 63) return false;
     u32 dl = rd32(f + 83), rl = rd32(f + 87);
-    if (dl > 0x7FFFFF || rl > 0x7FFFFF) return false;
-    if (128 + macBinaryPad(dl) + rl > len) return false;
+    if (dl > 0x7FFFFFFF || rl > 0x7FFFFFFF || 128 + (u64)macBinaryPad(dl) + rl > len) return false;
     bool crcOk = rd16(f + 124) == crc16(f, 124);
     if (!crcOk && f[122] != 0 && f[122] != 129 && f[122] != 130) return false;   // MacBinary I has no CRC
     memFill(&out, 0, sizeof out);
@@ -566,9 +617,10 @@ bool macBinaryParse(const u8 *f, u32 len, HfsNewFile &out)
     out.name[nl] = 0;
     out.type = rd32(f + 65);
     out.creator = rd32(f + 69);
-    out.data = f + 128;
+    // Finder flags (high byte, and MacBinary II's low byte), less the ones
+    // that only meant something on the old disk: on the desktop, inited.
+    out.flags = (u16)(((f[73] << 8) | (crcOk ? f[101] : 0)) & ~0x0101);
     out.dataLen = dl;
-    out.rsrc = f + 128 + macBinaryPad(dl);
     out.rsrcLen = rl;
     return true;
 }

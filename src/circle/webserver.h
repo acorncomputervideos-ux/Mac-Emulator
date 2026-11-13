@@ -69,6 +69,7 @@ private:
 	void SendHfsFolder (CSocket *pSocket, const char *pImage, const char *pQuery);
 	void SendHfsFile (CSocket *pSocket, const char *pImage, const char *pQuery);
 	void MakeFloppy (CSocket *pSocket, const char *pQuery);
+	void MakeCd (CSocket *pSocket, const char *pQuery, const char *pFolder);
 	void ClearTransfer (void);
 	static boolean QueryValue (const char *pQuery, const char *pKey, char *pOut, unsigned nMax);
 	static boolean LooksLikeDisk (const char *pName, u64 nSize);

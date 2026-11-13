@@ -366,9 +366,13 @@ int main(int argc, char **argv)
         if (s->load(hd[id])) mac.attachDisk(id, s);
         else fprintf(stderr, "cannot read hard disk image %s\n", hd[id].c_str());
     }
+    // CD_LATE=frame: put the CD in at that frame, as the web page's transfer
+    // CDs are, rather than at power-on (the drive is empty until then).
+    int cdLate = getenv("CD_LATE") ? atoi(getenv("CD_LATE")) : -1;
+    FileStorage *cdDisc = 0;
     if (!cd.empty()) {                                  // CD-ROM drive at SCSI ID 3
-        FileStorage *s = new FileStorage;
-        if (s->load(cd)) { s->ro = true; mac.insertCdrom(3, s); }
+        cdDisc = new FileStorage;
+        if (cdDisc->load(cd)) { cdDisc->ro = true; mac.insertCdrom(3, cdLate >= 0 ? 0 : cdDisc); }
         else fprintf(stderr, "cannot read CD image %s\n", cd.c_str());
     }
 
@@ -421,6 +425,7 @@ int main(int argc, char **argv)
     for (int f = 0; f < frames; f++) {
         if (f == (getenv("HOLD_FROM") ? atoi(getenv("HOLD_FROM")) : 1)) for (int k : heldKeys) mac.keyEvent(k, true);
         if (f == holdFrames) for (int k : heldKeys) mac.keyEvent(k, false);
+        if (f == cdLate && cdDisc) mac.insertCdrom(3, cdDisc);
         if (f == lateFrame && !host.insertDisk(0, lateImage.c_str()))
             fprintf(stderr, "cannot insert %s\n", lateImage.c_str());
         mac.runFrame();

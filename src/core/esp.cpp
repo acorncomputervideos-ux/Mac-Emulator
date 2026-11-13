@@ -1,3 +1,6 @@
+#ifdef ESP_TRACE
+#include <cstdio>                                       // -DESP_TRACE: the CD-ROM drive's commands
+#endif
 #include "esp.h"
 
 namespace macemu {
@@ -113,6 +116,9 @@ bool Esp::loadBlock()
 void Esp::execute()
 {
     ScsiResult r = scsiExecute(dev[target], cdb, buf, senseKey, senseCode);
+#ifdef ESP_TRACE
+    if (target == 3) fprintf(stderr, "cd cmd %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X -> act %d st %d key %d asc %02X len %u\n", cdb[0], cdb[1], cdb[2], cdb[3], cdb[4], cdb[5], cdb[6], cdb[7], cdb[8], cdb[9], (int)r.action, r.status, r.key, r.asc, (unsigned)r.len);
+#endif
     switch (r.action) {
     case ScsiStatus:
         finish(r.status, r.key, r.asc);

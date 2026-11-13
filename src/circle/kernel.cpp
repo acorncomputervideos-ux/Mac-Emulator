@@ -1659,10 +1659,29 @@ void CKernel::UpdateNetwork (void)
 			m_pWebServer->RestartDone ();
 		}
 
-		if (const char *pFloppy = m_pWebServer->InsertRequested ())
+		if (const char *pName = m_pWebServer->InsertRequested ())
 		{
-			// A transfer floppy made on the web page: into drive 2.
-			m_pWebServer->InsertDone (insertDisk (1, pFloppy));
+			// A transfer disk made on the web page: a floppy into drive
+			// 2, a CD into the CD-ROM drive (not while the Mac is using
+			// the one in it: it would lose it without warning).
+			if (endsWithNoCase (pName, ".toast"))
+			{
+				boolean bOK = FALSE;
+				if (   m_Config.cdromId >= 0
+				    && !(m_pCdrom != 0 && m_pMachine->scsiDevice (m_Config.cdromId).locked))
+				{
+					char Path[160];
+					strCopy (Path, m_Config.diskDir, sizeof Path);
+					strAppend (Path, "/", sizeof Path);
+					strAppend (Path, pName, sizeof Path);
+					bOK = insertCd (Path);
+				}
+				m_pWebServer->InsertDone (bOK);
+			}
+			else
+			{
+				m_pWebServer->InsertDone (insertDisk (1, pName));
+			}
 		}
 
 		if (m_pWebServer->RebootRequested ())
@@ -1804,6 +1823,11 @@ void CKernel::WaitUntil (hostu64 nUntil)
 
 boolean CKernel::FileInUse (const char *pPath)
 {
+	if (m_pCdrom != 0 && strEqNoCase (m_Config.cdrom, pPath))
+	{
+		return TRUE;
+	}
+
 	for (unsigned id = 0; id < Scsi::kTargets; id++)
 	{
 		if (m_pHardDisk[id] != 0 && strEqNoCase (m_HardDiskPath[id], pPath))
