@@ -120,7 +120,10 @@ private:
 	boolean LoadConfig (void);
 	boolean LoadROM (void);
 	boolean SetupDisplay (int nMacWidth, int nMacHeight);
-	void SetupSound (void);
+	void SetupSound (void);			// the output macemu.cfg asks for (again)
+	boolean StartSound (void);
+	void StopSound (void);
+	boolean WantUSBSound (void) const;
 	void UpdateFirmwareConfig (void);
 	void AttachDisks (void);
 	void AttachHardDisks (void);
@@ -260,6 +263,10 @@ private:
 
 	// sound
 	unsigned		m_nSampleRate;
+	boolean			m_bUSBSound;		// m_pSound is a USB audio device
+	boolean			m_bUSBSoundFailed;	// the one plugged in did not start
+	char			m_SoundOutput[8];	// the setting m_pSound was made for
+	char			m_SoundName[24];	// for the status
 	unsigned		m_nSoundFraction;
 
 	// bookkeeping

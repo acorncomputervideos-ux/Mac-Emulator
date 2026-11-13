@@ -17,7 +17,7 @@ void Config::setDefaults()
     palette = 0;
     sound = 1;
     volume = 8;
-    strCopy(soundDevice, "hdmi", sizeof soundDevice);
+    strCopy(soundDevice, "auto", sizeof soundDevice);
     mouseSpeed = 4;
     strCopy(network, "auto", sizeof network);
     strCopy(wifiCountry, "GB", sizeof wifiCountry);
@@ -58,7 +58,8 @@ void Config::sanitize()
     if (!strEqNoCase(keyboard, "us")) strCopy(keyboard, "uk", sizeof keyboard);
     if (width < 0 || width > 4096) width = 0;
     if (height < 0 || height > 4096) height = 0;
-    if (!strEqNoCase(soundDevice, "pwm")) strCopy(soundDevice, "hdmi", sizeof soundDevice);
+    if (!strEqNoCase(soundDevice, "pwm") && !strEqNoCase(soundDevice, "hdmi") && !strEqNoCase(soundDevice, "usb"))
+        strCopy(soundDevice, "auto", sizeof soundDevice);
 }
 
 static int toInt(const char *s)

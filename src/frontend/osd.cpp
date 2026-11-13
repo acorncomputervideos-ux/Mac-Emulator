@@ -48,7 +48,7 @@ int Osd::items(Page p, int *out) const
     static const int disks[] = {ItHeadScsi, ItHd0, ItHd0 + 1, ItHd0 + 2, ItHd0 + 3, ItHd0 + 4, ItHd0 + 5, ItHd6,
                                 ItHeadCd, ItCdrom, ItDisksBack};
     static const int machine[] = {ItModel, ItRom, ItRam, ItVideo, ItMonitor, ItScaling, ItApply, ItMachineBack};
-    static const int prefs[] = {ItHeadEmulation, ItSpeed, ItJit, ItHeadDisplay, ItPalette, ItSound, ItVolume,
+    static const int prefs[] = {ItHeadEmulation, ItSpeed, ItJit, ItHeadDisplay, ItPalette, ItSound, ItVolume, ItSoundOut,
                                 ItHeadInput, ItMouse, ItAlt, ItPrefsBack};
     static const int net[] = {ItHeadConnection, ItNetMode, ItHeadWifi, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry,
                               ItKeyboard, ItHeadSharing, ItMacInternet, ItHttps, ItShared, ItNetApply, ItNetworkBack};
@@ -107,6 +107,13 @@ void Osd::adjust(int item, int dir)
         break;
     }
     case ItJit: cfg.jit = !cfg.jit; break;
+    case ItSoundOut: {
+        static const char *outs[] = {"auto", "usb", "hdmi", "pwm"};
+        int i = 0;
+        while (i < 3 && !strEqNoCase(outs[i], cfg.soundDevice)) i++;
+        strCopy(cfg.soundDevice, outs[cycle(i, dir, 0, 3)], sizeof cfg.soundDevice);
+        break;
+    }
     case ItNewFloppy: newHighDensity = !newHighDensity; return;
     case ItPalette: cfg.palette = cycle(cfg.palette, dir, 0, kPaletteCount - 1); break;
     case ItSound: cfg.sound = !cfg.sound; break;
@@ -495,6 +502,12 @@ void Osd::label(int item, char *out, u32 max)
     case ItPalette: field("B&W colours", paletteName(cfg.palette)); break;
     case ItSound: field("Sound", cfg.sound ? "On" : "Off"); break;
     case ItVolume: appendUint(v, (u32)cfg.volume, sizeof v); field("Volume", v); break;
+    case ItSoundOut: {
+        const char *o = strEqNoCase(cfg.soundDevice, "usb") ? "USB only" : strEqNoCase(cfg.soundDevice, "hdmi") ? "HDMI"
+                      : strEqNoCase(cfg.soundDevice, "pwm") ? "Headphone jack" : "Automatic (USB, HDMI)";
+        field("Sound output", o);
+        break;
+    }
     case ItMouse: appendUint(v, (u32)cfg.mouseSpeed, sizeof v); field("Mouse speed", v); break;
     case ItAlt: field("Alt key", cfg.altIsOption ? "Option (Win = Cmd)" : "Command (Win = Opt)"); break;
     case ItDisksBack: case ItMachineBack: case ItPrefsBack: case ItNetworkBack:

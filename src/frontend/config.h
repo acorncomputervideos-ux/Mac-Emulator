@@ -27,7 +27,7 @@ struct Config {
     int palette;
     int sound;                  // 0 = off
     int volume;                 // 0..10
-    char soundDevice[8];        // "hdmi" or "pwm"
+    char soundDevice[8];        // "auto" (USB when plugged in, else HDMI), "hdmi", "pwm" (the jack) or "usb"
     int mouseSpeed;             // 1..8, 4 = 1:1
     int altIsOption;            // 0: Alt=Command, Win=Option; 1: swapped
     int floppyReadOnly;

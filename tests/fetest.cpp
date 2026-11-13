@@ -49,6 +49,15 @@ static void testConfig()
     CHECK(c.speed == 0 && c.scale == 2 && c.palette == 3);
     CHECK(c.volume == 10 && c.mouseSpeed == 1);
     CHECK(strEqNoCase(c.soundDevice, "pwm"));
+    {
+        Config d;
+        d.setDefaults();
+        CHECK(strEq(d.soundDevice, "auto"));
+        d.parse("sound_device=usb\n", 17);
+        CHECK(strEq(d.soundDevice, "usb"));
+        d.parse("sound_device=nonsense\n", 22);
+        CHECK(strEq(d.soundDevice, "auto"));
+    }
 
     char buf[2048];
     u32 n = c.serialize(buf, sizeof buf);
@@ -334,6 +343,13 @@ static void testOsd()
     CHECK(cfg.volume == 10);
     for (int i = 0; i < 20; i++) osd.key(Osd::NavLeft);
     CHECK(cfg.volume == 0);
+    CHECK(strEq(cfg.soundDevice, "auto"));                                   // sound output
+    osd.key(Osd::NavDown); osd.key(Osd::NavRight);
+    CHECK(strEq(cfg.soundDevice, "usb"));
+    osd.key(Osd::NavRight); osd.key(Osd::NavRight);
+    CHECK(strEq(cfg.soundDevice, "pwm"));
+    osd.key(Osd::NavRight);
+    CHECK(strEq(cfg.soundDevice, "auto"));
     osd.key(Osd::NavPageDown); osd.key(Osd::NavSelect);                      // back
     osd.key(Osd::NavBack);
     CHECK(!osd.active());

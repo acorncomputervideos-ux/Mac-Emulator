@@ -8,6 +8,9 @@
 #include <circle/synchronize.h>
 #include <circle/sound/pwmsoundbasedevice.h>
 #include <circle/sound/hdmisoundbasedevice.h>
+#if RASPPI >= 4
+#include <circle/sound/usbsoundbasedevice.h>
+#endif
 #include <circle/bcmpropertytags.h>
 #include <circle/net/ntpdaemon.h>
 #include <circle/startup.h>
@@ -80,6 +83,8 @@ CKernel::CKernel (void)
 	m_bCapsLock (FALSE),
 	m_bTurbo (FALSE),
 	m_nSampleRate (48000),
+	m_bUSBSound (FALSE),
+	m_bUSBSoundFailed (FALSE),
 	m_nSoundFraction (0),
 	m_nFrames (0),
 	m_nLastActivity (0),
@@ -143,6 +148,7 @@ CKernel::CKernel (void)
 	}
 	m_InfoLine[0][0] = m_InfoLine[1][0] = '\0';
 	m_SavedFloppy[0][0] = m_SavedFloppy[1][0] = m_SavedCdrom[0] = '\0';
+	m_SoundOutput[0] = m_SoundName[0] = '\0';
 	m_nMacOffTicks = 0;
 	strCopy (m_InfoLine[2], "Built " __DATE__, sizeof m_InfoLine[2]);	// shows which version runs
 	strCopy (m_NetLine[0], "Network: off (Connection is set to Off)", sizeof m_NetLine[0]);
@@ -376,31 +382,102 @@ void CKernel::ApplyPalette (void)
 	m_bForceRedraw = TRUE;
 }
 
+// The sound output: "auto" is a USB audio device when one is plugged in
+// (Pi 4, 400, 5: speakers, a headset, a sound stick), otherwise HDMI;
+// "hdmi", "pwm" (the headphone jack) and "usb" choose one.
+boolean CKernel::WantUSBSound (void) const
+{
+#if RASPPI >= 4
+	return strEqNoCase (m_Config.soundDevice, "auto") || strEqNoCase (m_Config.soundDevice, "usb");
+#else
+	return FALSE;
+#endif
+}
+
 void CKernel::SetupSound (void)
 {
-	if (strEqNoCase (m_Config.soundDevice, "pwm"))
+	StopSound ();
+	strCopy (m_SoundOutput, m_Config.soundDevice, sizeof m_SoundOutput);
+
+#if RASPPI >= 4
+	if (WantUSBSound () && m_DeviceNameService.GetDevice ("uaudio1-1", FALSE) != 0)
+	{
+		static const unsigned Rates[] = {48000, 44100};
+		for (unsigned nRate : Rates)
+		{
+			m_nSampleRate = nRate;
+			m_pSound = new CUSBSoundBaseDevice (nRate);
+			if (StartSound ())
+			{
+				m_bUSBSound = TRUE;
+				m_bUSBSoundFailed = FALSE;
+				strCopy (m_SoundName, "USB", sizeof m_SoundName);
+				m_Logger.Write (FromKernel, LogNotice, "Sound: USB audio device, %u Hz", nRate);
+				return;
+			}
+		}
+		m_bUSBSoundFailed = TRUE;
+		m_Logger.Write (FromKernel, LogWarning, "Sound: the USB audio device does not start");
+	}
+	if (strEqNoCase (m_Config.soundDevice, "usb"))
+	{
+		strCopy (m_SoundName, "USB (none plugged in)", sizeof m_SoundName);
+		return;					// USB only: wait for one
+	}
+#endif
+
+	boolean bPWM = strEqNoCase (m_Config.soundDevice, "pwm");
+#if RASPPI >= 5
+	bPWM = TRUE;					// (no HDMI sound driver here)
+#endif
+	if (bPWM)
 	{
 		m_nSampleRate = 44100;
 		m_pSound = new CPWMSoundBaseDevice (&m_Interrupt, m_nSampleRate, 2048);
 	}
 	else
 	{
-#if RASPPI <= 4
 		m_nSampleRate = 48000;
 		m_pSound = new CHDMISoundBaseDevice (&m_Interrupt, m_nSampleRate, 384 * 10);
-#else
-		m_nSampleRate = 44100;
-		m_pSound = new CPWMSoundBaseDevice (&m_Interrupt, m_nSampleRate, 2048);
-#endif
 	}
-
-	if (   !m_pSound->AllocateQueue (100)
-	    || (m_pSound->SetWriteFormat (SoundFormatSigned16, 2), !m_pSound->Start ()))
+	if (StartSound ())
 	{
-		m_Logger.Write (FromKernel, LogWarning, "Sound device not available");
-		delete m_pSound;
-		m_pSound = 0;
+		strCopy (m_SoundName, bPWM ? "headphone jack" : "HDMI", sizeof m_SoundName);
 	}
+	else
+	{
+		strCopy (m_SoundName, "none", sizeof m_SoundName);
+		m_Logger.Write (FromKernel, LogWarning, "Sound device not available");
+	}
+}
+
+boolean CKernel::StartSound (void)
+{
+	if (   m_pSound->AllocateQueue (100)
+	    && (m_pSound->SetWriteFormat (SoundFormatSigned16, 2), m_pSound->Start ()))
+	{
+		return TRUE;
+	}
+	delete m_pSound;
+	m_pSound = 0;
+	return FALSE;
+}
+
+void CKernel::StopSound (void)
+{
+	if (m_pSound == 0)
+	{
+		return;
+	}
+	m_pSound->Cancel ();
+	for (unsigned i = 0; i < 50 && m_pSound->IsActive (); i++)
+	{
+		m_Timer.MsDelay (10);
+	}
+	delete m_pSound;
+	m_pSound = 0;
+	m_bUSBSound = FALSE;
+	m_SoundName[0] = '\0';
 }
 
 void CKernel::AttachDisks (void)
@@ -1805,6 +1882,9 @@ void CKernel::StatusText (char *pOut, unsigned nMax)
 		}
 		Line ("CD-ROM", V);
 	}
+	strCopy (V, !m_Config.sound ? "off" : m_SoundName[0] ? m_SoundName : "none", sizeof V);
+	Line ("Sound", V);
+
 	if (m_pShared != 0)
 	{
 		strCopy (V, m_pShared->status, sizeof V);
@@ -2690,9 +2770,31 @@ void CKernel::ShowEmergency (const char *pTitle)
 
 void CKernel::UpdateUSB (void)
 {
+	// A USB audio device unplugged: back to HDMI (or wait for another).
+	if (m_bUSBSound && m_pSound != 0 && !m_pSound->IsActive ())
+	{
+		m_Logger.Write (FromKernel, LogNotice, "Sound: the USB audio device was unplugged");
+		m_bUSBSoundFailed = FALSE;
+		if (m_Config.sound)
+		{
+			SetupSound ();
+		}
+		else
+		{
+			StopSound ();
+		}
+	}
+
 	if (!m_USBHCI.UpdatePlugAndPlay ())
 	{
 		return;
+	}
+
+	// One plugged in: use it at once.
+	if (   m_Config.sound && WantUSBSound () && !m_bUSBSound && !m_bUSBSoundFailed
+	    && m_DeviceNameService.GetDevice ("uaudio1-1", FALSE) != 0)
+	{
+		SetupSound ();
 	}
 
 	if (m_pKeyboard == 0)
@@ -3470,8 +3572,9 @@ void CKernel::settingsChanged (void)
 	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 	m_bForceRedraw = TRUE;
 
-	if (m_Config.sound && m_pSound == 0)
+	if (m_Config.sound && (m_pSound == 0 || !strEqNoCase (m_SoundOutput, m_Config.soundDevice)))
 	{
+		m_bUSBSoundFailed = FALSE;
 		SetupSound ();
 	}
 }

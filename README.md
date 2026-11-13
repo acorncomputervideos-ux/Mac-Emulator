@@ -102,7 +102,13 @@ Three models are emulated:
 - Six colour schemes: black & white, paper, green phosphor, amber, LCD and
   inverted.
 - Mac sound hardware (the 22 kHz sound buffer, volume levels and the
-  timer-driven square wave) played over HDMI or the 3.5 mm jack (PWM).
+  timer-driven square wave) played over HDMI, the 3.5 mm jack (PWM) or, on
+  a Pi 4, 400 or 5, a USB audio device (USB speakers, a headset or a USB
+  sound stick: the Pi 400 has no jack, and many monitors no HDMI sound).
+  *Sound output* on the menu (`sound_device=` in `macemu.cfg`): Automatic
+  uses a USB audio device whenever one is plugged in, otherwise HDMI;
+  plugging one in or out switches at once. Or HDMI, Headphone jack, or USB
+  only. The *This Mac* panel on the web page shows which is in use.
 - USB keyboard with the full Mac Plus layout, including keypad and arrows.
   Caps Lock latches like the real key.
 - USB mouse with adjustable speed.
