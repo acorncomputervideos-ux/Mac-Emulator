@@ -52,6 +52,7 @@ public:
     virtual u64 cycles() const = 0;
     virtual u32 diskActivity() const = 0;
     virtual bool poweredOff() const { return false; }  // the Mac shut itself down
+    virtual void clearPowerOff() {}                     // seen: report the next one again
     virtual u32 debugPC() const { return 0; }          // for logs
     virtual u16 debugTrap() const { return 0; }         // the last Mac OS call (A-trap), for logs
     // Built-in Ethernet: frames go to and from `link`.  False if this model

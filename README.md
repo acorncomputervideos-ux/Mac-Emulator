@@ -129,8 +129,11 @@ Three models are emulated:
     hibernate, turn off the Pi. Restart, hibernate and turn off ask for
     Enter a second time.
 - **Power key** (Pi 400: Fn+F10; Pi 5: the power button; keyboards with a
-  power key): the Mac II and Quadra ask "Shut Down?"; shutting the Mac down
-  turns the Pi off on a Pi 400 or Pi 5, and the power key starts it again.
+  power key): the Mac II and Quadra ask "Shut Down?". Shutting the Mac down
+  shows Mac OS's own "It is now safe to switch off your Macintosh." screen
+  (everything is saved by then); on a Pi 400 or Pi 5 the Pi turns off a few
+  seconds later and the power key starts it again, elsewhere its Restart
+  button starts the Mac again.
   Press it twice, or in the menu, to turn the Pi off at once (after saving).
   The menu also has *Turn off the Pi*. On a Pi 400 the power is cut through
   the keyboard controller (the firmware's GLOBAL_SHUTDOWN line, as Linux

@@ -102,6 +102,7 @@ public:
 	bool saveSettings (void) override;
 	bool screenshot (void) override;
 	void powerOff (void) override;
+	void TurnOff (boolean bShowMessage);		// powerOff (), or quietly (the Mac's own screen stays)
 	bool hibernate (void) override;
 	bool newFloppy (bool bHighDensity, char *pName, unsigned nMax) override;
 	const char *infoLine (int nLine) override	{ return m_InfoLine[nLine < 0 || nLine > 2 ? 0 : nLine]; }
@@ -287,6 +288,7 @@ private:
 	u64			m_nStatsTime;
 	unsigned		m_nSpeedPercent;
 	char			m_InfoLine[3][64];
+	unsigned		m_nMacOffTicks;		// when the Mac shut down (0: running)
 	char			m_SavedFloppy[2][macemu::Config::kPath];	// as macemu.cfg has them
 	char			m_SavedCdrom[macemu::Config::kPath];
 	char			m_NetLine[3][64];

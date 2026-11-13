@@ -143,6 +143,7 @@ CKernel::CKernel (void)
 	}
 	m_InfoLine[0][0] = m_InfoLine[1][0] = '\0';
 	m_SavedFloppy[0][0] = m_SavedFloppy[1][0] = m_SavedCdrom[0] = '\0';
+	m_nMacOffTicks = 0;
 	strCopy (m_InfoLine[2], "Built " __DATE__, sizeof m_InfoLine[2]);	// shows which version runs
 	strCopy (m_NetLine[0], "Network: off (Connection is set to Off)", sizeof m_NetLine[0]);
 	m_NetLine[1][0] = m_NetLine[2][0] = '\0';
@@ -919,40 +920,34 @@ TShutdownMode CKernel::Run (void)
 
 		if (m_pMachine->poweredOff ())
 		{
-			// Shut Down: with a power button (Pi 400, Pi 5), turn the Pi
-			// off like Raspberry Pi OS does.  Otherwise save everything
-			// and wait for a key to start again.
-			if (HasPowerButton ())
+			// Shut Down.  The Mac tried to turn its power off; it keeps
+			// running and, as a real one does when the power stays on,
+			// shows "It is now safe to switch off your Macintosh." with a
+			// Restart button.  Save everything now.  With a power button
+			// (Pi 400, Pi 5) the Pi then turns off, like Raspberry Pi OS,
+			// leaving that screen up until the power goes.
+			m_pMachine->clearPowerOff ();
+			if (m_nMacOffTicks == 0)
 			{
-				powerOff ();
+				m_Logger.Write (FromKernel, LogNotice, "The Mac shut down");
+				m_nMacOffTicks = m_Timer.GetTicks () | 1;
 			}
 			PauseEmu ();
+			for (unsigned d = 0; d < 2; d++)
+			{
+				if (m_pFloppy[d] != 0)
+				{
+					m_pFloppy[d]->flush ();
+				}
+			}
 			m_pMachine->flushDisks ();
 			SavePRAM ();
-			m_ActLED.Off ();
-			ShowMessage ("It is now safe to switch off your Macintosh.",
-				     "Press any key to start it again.");
-			Present ();
-			m_nKeyOut = m_nKeyIn;
-			while (m_nKeyOut == m_nKeyIn)
-			{
-				m_nLoops++;
-				UpdateUSB ();
-				UpdateNetwork ();
-				BootLog ();
-				if (m_bPowerKey)
-				{
-					powerOff ();
-				}
-				WaitUntil (CTimer::GetClockTicks64 () + 20000);
-			}
-			m_nKeyOut = m_nKeyIn;
-			ReleaseAllKeys ();
-			resetMachine ();
 			ResumeEmu ();
-			m_bHaveVideo = FALSE;
-			fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
-			nNextFrame = CTimer::GetClockTicks64 ();
+		}
+		if (   m_nMacOffTicks != 0 && HasPowerButton () && !m_pOsd->active ()
+		    && m_Timer.GetTicks () - m_nMacOffTicks > 4 * HZ)
+		{
+			TurnOff (FALSE);
 		}
 
 		hostu64 nNow = CTimer::GetClockTicks64 ();
@@ -2349,6 +2344,7 @@ void CKernel::HandlePowerKey (void)
 	unsigned nNow = m_Timer.GetTicks ();
 	if (   m_pOsd->active ()
 	    || m_pPlus != 0
+	    || m_nMacOffTicks != 0
 	    || (m_nMacPowerKeyTicks != 0 && nNow - m_nMacPowerKeyTicks < 5 * HZ))
 	{
 		powerOff ();
@@ -2360,6 +2356,11 @@ void CKernel::HandlePowerKey (void)
 }
 
 void CKernel::powerOff (void)
+{
+	TurnOff (TRUE);
+}
+
+void CKernel::TurnOff (boolean bShowMessage)
 {
 	m_Logger.Write (FromKernel, LogNotice, "Turning off");
 	PauseEmu ();					// for good
@@ -2375,8 +2376,11 @@ void CKernel::powerOff (void)
 	BootLog (TRUE);
 
 	m_pOsd->close ();
-	ShowMessage ("Turning off.", HasPowerButton () ? "Press the power key to start again."
-						       : "You can unplug the Pi now.");
+	if (bShowMessage)
+	{
+		ShowMessage ("Turning off.", HasPowerButton () ? "Press the power key to start again."
+							       : "You can unplug the Pi now.");
+	}
 	Present ();
 	m_ActLED.Off ();
 	m_Timer.MsDelay (1500);
@@ -3175,6 +3179,7 @@ void CKernel::ejectDisk (int nDrive)
 
 void CKernel::resetMachine (void)
 {
+	m_nMacOffTicks = 0;
 	PauseEmu ();
 	m_pMachine->flushDisks ();
 	SavePRAM ();

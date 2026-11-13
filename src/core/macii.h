@@ -72,6 +72,7 @@ public:
     void poke(u32 addr, u8 v) override;
 
     bool poweredOff() const override { return powerOff; }
+    void clearPowerOff() override { powerOff = false; }
     u32 debugPC() const override { return cpu.pc; }
     u16 debugTrap() const override { return cpu.lastTrap; }
     bool addressing32() const { return mode32; }

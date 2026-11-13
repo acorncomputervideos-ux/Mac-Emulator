@@ -68,6 +68,7 @@ public:
     u64 cycles() const override { return cpu.totalCycles; }
     u32 diskActivity() const override { return iwm.activityCounter + esp.activityCounter; }
     bool poweredOff() const override { return powerOff; }
+    void clearPowerOff() override { powerOff = false; }
     u32 debugPC() const override { return cpu.pc; }
     u16 debugTrap() const override { return cpu.lastTrap; }
     bool attachEthernet(EtherLink *l) override { sonic.attachLink(l); return true; }
