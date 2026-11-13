@@ -246,9 +246,14 @@ Three models are emulated:
   own connection (cable or Wi-Fi), the way QEMU's and VirtualBox's NAT
   networking do: web browsers, FTP (Fetch), email, Telnet, IRC, news.
 - The Mac needs TCP/IP software: MacTCP (System 7.1, 7.5) or Open
-  Transport (7.5.3 and later). Pick *Ethernet Built-In* and either
-  *Using DHCP Server* (Open Transport) / *Server* (MacTCP), or set it by
-  hand:
+  Transport (7.5.3 and later; Apple's *Network Software Selector* in Apple
+  Extras switches between the two, and only the chosen one's control
+  panels are listed). With MacTCP: click the **Ethernet** icon (not
+  LocalTalk), *More…*: *Server* (or *Manually* with the values below),
+  and under *Domain Name Server Information* the domain `.` with
+  10.0.2.3, *Default* ticked; then **restart the Mac** (MacTCP only uses
+  a new setting after a restart). With Open Transport: *Ethernet* and
+  *Using DHCP Server*. Or set it by hand:
 
   | | |
   |---|---|
@@ -268,8 +273,11 @@ Three models are emulated:
 - `mac_internet=off` in `macemu.cfg` turns the router off.
 - Checked by a test that plays the Mac's part through the router to real
   servers: ARP, DHCP, ping, UDP, DNS and a 200 KB TCP transfer with
-  acknowledgements and closing. Not yet tried with MacTCP or Open
-  Transport themselves, nor on a real Pi.
+  acknowledgements and closing. And with Mac OS 7.5.3 itself
+  (`ENET_TEST=1` in the host runner): the Slot Manager finds the built-in
+  Ethernet, its `.ENET` driver opens and sends, and MacTCP 2.0.6 set to
+  Ethernet and *Server* gets 10.0.2.15 from the router after a restart.
+  Not yet a page loaded in a browser through MacTCP, nor on a real Pi.
 
 **1.44 MB floppies (Quadra)**
 - The Quadra's drives are SuperDrives (FDHD): 1.44 MB MFM disks as well as

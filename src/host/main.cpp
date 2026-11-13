@@ -27,6 +27,7 @@
 #include "../core/state.h"
 #include "hostfs_posix.h"
 #include "sharetest.h"
+#include "enettest.h"
 #include "../core/keys.h"
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
@@ -146,6 +147,7 @@ struct Host : OsdHost {
     }
 };
 
+static EnetTest *gEnetTest = nullptr;
 static u32 gWatchPc = 0;
 static M68K *gWatchCpu = nullptr;
 static int gWatchHits = 0;
@@ -462,6 +464,13 @@ int main(int argc, char **argv)
         shareFs = new PosixHostFS(shareDir);
         share = new SharedFolder(quad->cpu, *shareFs);
         quad->attachSharedFolder(share);
+        if (getenv("ENET_TEST")) {
+            EnetTest *t = new EnetTest(*share, quad->cpu);
+            gEnetTest = t;
+            if (getenv("ENET_AT")) t->armed = false;
+            share->onIdle = &EnetTest::idle;
+            share->idleCtx = t;
+        }
         if (getenv("SHARE_TEST")) {
             ShareTest *t = new ShareTest(*share, quad->cpu, shareDir);
             share->onIdle = &ShareTest::idle;
@@ -478,6 +487,7 @@ int main(int argc, char **argv)
     for (int f = 0; f < frames; f++) {
         if (f == (getenv("HOLD_FROM") ? atoi(getenv("HOLD_FROM")) : 1)) for (int k : heldKeys) mac.keyEvent(k, true);
         if (f == holdFrames) for (int k : heldKeys) mac.keyEvent(k, false);
+        if (gEnetTest && getenv("ENET_AT") && f == atoi(getenv("ENET_AT"))) gEnetTest->armed = true;
         if (f == cdLate && cdDisc) mac.insertCdrom(3, cdDisc);
         if (f == lateFrame && !host.insertDisk(0, lateImage.c_str()))
             fprintf(stderr, "cannot insert %s\n", lateImage.c_str());
