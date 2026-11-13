@@ -137,7 +137,9 @@ struct Host : OsdHost {
     void saveAndReboot() override {}
     const char *networkLine(int n) override { return n == 0 ? "Web file manager: http://192.168.1.20/" : n == 1 ? "Open it from a browser on your network" : ""; }
     bool screenshot() override { return true; }
-    const char *infoLine(int n) override { return n == 0 ? mac.modelName() : "F12 closes this menu"; }
+    const char *infoLine(int n) override {
+        return n == 0 ? mac.modelName() : n == 1 ? "Shared disk: on   Web: http://192.168.1.20/" : "Built today";
+    }
 };
 
 static u32 gWatchPc = 0;
@@ -616,6 +618,7 @@ int main(int argc, char **argv)
         osd.draw(surf, font);
         writePpm(out + "-menu.ppm", surf);
         osd.key(Osd::NavSelect);                        // disk picker
+        std::fill(pixels.begin(), pixels.end(), 0);     // as the Pi does: pages differ in size
         draw(true);
         osd.draw(surf, font);
         writePpm(out + "-picker.ppm", surf);
@@ -624,8 +627,10 @@ int main(int argc, char **argv)
         for (int pg = 0; pg < 4; pg++) {                // the four sub-pages, items 3..6
             osd.close();
             osd.open();
+            osd.key(Osd::NavPageUp);
             for (int k = 0; k < 2 + pg; k++) osd.key(Osd::NavDown);
             osd.key(Osd::NavSelect);
+            std::fill(pixels.begin(), pixels.end(), 0);
             draw(true);
             osd.draw(surf, font);
             writePpm(out + pages[pg], surf);

@@ -141,6 +141,7 @@ CKernel::CKernel (void)
 		m_HardDiskPath[i][0] = '\0';
 	}
 	m_InfoLine[0][0] = m_InfoLine[1][0] = '\0';
+	strCopy (m_InfoLine[2], "Built " __DATE__, sizeof m_InfoLine[2]);	// shows which version runs
 	strCopy (m_NetLine[0], "Network: off (Connection is set to Off)", sizeof m_NetLine[0]);
 	m_NetLine[1][0] = m_NetLine[2][0] = '\0';
 	m_ROMName[0] = '\0';
@@ -1442,33 +1443,47 @@ void CKernel::Housekeeping (void)
 
 void CKernel::UpdateInfo (void)
 {
+	// The Mac: model, memory, speed, the JIT.
 	char *p = m_InfoLine[0];
 	p[0] = '\0';
 	strAppend (p, m_pMachine->modelName (), 64);
 	strAppend (p, ", ", 64);
-	appendUint (p, m_Config.ramKB, 64);
-	strAppend (p, "K RAM, ROM ", 64);
-	strAppend (p, m_ROMName, 64);
-
-	p = m_InfoLine[1];
-	p[0] = '\0';
-	strAppend (p, "Built " __DATE__ "   Speed ", 64);	// the date shows which version runs
-	appendUint (p, m_nSpeedPercent, 64);
-	strAppend (p, "%   SCSI:", 64);
-	boolean bAny = FALSE;
-	for (unsigned id = 0; id < Scsi::kTargets; id++)
+	if (m_Config.ramKB >= 1024)
 	{
-		if (m_pHardDisk[id] != 0)
-		{
-			strAppend (p, " ", 64);
-			appendUint (p, id, 64);
-			bAny = TRUE;
-		}
+		appendUint (p, m_Config.ramKB / 1024, 64);
+		strAppend (p, " MB", 64);
+	}
+	else
+	{
+		appendUint (p, m_Config.ramKB, 64);
+		strAppend (p, " KB", 64);
+	}
+	strAppend (p, ", speed ", 64);
+	appendUint (p, m_nSpeedPercent, 64);
+	strAppend (p, "%", 64);
+	if (m_pQuadra != 0 && m_pQuadra->cpu.jit != 0)
+	{
+		strAppend (p, ", JIT", 64);
 	}
 
-	if (!bAny)
+	// Sharing: the shared disk and the web page.
+	p = m_InfoLine[1];
+	p[0] = '\0';
+	if (m_pShared != 0)
 	{
-		strAppend (p, " none", 64);
+		strAppend (p, m_pShared->mounted ? "Shared disk: on   " : "Shared disk: waiting   ", 64);
+	}
+	if (m_bNetRunning && m_pNet != 0)
+	{
+		CString IP;
+		m_pNet->GetConfig ()->GetIPAddress ()->Format (&IP);
+		strAppend (p, "Web: http://", 64);
+		strAppend (p, (const char *) IP, 64);
+		strAppend (p, "/", 64);
+	}
+	else
+	{
+		strAppend (p, "Network: off", 64);
 	}
 }
 
@@ -1715,6 +1730,87 @@ void CKernel::ResumeHibernation (void)
 		return;
 	}
 	m_Logger.Write (FromKernel, LogNotice, "Resumed the hibernated Mac");
+}
+
+// ----------------------------------------------------------------- the web page's status
+
+// What the Mac is doing, as "name<TAB>value" lines (the web page's table).
+void CKernel::StatusText (char *pOut, unsigned nMax)
+{
+	pOut[0] = '\0';
+	auto Line = [&] (const char *pName, const char *pValue) {
+		strAppend (pOut, pName, nMax);
+		strAppend (pOut, "\t", nMax);
+		strAppend (pOut, pValue, nMax);
+		strAppend (pOut, "\n", nMax);
+	};
+	char V[200];
+
+	strCopy (V, m_pMachine != 0 ? m_pMachine->modelName () : "(none)", sizeof V);
+	if (m_pOsd != 0 && m_pOsd->active ())
+	{
+		strAppend (V, ", paused (the menu is open)", sizeof V);
+	}
+	else
+	{
+		strAppend (V, ", running at ", sizeof V);
+		appendUint (V, m_nSpeedPercent, sizeof V);
+		strAppend (V, m_bTurbo || m_Config.speed == 0 ? "% (unlimited)" : "%", sizeof V);
+	}
+	if (m_pQuadra != 0 && m_pQuadra->cpu.jit != 0)
+	{
+		strAppend (V, ", JIT on", sizeof V);
+	}
+	Line ("Mac", V);
+
+	for (unsigned id = 0; id < macemu::Scsi::kTargets; id++)
+	{
+		if (m_pHardDisk[id] == 0)
+		{
+			continue;
+		}
+		char Name[24] = "Hard disk (ID ";
+		appendUint (Name, id, sizeof Name);
+		strAppend (Name, ")", sizeof Name);
+		const char *p = m_HardDiskPath[id];
+		for (const char *q = p; *q; q++) if (*q == '/') p = q + 1;
+		Line (Name, p);
+	}
+	for (unsigned d = 0; d < 2; d++)
+	{
+		if (m_FloppyName[d][0] != '\0')
+		{
+			Line (d == 0 ? "Floppy drive 1" : "Floppy drive 2", m_FloppyName[d]);
+		}
+	}
+	if (m_pCdrom != 0)
+	{
+		const char *p = m_Config.cdrom;
+		for (const char *q = p; *q; q++) if (*q == '/') p = q + 1;
+		Line ("CD-ROM", p);
+	}
+	if (m_pShared != 0)
+	{
+		strCopy (V, m_pShared->status, sizeof V);
+		strAppend (V, " (folder ", sizeof V);
+		strAppend (V, m_Config.sharedFolder, sizeof V);
+		strAppend (V, ")", sizeof V);
+		Line ("Shared folder", V);
+	}
+	if (m_bNetRunning && m_pNet != 0)
+	{
+		CString IP;
+		m_pNet->GetConfig ()->GetIPAddress ()->Format (&IP);
+		strCopy (V, m_bWiFi ? "Wi-Fi, " : "Cable, ", sizeof V);
+		strAppend (V, (const char *) IP, sizeof V);
+		Line ("Network", V);
+		strCopy (V, m_Config.macInternet ? "on" : "off", sizeof V);
+		if (m_Config.macInternet)
+		{
+			strAppend (V, m_Config.httpsHelper ? ", with the HTTPS helper for its browsers" : ", without the HTTPS helper", sizeof V);
+		}
+		Line ("The Mac's internet", V);
+	}
 }
 
 // ----------------------------------------------------------------- shared folder

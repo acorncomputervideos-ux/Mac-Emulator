@@ -9,6 +9,7 @@
 #include <fatfs/ff.h>
 #include "../frontend/util.h"
 #include "../frontend/hfs.h"
+#include "../core/macnames.h"
 
 using macemu::strLen; using macemu::strCopy; using macemu::strAppend; using macemu::strEq;
 using macemu::endsWithNoCase; using macemu::appendUint; using macemu::lower;
@@ -23,56 +24,74 @@ static const char PageHead[] =
 "<!DOCTYPE html><html><head><meta charset=utf-8>"
 "<meta name=viewport content='width=device-width,initial-scale=1'>"
 "<title>Mac Emulator</title><style>"
-"body{font:15px -apple-system,Helvetica,Arial,sans-serif;margin:0;background:#eee;color:#222}"
-"header{background:#333;color:#fff;padding:12px 18px;font-size:20px}"
-"main{max-width:900px;margin:0 auto;padding:12px}"
-"section{background:#fff;border:1px solid #ccc;border-radius:6px;margin:12px 0;padding:10px 14px}"
+":root{--bg:#eceef1;--card:#fff;--line:#d9dde3;--text:#1d2229;--dim:#69717c;--accent:#2a5db0;--drop:#eef4ff}"
+"@media(prefers-color-scheme:dark){:root{--bg:#16181c;--card:#22252b;--line:#363b44;--text:#e4e7eb;--dim:#9aa3ad;--accent:#7aa7f0;--drop:#1d2a3d}}"
+"body{font:15px -apple-system,Helvetica,Arial,sans-serif;margin:0;background:var(--bg);color:var(--text)}"
+"header{background:#2b2f36;color:#fff;padding:12px 18px;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px}"
+"header b{font-size:20px;font-weight:600}header span{color:#b8c0ca;font-size:13px}"
+"main{max-width:900px;margin:0 auto;padding:8px 12px}"
+"section{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:12px 0;padding:10px 14px}"
 "h2{font-size:16px;margin:4px 0 8px}table{border-collapse:collapse;width:100%}"
-"td{padding:5px 6px;border-top:1px solid #eee}td.s{text-align:right;white-space:nowrap;color:#555}"
-"td.a{text-align:right;white-space:nowrap}a{color:#0645ad;text-decoration:none}"
-"button{font-size:14px;padding:4px 10px;margin:2px}.u{color:#a60;font-size:13px}"
-"#drop,#upd,#tdrop{border:2px dashed #999;border-radius:6px;padding:18px;text-align:center;color:#555}"
-"#drop.on,#upd.on,#tdrop.on{border-color:#06c;background:#eef5ff}progress{width:100%}.n{color:#666;font-size:13px}"
-"</style></head><body><header>Mac Emulator &mdash; SD card</header><main>";
+"td{padding:5px 6px;border-top:1px solid var(--line)}td.s{text-align:right;white-space:nowrap;color:var(--dim)}"
+"td.a{text-align:right;white-space:nowrap}td.k{color:var(--dim);white-space:nowrap;width:1%;padding-right:14px}"
+"#stat td{border:0;padding:3px 6px}a{color:var(--accent);text-decoration:none}"
+"button{font-size:14px;padding:4px 10px;margin:2px}.u{color:#c27a00;font-size:13px}"
+".drop{border:2px dashed var(--line);border-radius:8px;padding:18px;text-align:center;color:var(--dim)}"
+".drop.on{border-color:var(--accent);background:var(--drop)}progress{width:100%}.n{color:var(--dim);font-size:13px}"
+"label{font-size:14px}.ok{color:#2a8a3e}"
+"</style></head><body>";
 
 static const char PageUpload[] =
-"<section><h2>Copy files to the card</h2>"
-"<div id=drop>Drop disk images or ROMs here, or <input type=file id=pick multiple></div>"
+"<section><h2>Disk images and ROMs</h2>"
+"<div id=drop class=drop>Drop disk images or ROMs here, or <input type=file id=pick multiple></div>"
 "<p>Put them in <select id=dir>"
 "<option value='@DISKDIR@/'>the @DISKDIR@ folder (floppies and hard disks)</option>"
-"@SHAREOPT@"
 "<option value=''>the top of the card (ROMs, hd0.img ...)</option></select></p>"
 "<div id=st></div><progress id=pr value=0 max=1 hidden></progress>"
-"<p class=n>Open the menu (F12) on the Mac and pick the new disk under Floppy or Hard disks. "
-"Transfers are fastest while the menu is open, because the Mac is paused.</p></section>";
+"<p class=n>Then pick the new disk in the Mac's menu (F12: Floppy drive or Hard disks). "
+"Copying is fastest while the menu is open, because the Mac is paused.</p></section>";
+
+static const char PageSend[] =
+"<section><h2>Send files to the Mac</h2>"
+"<div id=tdrop class=drop>Drop files here, or <input type=file id=tpick multiple></div>"
+"<div id=tst></div><progress id=tpr value=0 max=1 hidden></progress>"
+"@SENDTEXT@</section>";
+
+static const char SendShared[] =
+"<p class=n>They go on the Mac's <b>Shared</b> disk, any size, and are there within seconds. "
+"MacBinary files (.bin) are unpacked: they keep their icons and resource forks.</p>"
+"<p><label><input type=checkbox id=tfl> Put them on a transfer floppy or CD instead (for Mac OS before 7.5)</label></p>";
+
+static const char SendDisk[] =
+"<p class=n>Any size. Small files go on a new floppy in floppy drive 2; bigger ones on a new CD-ROM disk "
+"(\"Transfer 1\", ...) in the CD-ROM drive. Either appears on the Mac's desktop: drag the files to your hard disk. "
+"MacBinary files (.bin) keep their icons and resource forks. To get files out of a disk, click [open] next to it.</p>";
 
 static const char PageTail[] =
-"<section><h2>Send files to the Mac</h2>"
-"<div id=tdrop>Drop files here, or <input type=file id=tpick multiple></div>"
-"<p class=n>Any size. Small files go on a new floppy in floppy drive 2; bigger ones on a new CD-ROM disk (\"Transfer 1\", ...) in the CD-ROM drive. "
-"Either appears on the Mac's desktop: drag the files to your hard disk. MacBinary files (.bin) keep their icons and resource forks. "
-"To get files out of a disk, click [open] next to it.</p>"
-"<div id=tst></div></section>"
-"<section><h2>Mac</h2><button onclick=restart()>Restart the Mac</button>"
-" <span class=n>Saves the disks and starts the Mac again with the disks chosen in the menu.</span></section>"
 "<section><h2>Update the emulator</h2>"
-"<div id=upd>Drop the new <b>MacEmulator-SD.zip</b> here, or <input type=file id=updpick accept='.zip'></div>"
+"<div id=upd class=drop>Drop the new <b>MacEmulator-SD.zip</b> here, or <input type=file id=updpick accept='.zip'></div>"
 "<div id=ust></div><progress id=upr value=0 max=1 hidden></progress>"
 "<p class=n>Installs the new emulator and Pi start-up files, then restarts the Pi. "
-"Your settings, ROMs and disks are kept.</p></section>"
+"Your settings, ROMs, disks and shared files are kept.</p></section>"
 "</main><script>"
 "var q=[],busy=0;"
 "function $(i){return document.getElementById(i)}"
-"function add(fl){for(var i=0;i<fl.length;i++)q.push(fl[i]);next()}"
-"function next(){if(busy)return;var f=q.shift();if(!f){return}"
-"busy=1;var x=new XMLHttpRequest(),p=$('pr');p.hidden=false;p.value=0;"
-"$('st').textContent='Sending '+f.name+' ...';"
+"function esc(t){return t.replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}"
+"function add(fl,d,s,p){for(var i=0;i<fl.length;i++)q.push({f:fl[i],d:d,s:s,p:p});next()}"
+"function next(){if(busy)return;var j=q.shift();if(!j)return;"
+"busy=1;var f=j.f,x=new XMLHttpRequest(),p=$(j.p),st=$(j.s);p.hidden=false;p.value=0;"
+"st.textContent='Sending '+f.name+' ...';"
 "x.upload.onprogress=function(e){if(e.lengthComputable){p.max=e.total;p.value=e.loaded;"
-"$('st').textContent='Sending '+f.name+': '+Math.floor(e.loaded*100/e.total)+'%'}};"
+"st.textContent='Sending '+f.name+': '+Math.floor(e.loaded*100/e.total)+'%'}};"
 "x.onloadend=function(){busy=0;p.hidden=true;"
-"if(x.status==201||x.status==200){$('st').textContent=f.name+' copied.';if(!q.length)location.reload()}"
-"else{$('st').textContent=f.name+': '+(x.responseText||'failed')}next()};"
-"x.open('PUT','/files/'+$('dir').value+encodeURIComponent(f.name));x.send(f)}"
+"if(x.status==201||x.status==200){st.innerHTML='<span class=ok>&#10003;</span> '+esc(f.name)+': '+esc(x.responseText);"
+"if(!q.length)setTimeout(function(){location.reload()},1500)}"
+"else{st.textContent=f.name+': '+(x.responseText||'failed')}next()};"
+"x.open('PUT','/files/'+j.d+encodeURIComponent(f.name));x.send(f)}"
+"function send(fl){if(SHARE&&!$('tfl').checked)add(fl,SHARE+'/','tst','tpr');else transfer(fl)}"
+"function stat(){fetch('/status').then(function(r){return r.text()}).then(function(t){var h='';"
+"t.split('\\n').forEach(function(l){var c=l.split('\\t');if(c.length==2)h+='<tr><td class=k>'+esc(c[0])+'</td><td>'+esc(c[1])+'</td></tr>'});"
+"$('stat').innerHTML=h}).catch(function(){})}setInterval(stat,5000);"
 "function del(n){if(!confirm('Delete '+n+'?'))return;"
 "fetch('/files/'+n,{method:'DELETE'}).then(function(r){return r.text().then(function(t){"
 "if(r.ok)location.reload();else alert(t)})})}"
@@ -118,18 +137,18 @@ static const char PageTail[] =
 "st.textContent='Making the disk for the Mac ...';var r=await fetch('/makefloppy?insert=2',{method:'POST'});"
 "st.textContent=await r.text();if(r.ok)setTimeout(function(){location.reload()},2500)}"
 "catch(x){st.textContent='Stopped: '+(x instanceof TypeError?'the connection to the Pi was lost. Check the Wi-Fi and try again.':x)}}"
-"var td=$('tdrop');$('tpick').onchange=function(){transfer(this.files)};"
-"td.ondragover=function(e){e.preventDefault();td.className='on'};"
-"td.ondragleave=function(){td.className=''};"
-"td.ondrop=function(e){e.preventDefault();td.className='';transfer(e.dataTransfer.files)};"
+"var td=$('tdrop');$('tpick').onchange=function(){send(this.files)};"
+"td.ondragover=function(e){e.preventDefault();td.className='drop on'};"
+"td.ondragleave=function(){td.className='drop'};"
+"td.ondrop=function(e){e.preventDefault();td.className='drop';send(e.dataTransfer.files)};"
 "var ud=$('upd');$('updpick').onchange=function(){if(this.files[0])update(this.files[0])};"
-"ud.ondragover=function(e){e.preventDefault();ud.className='on'};"
-"ud.ondragleave=function(){ud.className=''};"
-"ud.ondrop=function(e){e.preventDefault();ud.className='';if(e.dataTransfer.files[0])update(e.dataTransfer.files[0])};"
-"var d=$('drop');$('pick').onchange=function(){add(this.files)};"
-"d.ondragover=function(e){e.preventDefault();d.className='on'};"
-"d.ondragleave=function(){d.className=''};"
-"d.ondrop=function(e){e.preventDefault();d.className='';add(e.dataTransfer.files)};"
+"ud.ondragover=function(e){e.preventDefault();ud.className='drop on'};"
+"ud.ondragleave=function(){ud.className='drop'};"
+"ud.ondrop=function(e){e.preventDefault();ud.className='drop';if(e.dataTransfer.files[0])update(e.dataTransfer.files[0])};"
+"var d=$('drop');$('pick').onchange=function(){add(this.files,$('dir').value,'st','pr')};"
+"d.ondragover=function(e){e.preventDefault();d.className='drop on'};"
+"d.ondragleave=function(){d.className='drop'};"
+"d.ondrop=function(e){e.preventDefault();d.className='drop';add(e.dataTransfer.files,$('dir').value,'st','pr')};"
 "</script></body></html>";
 
 CWebServer::CWebServer (CNetSubSystem *pNet, const char *pDrive, CWebServerHost *pHost)
@@ -216,6 +235,21 @@ void CWebServer::Serve (CSocket *pSocket)
 	if (bGet && pPath[0] == '\0')
 	{
 		SendIndex (pSocket);
+		return;
+	}
+
+	if (bGet && strEq (pPath, "status"))
+	{
+		static char Text[1024];
+		m_pHost->StatusText (Text, sizeof Text);
+		char Head[160] = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n"
+				 "Cache-Control: no-store\r\nConnection: close\r\nContent-Length: ";
+		appendUint (Head, strLen (Text), sizeof Head);
+		strAppend (Head, "\r\n\r\n", sizeof Head);
+		if (SendText (pSocket, Head))
+		{
+			SendAll (pSocket, Text, strLen (Text));
+		}
 		return;
 	}
 
@@ -445,25 +479,35 @@ void CWebServer::SendIndex (CSocket *pSocket)
 	m_nPageLength = 0;
 	Out (PageHead);
 
-	// The upload box, with the disk folder's name filled in.
-	const char *pDiskDir = m_pHost->DiskDir ();
-	for (const char *p = PageUpload; *p; )
+	// The header: the version and the card's free space.
+	Out ("<header><b>Mac Emulator</b><span>");
+	OutHtml (m_pHost->Version ());
+	char Root[8];
+	strCopy (Root, m_pDrive, sizeof Root);
+	strAppend (Root, "/", sizeof Root);
+	DWORD nFreeClusters;
+	FATFS *pFS;
+	if (f_getfree (Root, &nFreeClusters, &pFS) == FR_OK)
 	{
-		if (strncmp (p, "@DISKDIR@", 9) == 0)
+		Out (" &middot; ");
+		OutSize ((u64) nFreeClusters * pFS->csize * 512);
+		Out (" free on the card");
+	}
+	Out ("</span></header><main>");
+
+	// What the Mac is doing (refreshed by the page every few seconds).
+	Out ("<section><h2>This Mac</h2><table id=stat>");
+	OutStatusRows ();
+	Out ("</table><p><button onclick=restart()>Restart the Mac</button> "
+	     "<span class=n>Saves the disks and starts the Mac again with the disks chosen in the menu.</span></p></section>");
+
+	// Sending files: to the shared folder when there is one.
+	const char *pShared = m_pHost->SharedDir ();
+	for (const char *p = PageSend; *p; )
+	{
+		if (strncmp (p, "@SENDTEXT@", 10) == 0)
 		{
-			OutHtml (pDiskDir);
-			p += 9;
-		}
-		else if (strncmp (p, "@SHAREOPT@", 10) == 0)
-		{
-			// The shared folder: what goes there is on the Mac's desktop at once.
-			const char *pShared = m_pHost->SharedDir ();
-			if (pShared[0] != '\0')
-			{
-				Out ("<option value='");
-				OutHtml (pShared);
-				Out ("/'>the shared folder (the Mac's \"Shared\" disk: there at once)</option>");
-			}
+			Out (pShared[0] != '\0' ? SendShared : SendDisk);
 			p += 10;
 		}
 		else
@@ -472,33 +516,35 @@ void CWebServer::SendIndex (CSocket *pSocket)
 			Out (Ch);
 		}
 	}
+	if (pShared[0] != '\0')
+	{
+		ListFolder (pShared, TRUE, "Shared folder (the Mac's Shared disk)");
+	}
 
-	ListFolder ("", FALSE);
+	// Disk images and ROMs.
+	const char *pDiskDir = m_pHost->DiskDir ();
+	for (const char *p = PageUpload; *p; )
+	{
+		if (strncmp (p, "@DISKDIR@", 9) == 0)
+		{
+			OutHtml (pDiskDir);
+			p += 9;
+		}
+		else
+		{
+			char Ch[2] = {*p++, '\0'};
+			Out (Ch);
+		}
+	}
 	if (pDiskDir[0] != '\0')
 	{
-		ListFolder (pDiskDir, TRUE);
+		ListFolder (pDiskDir, TRUE, 0);
 	}
-	if (m_pHost->SharedDir ()[0] != '\0')
-	{
-		ListFolder (m_pHost->SharedDir (), TRUE);	// (its files; folders inside are the Mac's business)
-	}
+	ListFolder ("", FALSE, "Top of the card");
 
-	// Free space.
-	char Root[8];
-	strCopy (Root, m_pDrive, sizeof Root);
-	strAppend (Root, "/", sizeof Root);
-	DWORD nFreeClusters;
-	FATFS *pFS;
-	if (f_getfree (Root, &nFreeClusters, &pFS) == FR_OK)
-	{
-		Out ("<p class=n>Free space on the card: ");
-		OutSize ((u64) nFreeClusters * pFS->csize * 512);
-		Out ("</p>");
-	}
-
-	Out ("<p class=n>Emulator version: ");
-	OutHtml (m_pHost->Version ());
-	Out ("</p>");
+	Out ("<script>var SHARE='");
+	OutHtml (pShared);
+	Out ("';</script>");
 	Out (PageTail);
 
 	char Head[160] = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
@@ -511,17 +557,18 @@ void CWebServer::SendIndex (CSocket *pSocket)
 	}
 }
 
-void CWebServer::ListFolder (const char *pFolder, boolean bDiskDir)
+void CWebServer::ListFolder (const char *pFolder, boolean bDiskDir, const char *pTitle)
 {
 	Out ("<section><h2>");
-	if (bDiskDir)
+	if (pTitle != 0)
 	{
-		Out ("Folder ");
-		OutHtml (pFolder);
+		Out (pTitle);
 	}
 	else
 	{
-		Out ("Top of the card");
+		Out ("The ");
+		OutHtml (pFolder);
+		Out (" folder (floppies, hard disks, CDs)");
 	}
 	Out ("</h2><table>");
 
@@ -541,7 +588,8 @@ void CWebServer::ListFolder (const char *pFolder, boolean bDiskDir)
 		}
 		strAppend (Name, Info.fname, sizeof Name);
 
-		if (!(Info.fattrib & (AM_DIR | AM_HID | AM_SYS)) && Info.fname[0] != '.'
+		boolean bFinderFile = strEq (pFolder, m_pHost->SharedDir ()) && strEq (Info.fname, "Desktop");
+		if (!(Info.fattrib & (AM_DIR | AM_HID | AM_SYS)) && Info.fname[0] != '.' && !bFinderFile
 		    && !(!bDiskDir && (Protected (Info.fname) || Private (Info.fname))))
 		{
 			Out ("<tr><td><a href='/files/");
@@ -579,6 +627,102 @@ void CWebServer::ListFolder (const char *pFolder, boolean bDiskDir)
 }
 
 // ----------------------------------------------------------------- transfers
+
+// A MacBinary file (pPath, on the card) as the Mac file it holds, beside
+// it: the data fork, and an AppleDouble "._name" with the Finder info and
+// the resource fork (as the shared folder keeps them).  The .bin goes.
+boolean CWebServer::UnpackMacBinary (const char *pPath, char *pReply, unsigned nMax)
+{
+	FIL In;
+	if (f_open (&In, pPath, FA_READ) != FR_OK)
+	{
+		return FALSE;
+	}
+	u8 Header[128];
+	UINT nRead = 0;
+	macemu::HfsNewFile F;
+	if (   f_read (&In, Header, sizeof Header, &nRead) != FR_OK || nRead != sizeof Header
+	    || !macemu::macBinaryHeaderParse (Header, (u32) f_size (&In), F))
+	{
+		f_close (&In);
+		return FALSE;
+	}
+
+	// The Mac name, as the shared folder names files on the card.
+	char Name[256], Dir[200], Out[460], Side[470];
+	macemu::macToHostName ((const u8 *) F.name, (int) strLen (F.name), Name, sizeof Name, false);
+	strCopy (Dir, pPath, sizeof Dir);
+	for (int i = (int) strLen (Dir) - 1; i >= 0 && Dir[i] != '/'; i--) Dir[i] = '\0';
+	strCopy (Out, Dir, sizeof Out);
+	strAppend (Out, Name, sizeof Out);
+	strCopy (Side, Dir, sizeof Side);
+	strAppend (Side, "._", sizeof Side);
+	strAppend (Side, Name, sizeof Side);
+	FILINFO Info;
+	if (f_stat (Out, &Info) == FR_OK)			// already there: keep the .bin as it is
+	{
+		f_close (&In);
+		return FALSE;
+	}
+
+	boolean bOK = TRUE;
+	FIL Data, Double;
+	bOK = f_open (&Data, Out, FA_WRITE | FA_CREATE_NEW) == FR_OK;
+	if (bOK && f_open (&Double, Side, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	{
+		f_close (&Data);
+		f_unlink (Out);
+		bOK = FALSE;
+	}
+	if (!bOK)
+	{
+		f_close (&In);
+		return FALSE;
+	}
+
+	// AppleDouble: header, two entries (Finder info at 50, the resource
+	// fork from 82), as src/core/sharedfs.cpp writes it.
+	u8 AD[82];
+	memset (AD, 0, sizeof AD);
+	auto Put32 = [] (u8 *p, u32 v) { p[0] = (u8) (v >> 24); p[1] = (u8) (v >> 16); p[2] = (u8) (v >> 8); p[3] = (u8) v; };
+	Put32 (AD, 0x00051607); Put32 (AD + 4, 0x00020000); AD[25] = 2;
+	Put32 (AD + 26, 9); Put32 (AD + 30, 50); Put32 (AD + 34, 32);
+	Put32 (AD + 38, 2); Put32 (AD + 42, 82); Put32 (AD + 46, F.rsrcLen);
+	Put32 (AD + 50, F.type); Put32 (AD + 54, F.creator);
+	AD[58] = (u8) (F.flags >> 8); AD[59] = (u8) F.flags;
+	UINT nWritten;
+	bOK = f_write (&Double, AD, sizeof AD, &nWritten) == FR_OK && nWritten == sizeof AD;
+
+	// The forks.
+	struct { FIL *pFile; u32 nFrom, nLength; } Fork[2] =
+		{{&Data, 128, F.dataLen}, {&Double, 128 + macemu::macBinaryPad (F.dataLen), F.rsrcLen}};
+	for (unsigned k = 0; k < 2 && bOK; k++)
+	{
+		bOK = f_lseek (&In, Fork[k].nFrom) == FR_OK;
+		for (u32 nLeft = Fork[k].nLength; bOK && nLeft > 0; )
+		{
+			u32 n = nLeft > BufferSize ? BufferSize : nLeft;
+			bOK = f_read (&In, m_pBuffer, n, &nRead) == FR_OK && nRead == n
+			      && f_write (Fork[k].pFile, m_pBuffer, n, &nWritten) == FR_OK && nWritten == n;
+			nLeft -= n;
+		}
+	}
+	f_close (&In);
+	bOK = f_close (&Data) == FR_OK && bOK;
+	bOK = f_close (&Double) == FR_OK && bOK;
+	if (!bOK)
+	{
+		f_unlink (Out);
+		f_unlink (Side);
+		return FALSE;
+	}
+	f_unlink (pPath);
+
+	strCopy (pReply, "unpacked as \"", nMax);
+	strAppend (pReply, F.name, nMax);
+	strAppend (pReply, "\" on the Mac's Shared disk (with its resource fork).", nMax);
+	return TRUE;
+}
 
 void CWebServer::SendFile (CSocket *pSocket, const char *pPath)
 {
@@ -744,7 +888,22 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 	}
 
 	CLogger::Get ()->Write (FromWeb, LogNotice, "Received %s", pPath);
-	SendStatus (pSocket, 201, "Copied.");
+
+	// MacBinary into the shared folder: the Mac file it holds, with its
+	// resource fork and Finder info.
+	const char *pShared = m_pHost->SharedDir ();
+	u32 nShared = strLen (pShared);
+	if (   !bUpdate && nShared && strncmp (pPath, pShared, nShared) == 0 && pPath[nShared] == '/'
+	    && endsWithNoCase (pPath, ".bin"))
+	{
+		char Reply[160];
+		if (UnpackMacBinary (Path, Reply, sizeof Reply))
+		{
+			SendStatus (pSocket, 201, Reply);
+			return;
+		}
+	}
+	SendStatus (pSocket, 201, nShared && strncmp (pPath, pShared, nShared) == 0 ? "on the Mac's Shared disk." : "copied.");
 }
 
 void CWebServer::DeleteFile (CSocket *pSocket, const char *pPath)
@@ -1758,24 +1917,54 @@ void CWebServer::OutNumber (u64 nValue)
 
 void CWebServer::OutSize (u64 nBytes)
 {
-	if (nBytes >= 10ull * 1024 * 1024 * 1024)
-	{
-		OutNumber (nBytes >> 30);
-		Out (" GB");
-	}
-	else if (nBytes >= 1024 * 1024 * 10)
-	{
-		OutNumber (nBytes >> 20);
-		Out (" MB");
-	}
-	else if (nBytes >= 1024 * 10)
-	{
-		OutNumber (nBytes >> 10);
-		Out (" KB");
-	}
-	else
+	// 900 bytes, 4.5 KB, 800 KB, 1.4 MB, 500 MB, 3.2 GB
+	static const char *Units[] = {" KB", " MB", " GB"};
+	if (nBytes < 1000)
 	{
 		OutNumber (nBytes);
 		Out (" bytes");
+		return;
+	}
+	u64 nScaled = nBytes * 10 / 1024;			// tenths of a KB
+	int nUnit = 0;
+	while (nScaled >= 10240 && nUnit < 2)
+	{
+		nScaled /= 1024;
+		nUnit++;
+	}
+	OutNumber (nScaled >= 100 ? (nScaled + 5) / 10 : nScaled / 10);
+	if (nScaled < 100)
+	{
+		char Tenth[3] = {'.', (char) ('0' + nScaled % 10), '\0'};
+		Out (Tenth);
+	}
+	Out (Units[nUnit]);
+}
+
+// The status lines ("name<TAB>value" each) as table rows.
+void CWebServer::OutStatusRows (void)
+{
+	static char Text[1024];
+	m_pHost->StatusText (Text, sizeof Text);
+	for (char *pLine = Text; *pLine; )
+	{
+		char *pEnd = pLine;
+		while (*pEnd && *pEnd != '\n') pEnd++;
+		char Save = *pEnd;
+		*pEnd = '\0';
+		char *pTab = pLine;
+		while (*pTab && *pTab != '\t') pTab++;
+		if (*pTab)
+		{
+			*pTab = '\0';
+			Out ("<tr><td class=k>");
+			OutHtml (pLine);
+			Out ("</td><td>");
+			OutHtml (pTab + 1);
+			Out ("</td></tr>");
+			*pTab = '\t';
+		}
+		*pEnd = Save;
+		pLine = *pEnd ? pEnd + 1 : pEnd;
 	}
 }

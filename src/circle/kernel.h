@@ -103,12 +103,13 @@ public:
 	bool screenshot (void) override;
 	void powerOff (void) override;
 	bool hibernate (void) override;
-	const char *infoLine (int nLine) override	{ return m_InfoLine[nLine ? 1 : 0]; }
+	const char *infoLine (int nLine) override	{ return m_InfoLine[nLine < 0 || nLine > 2 ? 0 : nLine]; }
 
 	// CWebServerHost
 	boolean FileInUse (const char *pPath) override;
 	const char *DiskDir (void) override		{ return m_Config.diskDir; }
 	const char *SharedDir (void) override		{ return m_pShared != 0 ? m_Config.sharedFolder : ""; }
+	void StatusText (char *pOut, unsigned nMax) override;
 	const char *Version (void) override		{ return "built " __DATE__ " " __TIME__; }
 	macemu::u32 MacTime (void) override		{ return m_pMachine->clockChip ().seconds; }
 	macemu::u32 MaxFloppyBytes (void) override	{ return m_pQuadra != 0 ? 1474560 : 819200; }
@@ -280,7 +281,7 @@ private:
 	volatile unsigned	m_nSoundRate;
 	u64			m_nStatsTime;
 	unsigned		m_nSpeedPercent;
-	char			m_InfoLine[2][64];
+	char			m_InfoLine[3][64];
 	char			m_NetLine[3][64];
 	char			m_ROMName[32];
 

@@ -66,11 +66,6 @@ void jitFlushCode (void *pStart, u32 nBytes)
 		      "isb" ::: "memory");
 }
 
-#else
-
-void *jitCodeMemory (u32)		{ return 0; }
-void jitFlushCode (void *, u32)		{}
-
-#endif
+#endif	// (32-bit kernels: no JIT; src/core/jit.cpp has the stubs)
 
 } // namespace macemu

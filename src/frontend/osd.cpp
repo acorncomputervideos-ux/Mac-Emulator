@@ -39,25 +39,43 @@ void Osd::say(const char *text)
 
 int Osd::items(Page p, int *out) const
 {
-    int n = 0;
-    switch (p) {
-    case PageMain:
-        for (int i = ItFloppy1; i <= ItResume; i++) out[n++] = i;
-        break;
-    case PageDisks:
-        for (int i = ItHd0; i <= ItDisksBack; i++) out[n++] = i;
-        break;
-    case PageMachine:
-        for (int i = ItModel; i <= ItMachineBack; i++) out[n++] = i;
-        break;
-    case PagePrefs:
-        for (int i = ItSpeed; i <= ItPrefsBack; i++) out[n++] = i;
-        break;
-    default:
-        for (int i = ItNetMode; i <= ItNetworkBack; i++) out[n++] = i;
-        break;
-    }
+    static const int main[] = {ItHeadDisks, ItFloppy1, ItFloppy2, ItDisksPage,
+                               ItHeadSettings, ItMachinePage, ItPrefsPage, ItNetworkPage,
+                               ItHeadMac, ItReset, ItInterrupt, ItScreenshot, ItSave, ItHibernate, ItPowerOff, ItResume};
+    static const int disks[] = {ItHeadScsi, ItHd0, ItHd0 + 1, ItHd0 + 2, ItHd0 + 3, ItHd0 + 4, ItHd0 + 5, ItHd6,
+                                ItHeadCd, ItCdrom, ItDisksBack};
+    static const int machine[] = {ItModel, ItRom, ItRam, ItVideo, ItMonitor, ItScaling, ItApply, ItMachineBack};
+    static const int prefs[] = {ItHeadEmulation, ItSpeed, ItJit, ItHeadDisplay, ItPalette, ItSound, ItVolume,
+                                ItHeadInput, ItMouse, ItAlt, ItPrefsBack};
+    static const int net[] = {ItHeadConnection, ItNetMode, ItHeadWifi, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry,
+                              ItKeyboard, ItHeadSharing, ItMacInternet, ItHttps, ItShared, ItNetApply, ItNetworkBack};
+    const int *list = p == PageMain ? main : p == PageDisks ? disks : p == PageMachine ? machine : p == PagePrefs ? prefs : net;
+    int n = p == PageMain ? (int)(sizeof main / sizeof main[0]) : p == PageDisks ? (int)(sizeof disks / sizeof disks[0])
+          : p == PageMachine ? (int)(sizeof machine / sizeof machine[0]) : p == PagePrefs ? (int)(sizeof prefs / sizeof prefs[0])
+          : (int)(sizeof net / sizeof net[0]);
+    for (int i = 0; i < n; i++) out[i] = list[i];
     return n;
+}
+
+void Osd::move(int dir)
+{
+    int list[kMaxItems];
+    int n = items(page, list);
+    int &s = sel[page];
+    if (s < 0 || s >= n) s = 0;
+    for (int k = 0; k < n; k++) {
+        s += dir;
+        if (s >= n) s = 0;
+        if (s < 0) s = n - 1;
+        if (!heading(list[s])) return;
+    }
+}
+
+void Osd::selectItem(Page p, int item)
+{
+    int list[kMaxItems];
+    int n = items(p, list);
+    for (int i = 0; i < n; i++) if (list[i] == item) sel[p] = i;
 }
 
 static int cycle(int v, int dir, int lo, int hi)
@@ -134,6 +152,18 @@ void Osd::adjust(int item, int dir)
         return;
     case ItMonitor:
         strCopy(cfg.monitor, strEq(cfg.monitor, "21") ? "vga" : "21", sizeof cfg.monitor);
+        pendingReboot = true;
+        return;
+    case ItMacInternet:
+        cfg.macInternet = !cfg.macInternet;
+        pendingReboot = true;
+        return;
+    case ItHttps:
+        cfg.httpsHelper = !cfg.httpsHelper;
+        pendingReboot = true;
+        return;
+    case ItShared:
+        strCopy(cfg.sharedFolder, cfg.sharedFolder[0] ? "" : "shared", sizeof cfg.sharedFolder);
         pendingReboot = true;
         return;
     case ItKeyboard:
@@ -253,7 +283,7 @@ void Osd::pickerKey(Nav nav)
                 strCopy(cfg.network, "auto", sizeof cfg.network);
             pendingReboot = true;
             page = back;
-            sel[PageNetwork] = ItWifiPass - ItNetMode;              // straight on to the password
+            selectItem(PageNetwork, ItWifiPass);                      // straight on to the password
             editItem = ItWifiPass;
             editBuf[0] = 0;
             return;
@@ -307,12 +337,12 @@ void Osd::key(Nav nav)
     int list[kMaxItems];
     int n = items(page, list);
     int &s = sel[page];
-    if (s >= n) s = n - 1;
+    if (s < 0 || s >= n || heading(list[s])) { s = n - 1; move(1); }
     switch (nav) {
-    case NavUp: s = cycle(s, -1, 0, n - 1); message[0] = 0; break;
-    case NavDown: s = cycle(s, 1, 0, n - 1); message[0] = 0; break;
-    case NavPageUp: s = 0; break;
-    case NavPageDown: s = n - 1; break;
+    case NavUp: move(-1); message[0] = 0; break;
+    case NavDown: move(1); message[0] = 0; break;
+    case NavPageUp: s = n - 1; move(1); break;
+    case NavPageDown: s = 0; move(-1); break;
     case NavLeft: adjust(list[s], -1); break;
     case NavRight: adjust(list[s], 1); break;
     case NavSelect: activate(list[s]); break;
@@ -339,10 +369,30 @@ void Osd::label(int item, char *out, u32 max)
         field(item == ItFloppy1 ? "Floppy drive 1" : "Floppy drive 2", n[0] ? baseName(n) : "(empty)");
         break;
     }
-    case ItDisksPage: strAppend(out, "Hard disks  >", max); break;
+    case ItDisksPage: strAppend(out, "Hard disks and CD-ROM  >", max); break;
     case ItMachinePage: strAppend(out, "Machine, ROM and memory  >", max); break;
-    case ItPrefsPage: strAppend(out, "Display, sound and input  >", max); break;
-    case ItNetworkPage: strAppend(out, "Network: Wi-Fi, Ethernet, web  >", max); break;
+    case ItPrefsPage: strAppend(out, "Speed, display, sound, input  >", max); break;
+    case ItNetworkPage: strAppend(out, "Network and sharing  >", max); break;
+    case ItMacInternet: field("Mac's internet", cfg.macInternet ? "On (through the Pi)" : "Off"); break;
+    case ItHttps:
+        field("HTTPS helper", !cfg.macInternet ? "(needs internet)" : cfg.httpsHelper ? "On (old browsers)" : "Off");
+        break;
+    case ItShared:
+        if (cfg.sharedFolder[0]) { strCopy(v, "On (folder ", sizeof v); strAppend(v, cfg.sharedFolder, sizeof v); strAppend(v, ")", sizeof v); }
+        else strCopy(v, "Off", sizeof v);
+        field("Shared disk", v);
+        break;
+    case ItHeadDisks: strAppend(out, "DISKS", max); break;
+    case ItHeadSettings: strAppend(out, "SETTINGS", max); break;
+    case ItHeadMac: strAppend(out, "THE MAC", max); break;
+    case ItHeadScsi: strAppend(out, "SCSI HARD DISKS (restart the Mac to change)", max); break;
+    case ItHeadCd: strAppend(out, "CD-ROM (changes at once)", max); break;
+    case ItHeadEmulation: strAppend(out, "EMULATION", max); break;
+    case ItHeadDisplay: strAppend(out, "DISPLAY AND SOUND", max); break;
+    case ItHeadInput: strAppend(out, "MOUSE AND KEYBOARD", max); break;
+    case ItHeadConnection: strAppend(out, "THE PI'S CONNECTION", max); break;
+    case ItHeadWifi: strAppend(out, "WI-FI", max); break;
+    case ItHeadSharing: strAppend(out, "FOR THE MAC (after a restart)", max); break;
     case ItNetMode: {
         const char *m = strEqNoCase(cfg.network, "ethernet") ? "Ethernet cable" : strEqNoCase(cfg.network, "wifi") ? "Wi-Fi"
                       : strEqNoCase(cfg.network, "off") ? "Off" : "Automatic";
@@ -368,7 +418,7 @@ void Osd::label(int item, char *out, u32 max)
     }
     case ItWifiCountry: field("Wi-Fi country", cfg.wifiCountry); break;
     case ItCdrom: {
-        char name[20] = "CD-ROM (ID ";
+        char name[20] = "Drive (SCSI ID ";
         appendUint(name, (u32)(cfg.cdromId < 0 ? 3 : cfg.cdromId), sizeof name);
         strAppend(name, ")", sizeof name);
         const char *n = host.cdName();
@@ -376,7 +426,7 @@ void Osd::label(int item, char *out, u32 max)
         break;
     }
     case ItWifiScan: strAppend(out, "Choose Wi-Fi network (search)  >", max); break;
-    case ItKeyboard: field("Keyboard layout", strEqNoCase(cfg.keyboard, "us") ? "US" : "UK"); break;
+    case ItKeyboard: field("Typing layout", strEqNoCase(cfg.keyboard, "us") ? "US" : "UK"); break;
     case ItNetApply: strAppend(out, pendingReboot ? "Save and restart now" : "Save and restart", max); break;
     case ItReset: strAppend(out, disksChanged ? "Restart the Mac (attach new disks)" : "Restart the Mac", max); break;
     case ItInterrupt: strAppend(out, "Press the interrupt switch", max); break;
@@ -411,7 +461,7 @@ void Osd::label(int item, char *out, u32 max)
         else strAppend(v, "Unlimited", sizeof v);
         field("Speed", v);
         break;
-    case ItJit: field("JIT (Quadra, testing)", cfg.jit ? "On" : "Off"); break;
+    case ItJit: field("JIT (Quadra)", cfg.jit ? "On" : "Off"); break;
     case ItPalette: field("B&W colours", paletteName(cfg.palette)); break;
     case ItSound: field("Sound", cfg.sound ? "On" : "Off"); break;
     case ItVolume: appendUint(v, (u32)cfg.volume, sizeof v); field("Volume", v); break;
@@ -439,13 +489,18 @@ void Osd::draw(Surface &s, const Font &f)
     if (!isOpen) return;
     int fw = f.width(), fh = f.height();
     int cols = s.width / fw - 4;
-    if (cols > 50) cols = 50;
+    if (cols > 52) cols = 52;
     if (cols < 20) cols = 20;
     int list[kMaxItems];
     int n = page == PagePicker ? 0 : items(page, list);
-    int rows = page == PagePicker ? kVisible + 2 : (page == PageNetwork ? n + 4 : n);
+    if (page != PagePicker) {
+        int &cur = sel[page];
+        if (cur < 0 || cur >= n || heading(list[cur])) { cur = n - 1; move(1); }
+    }
+    int top = page == PageMain ? 2 : page == PageNetwork ? 3 : 0;     // status lines above the items
+    int rows = page == PagePicker ? kVisible + 2 : n + top + (top ? 1 : 0) + 2;   // + message, footer
     int w = (cols + 2) * fw;
-    int h = (rows + 6) * fh;
+    int h = (rows + 2) * fh;
     if (h > s.height) h = s.height;
     int x = (s.width - w) / 2, y = (s.height - h) / 2;
     if (x < 0) x = 0;
@@ -457,18 +512,22 @@ void Osd::draw(Surface &s, const Font &f)
     int tx = x + fw, ty = y + fh / 4;
     char line[96];
 
-    static const char *titles[] = {"Mac Emulator", "Hard disks", "Machine, ROM and memory", "Display, sound and input",
-                                   "Network", ""};
-    if (page == PagePicker) {
-        const char *t = pickTarget == PickHardDisk ? "Choose a hard disk image" : pickTarget == PickRom ? "Choose a ROM"
-                      : pickTarget == PickCd ? "Choose a CD-ROM image (.iso .toast .cdr)"
-                      : pickTarget == PickWifi ? "Choose your Wi-Fi network"
-                      : "Choose a floppy disk";
-        drawText(s, f, tx, ty, t, ColSelFg);
-    } else {
-        drawText(s, f, tx, ty, titles[page], ColSelFg);
+    static const char *titles[] = {"Mac Emulator", "Hard disks and CD-ROM", "Machine, ROM and memory",
+                                   "Speed, display, sound and input", "Network and sharing", ""};
+    const char *title = titles[page];
+    if (page == PagePicker)
+        title = pickTarget == PickHardDisk ? "Choose a hard disk image" : pickTarget == PickRom ? "Choose a ROM"
+              : pickTarget == PickCd ? "Choose a CD-ROM image (.iso .toast .cdr)"
+              : pickTarget == PickWifi ? "Choose your Wi-Fi network"
+              : "Choose a floppy disk";
+    drawText(s, f, tx, ty, title, ColSelFg);
+    if (page == PageMain) {                                         // the version, at the right of the title
+        const char *v = host.infoLine(2);
+        int len = (int)strLen(v), room = cols - (int)strLen(title) - 2;
+        if (len > 0 && len <= room) drawText(s, f, x + w - fw - len * fw, ty, v, ColSelFg);
     }
     ty = y + 2 * fh;
+    const char *footer;
 
     if (page == PagePicker) {
         int total = pickCount + 1;
@@ -490,37 +549,38 @@ void Osd::draw(Surface &s, const Font &f)
         return;
     }
 
-    if (page == PageNetwork) {
-        for (int i = 0; i < 3; i++) {
-            strCopy(line, host.networkLine(i), (u32)cols + 1);
-            drawText(s, f, tx, ty, line, i == 0 ? ColMenuFg : ColDim);
-            ty += fh;
-        }
-        ty += fh / 2;
-    }
-
-    int &cur = sel[page];
-    if (cur >= n) cur = n - 1;
-    for (int i = 0; i < n; i++) {
-        bool hot = i == cur;
-        if (hot) fillRect(s, x + fw / 2, ty, w - fw, fh, ColSelBg);
-        label(list[i], line, (u32)cols + 1);
-        drawText(s, f, tx, ty, line, hot ? ColSelFg : ColMenuFg);
+    // Status above the items: the Mac and sharing (main page), the network.
+    for (int i = 0; i < top; i++) {
+        strCopy(line, page == PageMain ? host.infoLine(i) : host.networkLine(i), (u32)cols + 1);
+        drawText(s, f, tx, ty, line, page == PageNetwork && i == 0 ? ColMenuFg : ColDim);
         ty += fh;
     }
-    ty += fh / 2;
+    if (top) ty += fh / 2;
+
+    int cur = sel[page];
+    for (int i = 0; i < n; i++) {
+        label(list[i], line, (u32)(heading(list[i]) ? cols + 1 : cols - 1));
+        if (heading(list[i])) {
+            drawText(s, f, tx, ty, line, ColDim);
+        } else {
+            bool hot = i == cur;
+            if (hot) fillRect(s, x + fw / 2, ty, w - fw, fh, ColSelBg);
+            char indented[100] = "  ";
+            strAppend(indented, line, (u32)cols + 1);
+            drawText(s, f, tx, ty, indented, hot ? ColSelFg : ColMenuFg);
+        }
+        ty += fh;
+    }
+    ty += fh / 4;
     const char *msg = message[0] ? message
                     : editItem >= 0 ? "Type, then Enter to keep or Esc to cancel"
-                    : ((page == PageMachine || page == PageNetwork) && pendingReboot) ? "Changes apply after a restart" : 0;
+                    : ((page == PageMachine || page == PageNetwork) && pendingReboot) ? "Changes apply after Save and restart" : 0;
     if (msg) drawText(s, f, tx, ty, msg, ColSelBg);
-    if (page == PageMain) {
-        ty = y + h - 2 * fh - fh / 4;
-        for (int i = 0; i < 2; i++) {
-            strCopy(line, host.infoLine(i), (u32)cols + 1);
-            drawText(s, f, tx, ty, line, ColDim);
-            ty += fh;
-        }
-    }
+
+    footer = editItem >= 0 ? "Enter: keep   Esc: cancel   Left: delete"
+           : page == PageMain ? "Arrows: move, change   Enter: open   Esc: close"
+           : "Arrows: move, change   Enter: open   Esc: back";
+    drawText(s, f, tx, y + h - fh - fh / 4, footer, ColDim);
 }
 
 } // namespace macemu

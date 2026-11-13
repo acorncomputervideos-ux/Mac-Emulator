@@ -104,21 +104,26 @@ Three models are emulated:
 
 **Emulator controls**
 - **F12** (or Pause, Scroll Lock, the Menu key) opens the on-screen menu.
-  The Mac pauses while it is open.
-  - *Floppy 1 / Floppy 2*: insert or eject a floppy from the `disks` folder.
-  - *Hard disks*: choose the image for each SCSI ID 0–6 (from the top of the
-    card or the `disks` folder), then *Restart the Mac* to use them.
+  The Mac pauses while it is open. The top shows the Mac (model, memory,
+  speed, JIT), the shared disk and the web page's address; the items are in
+  sections, and the bottom line lists the keys (arrows move and change,
+  Enter opens, Esc closes or goes back).
+  - *Disks*: Floppy 1 / Floppy 2 insert or eject a floppy from the `disks`
+    folder. *Hard disks and CD-ROM* chooses the image for each SCSI ID 0–6
+    (from the top of the card or the `disks` folder; *Restart the Mac* to
+    use them) and the CD in the drive (at once).
   - *Machine, ROM and memory*: model (auto, Plus, II, Quadra), ROM file,
-    memory size, the Mac II screen size and the Quadra's monitor (VGA, or a
-    21-inch display at 1152×870). *Apply* saves the settings and
-    restarts the Pi with them.
-  - *Display, sound and input*: speed (1×–8×, unlimited), colour scheme,
-    sound, volume, mouse speed and key layout.
-  - *Screen scaling* (Machine page): Smooth fills the screen; Sharp keeps
-    square pixels at a whole-number zoom.
-  - *Network*: connection type, Wi-Fi name, password and country, keyboard
-    layout for typing them, and the web file manager's address.
-  - Restart the Mac, interrupt switch, screenshot, save settings.
+    memory size, the Mac II screen size, the Quadra's monitor (VGA, or a
+    21-inch display at 1152×870) and screen scaling (Smooth fills the
+    screen; Sharp keeps square pixels at a whole-number zoom). *Save and
+    restart* restarts the Pi with them.
+  - *Speed, display, sound, input*: speed (1×–8×, unlimited), the JIT,
+    colour scheme, sound, volume, mouse speed and the Alt key.
+  - *Network and sharing*: connection type, Wi-Fi name, password and
+    country, the layout for typing them, the web page's address; and for
+    the Mac: its internet, the HTTPS helper and the shared disk, on or off.
+  - *The Mac*: restart, interrupt switch, screenshot, save settings,
+    hibernate, turn off the Pi.
 - **Power key** (Pi 400: Fn+F10; Pi 5: the power button; keyboards with a
   power key): the Mac II and Quadra ask "Shut Down?"; shutting the Mac down
   turns the Pi off on a Pi 400 or Pi 5, and the power key starts it again.
@@ -136,7 +141,7 @@ Three models are emulated:
 
 **Network: Wi-Fi or Ethernet**
 - Wi-Fi (Pi 3, 3+, 4, 400, 5, Zero W and Zero 2 W): open the F12 menu,
-  choose *Network*, then *Choose Wi-Fi network* (a scan, strongest first) or
+  choose *Network and sharing*, then *Choose Wi-Fi network* (a scan, strongest first) or
   type the name, enter the password, pick your country and choose *Save and
   restart*. The Wi-Fi chip's firmware is in `firmware/` on the
   card. A `wpa_supplicant.conf` of your own on the card works too.
@@ -253,7 +258,7 @@ Three models are emulated:
 
 **CD-ROM**
 - A CD-ROM drive at SCSI ID 3 that behaves like an AppleCD 300. Choose an
-  `.iso`, `.toast` or `.cdr` image on the F12 menu's *Hard disks* page; the
+  `.iso`, `.toast` or `.cdr` image on the F12 menu's *Hard disks and CD-ROM* page; the
   Mac can eject it. Mac OS needs Apple's *Apple CD-ROM* extension, as a
   real Mac does (with *Foreign File Access* and *ISO 9660 File Access* for
   PC CDs).
@@ -262,7 +267,11 @@ Three models are emulated:
 - On the web page, *[open]* next to a disk image shows its folders and files;
   download any file as MacBinary (`.bin`: both forks, type and creator) or
   just its data fork.
-- *Send files to the Mac*: drop files of any size on the page. Small ones
+- *Send files to the Mac*: drop files of any size on the page. With the
+  shared folder on (Mac OS 7.5 and later) they go on the Mac's **Shared**
+  disk, and MacBinary files are unpacked there into the Mac file they hold
+  (icon, resource fork, type and creator kept). Otherwise, or with *Put
+  them on a transfer floppy or CD instead* ticked: small ones
   arrive on a new floppy ("Transfer 1", ...) in floppy drive 2; bigger ones
   (up to 2 GB) on a new CD-ROM disk (`Transfer 1.toast`, ...) put straight
   in the CD-ROM drive (`cdrom_id`, SCSI ID 3 by default; the Mac needs the
@@ -274,9 +283,13 @@ Three models are emulated:
   the files are all there (it says the same of CDs made by other tools).
 
 **Web file manager and software update**
-- Open `http://macemu.local/` in a browser (or the address shown on the
-  menu's *Network* page). Upload (drag and drop, up to 4 GB), download and
-  delete disk images and ROMs, and restart the Mac.
+- Open `http://macemu.local/` in a browser (or the address shown at the
+  top of the F12 menu). Works on phones, and follows the system's dark mode.
+- *This Mac* shows what the Mac is doing (model and speed, the disks in
+  each drive, the shared disk, the network), refreshed every few seconds,
+  with a button to restart it.
+- Upload (drag and drop, up to 4 GB, with a progress bar per file),
+  download and delete disk images and ROMs, and see the card's free space.
 - *Update the emulator*: drop a new `MacEmulator-SD.zip` on the page. The
   browser unpacks it and sends the new kernels, firmware and start-up files;
   then the Pi restarts. Your settings, ROMs, PRAM and disks are kept.
@@ -289,7 +302,7 @@ Three models are emulated:
 **Shared folder (Quadra, Mac OS 7.5 and later)**
 - The folder `shared` on the card is a disk named **Shared** on the Mac's
   desktop, read and written by both sides. Put files in it from the web page
-  (the upload box's *the shared folder*) or a computer and they are on the
+  (*Send files to the Mac*) or a computer and they are on the
   Mac within seconds, an open window included; save or copy files to it on
   the Mac and they are on the card. Any size, folders too.
 - Resource forks and Finder info (type, creator, icons, positions) go in

@@ -1,0 +1,114 @@
+// Mac file names on a host's file system (see macnames.h).
+#include "macnames.h"
+
+namespace macemu {
+
+namespace {
+
+// Mac Roman 0x80-0xFF in Unicode.
+const u16 kMacRoman[128] = {
+    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7, 0x00E9, 0x00E8,
+    0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3, 0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC,
+    0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF, 0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8,
+    0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211, 0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8,
+    0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB, 0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153,
+    0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA, 0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02,
+    0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
+    0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7,
+};
+
+// Code page 850 0x80-0xFF in Unicode (FatFs names on the Pi).
+const u16 kCp850[128] = {
+    0x00C7, 0x00FC, 0x00E9, 0x00E2, 0x00E4, 0x00E0, 0x00E5, 0x00E7, 0x00EA, 0x00EB, 0x00E8, 0x00EF, 0x00EE, 0x00EC, 0x00C4, 0x00C5,
+    0x00C9, 0x00E6, 0x00C6, 0x00F4, 0x00F6, 0x00F2, 0x00FB, 0x00F9, 0x00FF, 0x00D6, 0x00DC, 0x00F8, 0x00A3, 0x00D8, 0x00D7, 0x0192,
+    0x00E1, 0x00ED, 0x00F3, 0x00FA, 0x00F1, 0x00D1, 0x00AA, 0x00BA, 0x00BF, 0x00AE, 0x00AC, 0x00BD, 0x00BC, 0x00A1, 0x00AB, 0x00BB,
+    0x2591, 0x2592, 0x2593, 0x2502, 0x2524, 0x00C1, 0x00C2, 0x00C0, 0x00A9, 0x2563, 0x2551, 0x2557, 0x255D, 0x00A2, 0x00A5, 0x2510,
+    0x2514, 0x2534, 0x252C, 0x251C, 0x2500, 0x253C, 0x00E3, 0x00C3, 0x255A, 0x2554, 0x2569, 0x2566, 0x2560, 0x2550, 0x256C, 0x00A4,
+    0x00F0, 0x00D0, 0x00CA, 0x00CB, 0x00C8, 0x0131, 0x00CD, 0x00CE, 0x00CF, 0x2518, 0x250C, 0x2588, 0x2584, 0x00A6, 0x00CC, 0x2580,
+    0x00D3, 0x00DF, 0x00D4, 0x00D2, 0x00F5, 0x00D5, 0x00B5, 0x00FE, 0x00DE, 0x00DA, 0x00DB, 0x00D9, 0x00FD, 0x00DD, 0x00AF, 0x00B4,
+    0x00AD, 0x00B1, 0x2017, 0x00BE, 0x00B6, 0x00A7, 0x00F7, 0x00B8, 0x00B0, 0x00A8, 0x00B7, 0x00B9, 0x00B3, 0x00B2, 0x25A0, 0x00A0,
+};
+
+int fromUnicode(const u16 *table, u32 c)                // the byte, or -1
+{
+    if (c < 0x80) return (int)c;
+    for (int i = 0; i < 128; i++) if (table[i] == c) return 0x80 + i;
+    return -1;
+}
+
+inline char hexDigit(int v) { return (char)(v < 10 ? '0' + v : 'A' + v - 10); }
+inline int hexValue(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; }
+
+inline u8 macNameUpper(u8 c) { return c >= 'a' && c <= 'z' ? (u8)(c - 32) : c; }
+
+} // namespace
+
+int macToHostName(const u8 *mac, int len, char *out, int max, bool utf8)
+{
+    int o = 0;
+    auto put = [&](char ch) { if (o + 1 < max) out[o++] = ch; };
+    auto esc = [&](u8 ch) { put('%'); put(hexDigit(ch >> 4)); put(hexDigit(ch & 15)); };
+    for (int i = 0; i < len; i++) {
+        u8 c = mac[i];
+        bool edge = (i == 0 && c == '.') || (i == len - 1 && (c == '.' || c == ' '));   // FAT drops trailing dots and spaces
+        if (c < 0x20 || c == 0x7F || c == '%' || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?'
+            || c == '"' || c == '<' || c == '>' || c == '|' || edge) { esc(c); continue; }
+        if (c < 0x80) { put((char)c); continue; }
+        u32 u = kMacRoman[c - 0x80];
+        if (utf8) {
+            if (u < 0x800) { put((char)(0xC0 | (u >> 6))); put((char)(0x80 | (u & 0x3F))); }
+            else { put((char)(0xE0 | (u >> 12))); put((char)(0x80 | ((u >> 6) & 0x3F))); put((char)(0x80 | (u & 0x3F))); }
+        } else {
+            int b = fromUnicode(kCp850, u);
+            if (b < 0) esc(c); else put((char)b);
+        }
+    }
+    out[o] = 0;
+    return o;
+}
+
+int hostToMacName(const char *host, u8 *mac, bool utf8)
+{
+    u8 full[256];
+    int n = 0;
+    const u8 *p = (const u8 *)host;
+    while (*p && n < 255) {
+        u32 u;
+        if (*p == '%' && hexValue((char)p[1]) >= 0 && hexValue((char)p[2]) >= 0) {
+            full[n++] = (u8)(hexValue((char)p[1]) * 16 + hexValue((char)p[2]));
+            p += 3;
+            continue;
+        }
+        if (*p < 0x80) u = *p++;
+        else if (utf8) {
+            if ((*p & 0xE0) == 0xC0 && p[1]) { u = (u32)(*p & 0x1F) << 6 | (p[1] & 0x3F); p += 2; }
+            else if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) { u = (u32)(*p & 0x0F) << 12 | (u32)(p[1] & 0x3F) << 6 | (p[2] & 0x3F); p += 3; }
+            else if ((*p & 0xF8) == 0xF0 && p[1] && p[2] && p[3]) { u = '?'; p += 4; }
+            else { u = '?'; p++; }
+        } else u = kCp850[*p++ - 0x80];
+        int b = fromUnicode(kMacRoman, u);
+        if (u == ':') b = '-';
+        full[n++] = (u8)(b < 0 ? '?' : b);
+    }
+    if (n <= 31) {
+        for (int i = 0; i < n; i++) mac[i] = full[i];
+        return n;
+    }
+    // Too long for the Mac: the start, '#', and a hash of the whole name.
+    u32 h = 2166136261u;
+    for (const u8 *q = (const u8 *)host; *q; q++) h = (h ^ *q) * 16777619u;
+    for (int i = 0; i < 25; i++) mac[i] = full[i];
+    mac[25] = '#';
+    for (int i = 0; i < 5; i++) mac[26 + i] = (u8)hexDigit((h >> (16 - 4 * i)) & 15);
+    return 31;
+}
+
+bool sameMacName(const u8 *a, int la, const u8 *b, int lb)
+{
+    if (la != lb) return false;
+    for (int i = 0; i < la; i++) if (macNameUpper(a[i]) != macNameUpper(b[i])) return false;
+    return true;
+}
+
+
+} // namespace macemu

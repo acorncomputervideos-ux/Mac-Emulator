@@ -5,7 +5,7 @@ CXX      ?= g++
 CXXFLAGS ?= -O2 -g -Wall -Wextra
 BUILD    := build
 
-CORE     := src/core/macii.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/scsicmd.cpp src/core/rtc.cpp src/core/adb.cpp src/core/asc.cpp src/core/nubusvideo.cpp src/core/mmu040.cpp src/core/dafb.cpp src/core/esp.cpp src/core/quadra.cpp src/core/scc.cpp src/core/sonic.cpp src/core/mac.cpp src/core/jit.cpp src/core/state.cpp src/core/sharedfs.cpp
+CORE     := src/core/macii.cpp src/core/m68k.cpp src/core/fpu.cpp src/core/fmath.cpp src/core/via.cpp src/core/iwm.cpp src/core/scsi.cpp src/core/scsicmd.cpp src/core/rtc.cpp src/core/adb.cpp src/core/asc.cpp src/core/nubusvideo.cpp src/core/mmu040.cpp src/core/dafb.cpp src/core/esp.cpp src/core/quadra.cpp src/core/scc.cpp src/core/sonic.cpp src/core/mac.cpp src/core/jit.cpp src/core/state.cpp src/core/sharedfs.cpp src/core/macnames.cpp
 FRONTEND := src/frontend/config.cpp src/frontend/keymap.cpp src/frontend/video.cpp src/frontend/osd.cpp src/frontend/natrouter.cpp
 HEADERS  := $(wildcard src/core/*.h src/frontend/*.h src/host/*.h)
 
@@ -49,8 +49,8 @@ $(BUILD)/videotest: tests/videotest.cpp $(CORE) $(HEADERS) | $(BUILD)
 $(BUILD)/maciitest: tests/maciitest.cpp $(CORE) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/maciitest.cpp $(CORE)
 
-$(BUILD)/webtest: tests/webtest.cpp src/circle/webserver.cpp src/circle/webserver.h $(wildcard tests/webshim/*/*.h tests/webshim/*/*/*.h) | $(BUILD)
-	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -I tests/webshim -o $@ tests/webtest.cpp src/circle/webserver.cpp src/frontend/hfs.cpp -lpthread
+$(BUILD)/webtest: tests/webtest.cpp src/circle/webserver.cpp src/circle/webserver.h src/core/macnames.cpp src/core/macnames.h $(wildcard tests/webshim/*/*.h tests/webshim/*/*/*.h) | $(BUILD)
+	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -I tests/webshim -o $@ tests/webtest.cpp src/circle/webserver.cpp src/frontend/hfs.cpp src/core/macnames.cpp -lpthread
 
 $(BUILD)/nattest: tests/nattest.cpp src/frontend/natrouter.cpp src/frontend/natrouter.h src/host/natposix.h | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/nattest.cpp src/frontend/natrouter.cpp -lpthread
@@ -61,8 +61,8 @@ $(BUILD)/proxytest: tests/proxytest.cpp src/frontend/httpsproxy.h src/frontend/n
 $(BUILD)/hfstest: tests/hfstest.cpp src/frontend/hfs.cpp src/frontend/hfs.h | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/hfstest.cpp src/frontend/hfs.cpp
 
-$(BUILD)/sharedfstest: tests/sharedfstest.cpp src/core/sharedfs.cpp src/core/m68k.cpp src/core/jit.cpp $(HEADERS) | $(BUILD)
-	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/sharedfstest.cpp src/core/sharedfs.cpp src/core/m68k.cpp src/core/jit.cpp
+$(BUILD)/sharedfstest: tests/sharedfstest.cpp src/core/sharedfs.cpp src/core/macnames.cpp src/core/m68k.cpp src/core/jit.cpp $(HEADERS) | $(BUILD)
+	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/sharedfstest.cpp src/core/sharedfs.cpp src/core/macnames.cpp src/core/m68k.cpp src/core/jit.cpp
 
 $(BUILD)/mmutest: tests/mmutest.cpp src/core/m68k.cpp src/core/mmu040.cpp $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -fsanitize=address,undefined -o $@ tests/mmutest.cpp src/core/m68k.cpp src/core/jit.cpp src/core/mmu040.cpp

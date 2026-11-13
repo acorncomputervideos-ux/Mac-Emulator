@@ -23,6 +23,8 @@ public:
 	virtual boolean FileInUse (const char *pPath) = 0;	// relative to the card's root
 	virtual const char *DiskDir (void) = 0;
 	virtual const char *SharedDir (void) { return ""; }	// the Mac's shared folder, or ""
+	// What the Mac is doing, for the page: "name<TAB>value" lines.
+	virtual void StatusText (char *pOut, unsigned nMax) { if (nMax) pOut[0] = '\0'; }
 	virtual const char *Version (void) = 0;			// shown on the page
 	virtual macemu::u32 MacTime (void) = 0;			// now, in the Mac's clock
 	virtual macemu::u32 MaxFloppyBytes (void) = 0;		// 819200, or 1474560 with a SuperDrive
@@ -63,7 +65,9 @@ private:
 	void Serve (CSocket *pSocket);
 	boolean ReadRequest (CSocket *pSocket, TRequest *pRequest);
 	void SendIndex (CSocket *pSocket);
-	void ListFolder (const char *pFolder, boolean bDiskDir);
+	void ListFolder (const char *pFolder, boolean bDiskDir, const char *pTitle);
+	void OutStatusRows (void);
+	boolean UnpackMacBinary (const char *pPath, char *pReply, unsigned nMax);
 	void SendFile (CSocket *pSocket, const char *pPath);
 	void ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *pPath, boolean bUpdate = FALSE);
 	void Reboot (CSocket *pSocket);

@@ -30,7 +30,7 @@ public:
     virtual void powerOff() = 0;                        // save everything and turn the Pi off
     virtual bool hibernate() = 0;                       // save the running Mac and turn off (false: cannot)
     virtual bool screenshot() = 0;
-    virtual const char *infoLine(int n) = 0;            // n = 0..1, status text
+    virtual const char *infoLine(int n) = 0;            // n = 0..1 status lines, 2: version (title bar)
     virtual const char *networkLine(int n) = 0;         // n = 0..2, network status
 };
 
@@ -47,7 +47,7 @@ public:
     void draw(Surface &s, const Font &f);
     bool needsRedraw() { bool d = dirty; dirty = false; return d; }
     // Status that changes by itself (network) is on screen: redraw it.
-    void refresh() { if (isOpen && page == PageNetwork) dirty = true; }
+    void refresh() { if (isOpen && (page == PageNetwork || page == PageMain)) dirty = true; }
 
     // Text entry (Wi-Fi name and password): while editing() the frontend
     // passes typed characters here ('\b' deletes); Enter keeps, Esc cancels.
@@ -58,7 +58,7 @@ public:
     bool rebootPending() const { return pendingReboot; }
 
 private:
-    enum { kMaxFiles = 128, kVisible = 12, kMaxItems = 16 };
+    enum { kMaxFiles = 128, kVisible = 12, kMaxItems = 24 };
     enum Page { PageMain, PageDisks, PageMachine, PagePrefs, PageNetwork, PagePicker };
     enum Item {
         // main
@@ -71,8 +71,13 @@ private:
         // display and sound
         ItSpeed, ItJit, ItPalette, ItSound, ItVolume, ItMouse, ItAlt, ItPrefsBack,
         // network
-        ItNetMode, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry, ItKeyboard, ItNetApply, ItNetworkBack,
+        ItNetMode, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry, ItKeyboard,
+        ItMacInternet, ItHttps, ItShared, ItNetApply, ItNetworkBack,
+        // section headings: shown, never selected
+        ItHeadDisks, ItHeadSettings, ItHeadMac, ItHeadScsi, ItHeadCd, ItHeadEmulation, ItHeadDisplay,
+        ItHeadInput, ItHeadConnection, ItHeadWifi, ItHeadSharing, ItHeadLast = ItHeadSharing,
     };
+    static bool heading(int item) { return item >= ItHeadDisks && item <= ItHeadLast; }
     enum PickTarget { PickFloppy1, PickFloppy2, PickHardDisk, PickRom, PickWifi, PickCd };
 
     Config &cfg;
@@ -89,6 +94,8 @@ private:
     char editBuf[64];
 
     int items(Page p, int *out) const;
+    void move(int dir);                 // the next selectable item that way (wraps)
+    void selectItem(Page p, int item);
     void label(int item, char *out, u32 max);
     void adjust(int item, int dir);
     void activate(int item);

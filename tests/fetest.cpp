@@ -355,6 +355,9 @@ static void testOsd()
 
     // Main page actions.
     osd.open();
+    osd.key(Osd::NavPageUp); osd.key(Osd::NavUp); osd.key(Osd::NavSelect);   // wraps to Resume, past headings
+    CHECK(!osd.active());
+    osd.open();
     go(osd, 9); osd.key(Osd::NavSelect);
     CHECK(host.saves == 1 && osd.active());
     go(osd, 8); osd.key(Osd::NavSelect);
@@ -409,6 +412,20 @@ static void testOsd()
     CHECK(strEq(cfg.wifiCountry, "US"));
     net.key(Osd::NavDown); net.key(Osd::NavSelect);
     CHECK(strEq(cfg.keyboard, "us"));
+    {                                                                         // sharing, below a heading
+        int internet = cfg.macInternet, https = cfg.httpsHelper;
+        strCopy(cfg.sharedFolder, "shared", sizeof cfg.sharedFolder);
+        net.key(Osd::NavDown); net.key(Osd::NavRight);
+        CHECK(cfg.macInternet == !internet);
+        net.key(Osd::NavDown); net.key(Osd::NavSelect);
+        CHECK(cfg.httpsHelper == !https);
+        net.key(Osd::NavDown); net.key(Osd::NavRight);
+        CHECK(cfg.sharedFolder[0] == 0);
+        net.key(Osd::NavLeft);
+        CHECK(strEq(cfg.sharedFolder, "shared"));
+        net.key(Osd::NavUp); net.key(Osd::NavUp); net.key(Osd::NavUp);
+        cfg.macInternet = internet; cfg.httpsHelper = https;
+    }
     {
         BoxFont f;
         std::vector<u32> px(640 * 480 + 256, 0x99);

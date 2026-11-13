@@ -77,6 +77,7 @@ static std::string hostPath(const char *path)
 
 FRESULT f_open(FIL *fp, const char *path, int mode)
 {
+    if ((mode & FA_CREATE_NEW) && access(hostPath(path).c_str(), F_OK) == 0) return FR_EXIST;
     fp->f = fopen(hostPath(path).c_str(), (mode & FA_WRITE) ? "wb" : "rb");
     if (!fp->f) return FR_NO_FILE;
     struct stat st;
@@ -138,6 +139,8 @@ class Host : public CWebServerHost {
 public:
     boolean FileInUse(const char *p) override { return strcmp(p, "hd0.img") == 0 || strcmp(p, "disks/inuse.dsk") == 0; }
     const char *DiskDir() override { return "disks"; }
+    const char *SharedDir() override { return "shared"; }
+    void StatusText(char *o, unsigned n) override { snprintf(o, n, "Mac\tQuadra 650 & <b>\nNetwork\tup\n"); }
     const char *Version() override { return "test <1>"; }
     macemu::u32 MacTime() override { return 0xE0000000u; }
     macemu::u32 MaxFloppyBytes() override { return 1474560; }
@@ -250,6 +253,39 @@ int main(int argc, char **argv)
     CHECK(r.body.find("in use") != std::string::npos);
     CHECK(r.body.find("the disks folder") != std::string::npos);
     CHECK(r.body.find("</html>") != std::string::npos);
+
+    // The status panel: the host's lines, escaped; /status as plain text.
+    CHECK(r.body.find("Quadra 650 &amp; &lt;b&gt;") != std::string::npos);
+    r = request("GET", "/status");
+    CHECK(r.code == 200 && r.body.find("Network\tup") != std::string::npos);
+
+    // The shared folder: listed (not the Finder's Desktop file); a
+    // MacBinary sent into it becomes the Mac file, forks and Finder info.
+    mkdir((root + "/shared").c_str(), 0755);
+    writeFile("shared/Desktop", "finder");
+    writeFile("shared/notes.txt", "hello");
+    r = request("GET", "/");
+    CHECK(r.body.find("notes.txt") != std::string::npos);
+    CHECK(r.body.find("/files/shared/Desktop") == std::string::npos);
+    {
+        macemu::HfsEntry e = {};
+        strcpy(e.name, "Caf\x8E");             // Mac Roman e-acute
+        e.type = 0x54455854; e.creator = 0x74747874;   // TEXT ttxt
+        e.dataLen = 5; e.rsrcLen = 3; e.finderFlags = 0x0100;
+        u8 h[128];
+        macemu::macBinaryHeader(e, h);
+        std::string bin((char *)h, 128);
+        bin += "data!" + std::string(123, '\0') + "RSC" + std::string(125, '\0');
+        r = request("PUT", "/files/shared/cafe.bin", bin);
+        CHECK(r.code == 201 && r.body.find("unpacked") != std::string::npos);
+        CHECK(readFile("shared/cafe.bin") == "<missing>");
+        CHECK(readFile("shared/Caf\x82") == "data!");   // the card's code page 850
+        std::string ad = readFile("shared/._Caf\x82");
+        CHECK(ad.size() == 85 && ad.substr(82) == "RSC" && ad.substr(50, 8) == "TEXTttxt");
+        // Not MacBinary: kept as it is.
+        r = request("PUT", "/files/shared/plain.bin", "just bytes");
+        CHECK(r.code == 201 && readFile("shared/plain.bin") == "just bytes");
+    }
 
     // Upload, in a size that is not a multiple of anything.
     std::string data;
