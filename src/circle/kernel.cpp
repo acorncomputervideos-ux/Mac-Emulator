@@ -2266,7 +2266,9 @@ void CKernel::WaitUntil (hostu64 nUntil)
 
 		// Idle: copy a little more of the disks into memory (64 KB takes
 		// a few ms), so that the Mac's reads need not wait for the card.
-		if (nUntil - CTimer::GetClockTicks64 () > 4000 && CFileStorage::Prefetch ())
+		if (   nUntil - CTimer::GetClockTicks64 () > 4000
+		    && (m_pWebServer == 0 || m_pWebServer->Activity ()[0] == '\0')	// not during a transfer
+		    && CFileStorage::Prefetch ())
 		{
 			CDiskProxy::Service ();
 		}
