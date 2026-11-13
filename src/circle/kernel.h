@@ -35,6 +35,7 @@
 #include "../core/mac.h"
 #include "../core/macii.h"
 #include "../core/quadra.h"
+#include "../core/jit.h"
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
 #include "../frontend/video.h"
@@ -197,6 +198,7 @@ private:
 	macemu::Machine		*m_pPlus;
 	macemu::MacII		*m_pMacII;
 	macemu::Quadra		*m_pQuadra;
+	macemu::Jit		*m_pJit;
 	macemu::Osd		*m_pOsd;
 	macemu::Surface		m_Surface;
 	macemu::Layout		m_Layout;

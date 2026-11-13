@@ -23,6 +23,7 @@
 #include "../core/mac.h"
 #include "../core/macii.h"
 #include "../core/quadra.h"
+#include "../core/jit.h"
 #include "../core/keys.h"
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
@@ -33,6 +34,8 @@
 #include "../frontend/video.h"
 
 using namespace macemu;
+
+static Jit *gJit = 0;
 
 #ifdef HAVE_CIRCLE_FONT
 struct TFont { unsigned width, height, extra_height, first_char, last_char; const void *data; };
@@ -293,6 +296,12 @@ int main(int argc, char **argv)
         quad = new Quadra(getenv("QUADRA_21") ? Dafb::Apple21 : Dafb::VGA);
         ok = quad->init(romFile.data.data(), (u32)romFile.data.size(), ram.data(), (u32)ram.size());
         if (getenv("MACEMU_NOFAST")) quad->cpu.fastDispatch = false;
+        // JIT=1: the JIT (on an AArch64 host), JIT_STATS=1: what it did.
+        if (getenv("JIT") && atoi(getenv("JIT"))) {
+            gJit = new Jit;
+            if (gJit->init()) quad->cpu.jit = gJit;
+            else { fprintf(stderr, "no JIT on this host\n"); delete gJit; gJit = 0; }
+        }
         if (getenv("SWIM_TRACE")) {
             static Quadra *tq = quad;
             quad->floppy().trace = [](void *, int line, bool write, u8 v) {
@@ -579,6 +588,9 @@ int main(int argc, char **argv)
     }
     if (quad && getenv("SHOW_VBR")) printf("vbr %08X bus error handler %08X restartable %d page faults %u\n", quad->cpu.vbr, be32(&ram[quad->cpu.vbr + 8]), quad->cpu.restartable, quad->cpu.pageFaults);
     printf("last trap %04X, pc %08X\n", mac.debugTrap(), mac.debugPC());
+    if (gJit && getenv("JIT_STATS"))
+        printf("JIT: %u blocks, %llu runs, %llu instructions, %u invalidated, %u flushes\n", gJit->blocks,
+               (unsigned long long)gJit->blockRuns, (unsigned long long)gJit->jitInstructions, gJit->invalidated, gJit->flushes);
     printf("ran %d frames, %llu cycles, PRAM %s%s\n", frames, (unsigned long long)mac.cycles(),
            mac.clockChip().pramDirty ? "modified" : "untouched", mac.poweredOff() ? ", powered off" : "");
     return 0;

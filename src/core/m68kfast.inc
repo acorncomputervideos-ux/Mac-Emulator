@@ -451,6 +451,7 @@ struct M68KFast {
 M68K::Handler *M68K::s_table000 = 0;
 M68K::Handler *M68K::s_table020 = 0;
 bool M68K::s_tablesBuilt = false;
+M68K::Handler M68K::s_generic = 0;
 
 void M68K::buildTables()
 {
@@ -461,6 +462,7 @@ void M68K::buildTables()
         s_table000[op] = M68KFast::choose((u16)op, false);
         s_table020[op] = M68KFast::choose((u16)op, true);
     }
+    s_generic = &M68KFast::generic;
     s_tablesBuilt = true;
 }
 
@@ -476,7 +478,7 @@ static struct OpHistDump {
         fprintf(stderr, "instructions %llu, generic %llu\n", all, gen);
         int shown = 0;
         for (unsigned i = 0; i < 65536 && shown < 60; i++)
-            if (M68KFast::choose((u16)idx[i], true) == &M68KFast::generic) { fprintf(stderr, "%04X %llu\n", idx[i], gOpHist[idx[i]]); shown++; }
+            if (getenv("OPHIST_ALL") || M68KFast::choose((u16)idx[i], true) == &M68KFast::generic) { fprintf(stderr, "%04X %llu\n", idx[i], gOpHist[idx[i]]); shown++; }
     }
 } s_opHistDump;
 #endif

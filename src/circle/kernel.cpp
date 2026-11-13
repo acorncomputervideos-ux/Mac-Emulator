@@ -53,6 +53,7 @@ CKernel::CKernel (void)
 	m_pPlus (0),
 	m_pMacII (0),
 	m_pQuadra (0),
+	m_pJit (0),
 	m_pOsd (0),
 	m_pROM (0),
 	m_nROMSize (0),
@@ -715,6 +716,21 @@ TShutdownMode CKernel::Run (void)
 		{
 			bOK = m_pQuadra->init (m_pROM, m_nROMSize, m_pRAM, m_Config.ramKB * 1024);
 			m_pMachine = m_pQuadra;
+			if (bOK && m_Config.jit)
+			{
+				m_pJit = new Jit;
+				if (m_pJit->init ())
+				{
+					m_pQuadra->cpu.jit = m_pJit;
+					m_Logger.Write (FromKernel, LogNotice, "JIT on");
+				}
+				else
+				{
+					m_Logger.Write (FromKernel, LogWarning, "No JIT on this Pi (64-bit kernels only)");
+					delete m_pJit;
+					m_pJit = 0;
+				}
+			}
 		}
 		else if (m_pMacII != 0)
 		{
@@ -1010,6 +1026,17 @@ void CKernel::BootLog (boolean bForce)
 		strAppend (Line, "MHz temp=", sizeof Line);
 		appendUint (Line, m_CPUThrottle.GetTemperature (), sizeof Line);
 		strAppend (Line, "C", sizeof Line);
+		if (m_pJit != 0)
+		{
+			// Blocks made, % of instructions run in blocks, flushes.
+			macemu::u64 nAll = m_pJit->jitInstructions + m_pJit->interpreted;
+			strAppend (Line, " jit=", sizeof Line);
+			appendUint (Line, m_pJit->blocks, sizeof Line);
+			strAppend (Line, "/", sizeof Line);
+			appendUint (Line, nAll ? (unsigned) (m_pJit->jitInstructions * 100 / nAll) : 0, sizeof Line);
+			strAppend (Line, "%/", sizeof Line);
+			appendUint (Line, m_pJit->flushes, sizeof Line);
+		}
 		if (m_bWiFi)
 		{
 			strAppend (Line, " wifi=", sizeof Line);

@@ -24,6 +24,7 @@ void Config::setDefaults()
     macEthernet = 6066;
     macInternet = 1;
     httpsHelper = 1;
+    jit = 0;
     strCopy(keyboard, "uk", sizeof keyboard);
 }
 
@@ -135,6 +136,7 @@ void Config::parse(const char *text, u32 len)
         else if (strEqNoCase(p, "ip_gateway")) strCopy(ipGateway, val, sizeof ipGateway);
         else if (strEqNoCase(p, "mac_internet")) macInternet = strEqNoCase(val, "off") || strEq(val, "0") ? 0 : 1;
         else if (strEqNoCase(p, "https_helper")) httpsHelper = strEqNoCase(val, "off") || strEq(val, "0") ? 0 : 1;
+        else if (strEqNoCase(p, "jit")) jit = strEqNoCase(val, "on") || strEq(val, "1") ? 1 : 0;
         else if (strEqNoCase(p, "mac_ethernet_peer")) strCopy(macEthernetPeer, val, sizeof macEthernetPeer);
         else if (strEqNoCase(p, "keyboard")) strCopy(keyboard, val, sizeof keyboard);
         else if (strEqNoCase(p, "date")) strCopy(date, val, sizeof date);
@@ -205,6 +207,7 @@ u32 Config::serialize(char *out, u32 max) const
     if (macEthernet) lineInt(out, max, "mac_ethernet", macEthernet); else line(out, max, "mac_ethernet", "off");
     line(out, max, "mac_internet", macInternet ? "on" : "off");
     line(out, max, "https_helper", httpsHelper ? "on" : "off");
+    line(out, max, "jit", jit ? "on" : "off");
     line(out, max, "mac_ethernet_peer", macEthernetPeer);
     line(out, max, "keyboard", keyboard);
     line(out, max, "date", date);

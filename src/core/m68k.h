@@ -178,8 +178,18 @@ public:
     u32 *addressRegs() { return a; }
     void flushTlb() { tlbGeneration = ~0u; }
 
+    // The JIT (AArch64 hosts): runs the usual instructions as translated
+    // blocks, with exactly the same results.  Null: the interpreter only.
+    class Jit *jit = 0;
+    // Accesses that took the slow way (devices, TLB misses): the JIT's sign
+    // that interrupts or the address map may have changed.
+    u32 slowAccesses = 0;
+
 private:
     friend struct M68KFast;
+    friend struct JitAccess;
+    friend class Jit;
+    static Handler s_generic;           // the handler of the instructions exec() decodes
     // One handler per opcode (m68kfast.inc), for the 68000 and for 68020+.
     static Handler *s_table000, *s_table020;   // 65536 entries each, from the heap
     static bool s_tablesBuilt;

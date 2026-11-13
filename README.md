@@ -286,6 +286,16 @@ Three models are emulated:
   temporary file first, so a broken transfer never leaves half a file.
 - Transfers are fastest while the F12 menu is open (the Mac is paused).
 
+**JIT (being tested)**
+- `jit=on` in `macemu.cfg` (64-bit kernels, Quadra): the 68040's code runs as
+  blocks of ARM code. Every block does exactly what the interpreter would,
+  cycle for cycle, so the Mac behaves identically (the 7.1 and 7.5.3 boots
+  give the same disk and screen bit for bit); only the speed differs. The
+  log's `jit=` shows the blocks made, the share of instructions run in
+  blocks and the cache flushes. So far each instruction is still carried
+  out by the interpreter's code; translating the common ones into ARM code
+  of their own comes next.
+
 **Multi-core**
 - On every Pi with more than one core, the emulated Mac has core 1 to
   itself and runs without interruption. Core 0 does everything else: USB

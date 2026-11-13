@@ -15,3 +15,4 @@ sdcard/*.dat
 sdcard/*.dtb
 sdcard/overlays/
 sdcard/LICENCE.broadcom
+build-arm64/

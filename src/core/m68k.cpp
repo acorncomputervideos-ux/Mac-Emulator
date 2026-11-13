@@ -11,6 +11,7 @@
 // signalled by the Bus are taken after the faulting instruction finishes.
 
 #include "m68k.h"
+#include "jit.h"
 
 namespace macemu {
 
@@ -164,6 +165,7 @@ u8 *M68K::tlbLookup(u32 addr, bool write, bool code)
 
 u16 M68K::fetch16Slow()
 {
+    slowAccesses++;
     u32 addr = pc;
     pc += 2;
     cyc += 4;
@@ -182,6 +184,7 @@ static const u32 kSize[3] = {1, 2, 4};
 
 u32 M68K::rdSlow(u32 addr, int sz)
 {
+    slowAccesses++;
     if (model == MC68000) {
         if (sz == 0) { cyc += 4; return bus->read8(addr); }
         if (sz == 1) { cyc += 4; return bus->read16(addr); }
@@ -228,6 +231,7 @@ u32 M68K::rdSlow(u32 addr, int sz)
 
 void M68K::wrSlow(u32 addr, int sz, u32 v)
 {
+    slowAccesses++;
     if (bus->busError && model >= MC68040) return;      // the instruction will run again: no writes now
     if (model == MC68000) {
         if (sz == 0) { cyc += 4; bus->write8(addr, (u8)v); }
@@ -533,6 +537,10 @@ u32 M68K::run(int count, u64 end)
             total += (u32)stepOne();
             continue;
         }
+        if (jit) {
+            int n = jit->exec(*this, count - i, end, total);
+            if (n > 0) { i += n - 1; continue; }
+        }
         nmiSeen = false;
         cyc = 0;
         traceNext = false;
@@ -542,8 +550,11 @@ u32 M68K::run(int count, u64 end)
         extern unsigned long long gOpHist[65536];
         gOpHist[opcode]++;
 #endif
-        table[opcode](*this, opcode);
-        if (__builtin_expect(bus->busError, 0)) busErrorException();
+        Handler h = table[opcode];
+        h(*this, opcode);
+        bool fault = bus->busError;
+        if (__builtin_expect(fault, 0)) busErrorException();
+        if (jit) jit->recorded(*this, opcode, h == s_generic, fault);
         int c = (cyc + (1 << shift) - 1) >> shift;
         cyc = c;
         totalCycles += (u32)c;
