@@ -1289,7 +1289,7 @@ void CWebServer::SendHfsFolder (CSocket *pSocket, const char *pImage, const char
 
 	char Value[16];
 	u32 nFolder = QueryValue (pQuery, "dir", Value, sizeof Value) ? (u32) atoi (Value) : 2;
-	static macemu::HfsEntry *Entries = 0;			// (on the heap: the kernel image is limited to 2 MB)
+	static macemu::HfsEntry *Entries = 0;			// (on the heap: keeps the kernel image small)
 	if (Entries == 0) Entries = new macemu::HfsEntry[400];
 	int n = Volume.list (nFolder, Entries, 400);
 

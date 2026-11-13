@@ -58,7 +58,7 @@ if [ "$("$TOP/tools/circle-usb-hook.sh" "$CIRCLE")" = patched ]; then
     rm -f "$CIRCLE"/.macemu-*
 fi
 
-STAMP="$CIRCLE/.macemu-$MODEL-mc"         # -mc: built with multi-core support
+STAMP="$CIRCLE/.macemu-$MODEL-mc4"        # -mc: multi-core support, 4: 4 MB kernel
 if [ ! -f "$STAMP" ]; then
     cd "$CIRCLE"
     rm -f .macemu-*
@@ -67,6 +67,8 @@ if [ ! -f "$STAMP" ]; then
     case "$PREFIX" in *linux*) echo 'CFLAGS += -mno-outline-atomics' >> Config.mk ;; esac
     # The Mac runs on a core of its own (not on the single-core Pi 1 / Zero).
     [ "$RASPPI" != 1 ] && echo 'DEFINE += -DARM_ALLOW_MULTI_CORE' >> Config.mk
+    # Room for the emulator: kernels up to 4 MB (Circle's default is 2 MB).
+    echo 'DEFINE += -DKERNEL_MAX_SIZE=0x400000' >> Config.mk
     ./makeall clean >/dev/null
     make -C addon/fatfs clean >/dev/null
     make -C addon/SDCard clean >/dev/null
@@ -97,12 +99,12 @@ fi
 cd "$TOP/src/circle"
 rm -f ../core/*.o ../frontend/*.o *.o ../../third_party/bearssl/src/*.o ../../third_party/bearssl/src/*/*.o libbearssl.a
 make CIRCLEHOME="$CIRCLE" -j"$(nproc)"
-# Circle refuses (or silently breaks) kernels over KERNEL_MAX_SIZE (2 MB),
+# Circle refuses (or silently breaks) kernels over KERNEL_MAX_SIZE (4 MB, set above),
 # counting code, data and zeroed data.
 ELF="${IMG%.img}.elf"
 TOTAL=$(${PREFIX}size "$ELF" | awk 'NR == 2 { print $4 }')
-if [ "$TOTAL" -gt 2097152 ]; then
-    echo "$ELF is $TOTAL bytes: over Circle's 2 MB kernel limit" >&2
+if [ "$TOTAL" -gt 4194304 ]; then
+    echo "$ELF is $TOTAL bytes: over the 4 MB kernel limit" >&2
     exit 1
 fi
 mkdir -p "$TOP/sdcard"
