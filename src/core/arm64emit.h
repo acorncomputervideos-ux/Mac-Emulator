@@ -22,6 +22,7 @@ public:
     u32 *here() const { return p; }
     u32 size() const { return (u32)(p - start); }
     void put(u32 w) { if (p < end) *p++ = w; }
+    void rewind(u32 *to) { p = to; }
 
     // Moves
     void movw(int rd, u32 v)                            // 32-bit constant
@@ -64,6 +65,34 @@ public:
     void cmpw(int rn, int rm)           { put(0x6B00001F | ((u32)rm << 16) | ((u32)rn << 5)); }
     void cmpx(int rn, int rm)           { put(0xEB00001F | ((u32)rm << 16) | ((u32)rn << 5)); }
     void cmpwi(int rn, u32 imm)         { put(0x7100001F | (imm << 10) | ((u32)rn << 5)); }
+
+    // 32-bit ALU on registers (S: set the flags).
+    void andw(int rd, int rn, int rm)   { put(0x0A000000 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rd); }
+    void orrw(int rd, int rn, int rm)   { put(0x2A000000 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rd); }
+    void eorw(int rd, int rn, int rm)   { put(0x4A000000 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rd); }
+    void subw(int rd, int rn, int rm)   { put(0x4B000000 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rd); }
+    void addsw(int rd, int rn, int rm)  { put(0x2B000000 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rd); }
+    void subsw(int rd, int rn, int rm)  { put(0x6B000000 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rd); }
+    void andsw(int rd, int rn, int rm)  { put(0x6A000000 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rd); }
+    // Shifts and bit fields (immediate).
+    void lslwi(int rd, int rn, u32 sh)  { if (!sh) { movrw(rd, rn); return; } put(0x53000000 | (((32 - sh) & 31) << 16) | ((31 - sh) << 10) | ((u32)rn << 5) | (u32)rd); }
+    void lsrwi(int rd, int rn, u32 sh)  { if (!sh) { movrw(rd, rn); return; } put(0x53007C00 | (sh << 16) | ((u32)rn << 5) | (u32)rd); }
+    void ubfxw(int rd, int rn, u32 lsb, u32 width) { put(0x53000000 | (lsb << 16) | ((lsb + width - 1) << 10) | ((u32)rn << 5) | (u32)rd); }
+    void sxtbw(int rd, int rn)          { put(0x13001C00 | ((u32)rn << 5) | (u32)rd); }
+    void sxthw(int rd, int rn)          { put(0x13003C00 | ((u32)rn << 5) | (u32)rd); }
+    void revw(int rd, int rn)           { put(0x5AC00800 | ((u32)rn << 5) | (u32)rd); }
+    void rev16w(int rd, int rn)         { put(0x5AC00400 | ((u32)rn << 5) | (u32)rd); }
+    // rd = rn + (rm << sh), 64-bit.
+    void addxLsl(int rd, int rn, int rm, u32 sh) { put(0x8B000000 | ((u32)rm << 16) | (sh << 10) | ((u32)rn << 5) | (u32)rd); }
+    // Loads and stores at [xn + wm] (wm zero-extended).
+    void ldrwR(int rt, int rn, int rm)  { put(0xB8604800 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rt); }
+    void ldrhR(int rt, int rn, int rm)  { put(0x78604800 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rt); }
+    void ldrbR(int rt, int rn, int rm)  { put(0x38604800 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rt); }
+    void strwR(int rt, int rn, int rm)  { put(0xB8204800 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rt); }
+    void strhR(int rt, int rn, int rm)  { put(0x78204800 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rt); }
+    void strbR(int rt, int rn, int rm)  { put(0x38204800 | ((u32)rm << 16) | ((u32)rn << 5) | (u32)rt); }
+    // rd = condition ? 1 : 0
+    void csetw(int rd, Cond c)          { put(0x1A9F07E0 | (((u32)c ^ 1) << 12) | (u32)rd); }
 
     // Branches.  Forward ones are emitted with no target and patched.
     u32 *bcond(Cond c)        { u32 *at = p; put(0x54000000 | (u32)c); return at; }

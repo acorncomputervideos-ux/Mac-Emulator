@@ -191,6 +191,7 @@ public:
 private:
     friend struct M68KFast;
     friend struct JitAccess;
+    friend struct NativeGen;
     friend class Jit;
     static Handler s_generic;           // the handler of the instructions exec() decodes
     // One handler per opcode (m68kfast.inc), for the 68000 and for 68020+.

@@ -37,6 +37,8 @@ public:
     Jit();
     ~Jit();
     bool init(u32 codeBytes = 32 * 1024 * 1024);
+    static bool hasOwnCode(u16 op);     // translated to ARM code of its own (tests)
+    bool codePage(const u8 *hostPage) const;            // holds translated code
 
     // From the run loop, before an instruction, when nothing unusual is
     // pending: runs a block at the PC if there is one (returns the number
@@ -48,6 +50,8 @@ public:
     // Statistics
     u32 blocks = 0, flushes = 0, invalidated = 0;
     u64 blockRuns = 0, jitInstructions = 0, interpreted = 0;
+    u32 nativeInstructions = 0;         // translated to ARM code of their own
+    bool native = true;                 // false: blocks call every handler (stage 1)
 
 private:
     typedef int (*BlockFn)(M68K *c, int remaining, u64 end, u32 *total);
@@ -77,6 +81,11 @@ private:
     void finish(M68K &c);
     void translate(M68K &c);
     void flushAll();
+    // Host pages holding translated code (open addressing; 0 = empty).
+    enum { kPages = 8192 };
+    u64 *pages;
+    u32 pageCount = 0;
+    void addCodePage(M68K &c, const u8 *host);
 };
 
 } // namespace macemu

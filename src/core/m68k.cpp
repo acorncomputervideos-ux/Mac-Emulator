@@ -157,6 +157,9 @@ u8 *M68K::tlbLookup(u32 addr, bool write, bool code)
     u8 *p = bus->hostPage(phys & 0xFFFFF000u, writable);
     if (!p) return 0;
     if (write && !writable) return 0;
+    // Pages with translated code: writes take the slow way, so a block that
+    // writes to its own code stops there and is checked before it runs again.
+    if (write && jit && jit->codePage(p)) return 0;
     e.tag = tag;
     e.ptr = p;
     e.writable = writable && write;                     // later writes revalidate the M bit once

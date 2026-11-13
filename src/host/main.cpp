@@ -131,6 +131,7 @@ struct Host : OsdHost {
     void settingsChanged() override {}
     bool saveSettings() override { return true; }
     void powerOff() override {}
+    bool hibernate() override { return false; }
     void saveAndReboot() override {}
     const char *networkLine(int n) override { return n == 0 ? "Web file manager: http://192.168.1.20/" : n == 1 ? "Open it from a browser on your network" : ""; }
     bool screenshot() override { return true; }
@@ -313,6 +314,7 @@ int main(int argc, char **argv)
         // JIT=1: the JIT (on an AArch64 host), JIT_STATS=1: what it did.
         if (getenv("JIT") && atoi(getenv("JIT"))) {
             gJit = new Jit;
+            if (getenv("JIT_NATIVE") && !atoi(getenv("JIT_NATIVE"))) gJit->native = false;
             if (gJit->init()) quad->cpu.jit = gJit;
             else { fprintf(stderr, "no JIT on this host\n"); delete gJit; gJit = 0; }
         }
@@ -610,7 +612,7 @@ int main(int argc, char **argv)
     if (quad && getenv("SHOW_VBR")) printf("vbr %08X bus error handler %08X restartable %d page faults %u\n", quad->cpu.vbr, be32(&ram[quad->cpu.vbr + 8]), quad->cpu.restartable, quad->cpu.pageFaults);
     printf("last trap %04X, pc %08X\n", mac.debugTrap(), mac.debugPC());
     if (gJit && getenv("JIT_STATS"))
-        printf("JIT: %u blocks, %llu runs, %llu instructions, %u invalidated, %u flushes\n", gJit->blocks,
+        printf("JIT: %u blocks (%u instructions of their own), %llu runs, %llu instructions, %u invalidated, %u flushes\n", gJit->blocks, gJit->nativeInstructions,
                (unsigned long long)gJit->blockRuns, (unsigned long long)gJit->jitInstructions, gJit->invalidated, gJit->flushes);
     if (!saveState.empty()) {
         FILE *sf = fopen(saveState.c_str(), "wb");

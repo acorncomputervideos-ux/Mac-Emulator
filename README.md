@@ -303,9 +303,13 @@ Three models are emulated:
   cycle for cycle, so the Mac behaves identically (the 7.1 and 7.5.3 boots
   give the same disk and screen bit for bit); only the speed differs. The
   log's `jit=` shows the blocks made, the share of instructions run in
-  blocks and the cache flushes. So far each instruction is still carried
-  out by the interpreter's code; translating the common ones into ARM code
-  of their own comes next.
+  blocks and the cache flushes. The commonest instructions (MOVE, MOVEQ,
+  ADDQ/SUBQ, LEA, TST, CLR, CMP/ADD/SUB/AND/OR/EOR and their immediate and
+  address forms) become ARM code of their own, with the 68040's memory
+  access done inline through the CPU's TLB; the rest call the
+  interpreter's handlers. `make jittest` checks every one of those opcodes
+  against the interpreter from random states (on ARM, or through
+  qemu-aarch64), down to each flag, cycle and byte of memory.
 
 **Multi-core**
 - On every Pi with more than one core, the emulated Mac has core 1 to

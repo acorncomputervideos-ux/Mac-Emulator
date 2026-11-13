@@ -90,6 +90,14 @@ test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(B
 	$(BUILD)/nattest
 	$(BUILD)/proxytest
 
+# The JIT against the interpreter, on AArch64 (here through qemu-aarch64):
+#   make jittest   (needs aarch64-linux-gnu-g++ and qemu-user)
+.PHONY: jittest
+jittest:
+	mkdir -p build-arm64
+	aarch64-linux-gnu-g++ -O2 -g -Wall -Wextra -static -o build-arm64/jittest tests/jittest.cpp src/core/m68k.cpp src/core/jit.cpp
+	qemu-aarch64 build-arm64/jittest 3
+
 $(BUILD)/vectors.txt: tools/sst2txt.py | $(BUILD)
 	python3 tools/sst2txt.py $(SST) $(SST_PER_INSTRUCTION) > $@
 

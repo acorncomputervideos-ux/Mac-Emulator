@@ -35,6 +35,9 @@ void jitFlushCode(void *, u32) {}
 // The interpreter's pieces the blocks call, and the CPU's fields they use.
 struct JitAccess {
     static void busError(M68K *c) { c->busErrorException(); }
+    static u32 rdSlow(M68K *c, u32 addr, int sz) { return c->rdSlow(addr, sz); }
+    static void dropTlb(M68K &c) { c.faultSeen(); }
+    static void wrSlow(M68K *c, u32 addr, int sz, u32 v) { c->wrSlow(addr, sz, v); }
     typedef M68K::Handler Handler;
     static Handler handler(M68K &c, u16 op) { return c.table[op]; }
     static Handler generic() { return M68K::s_generic; }
@@ -52,16 +55,47 @@ struct JitAccess {
         oOpcode = __builtin_offsetof(M68K, opcode), oBus = __builtin_offsetof(M68K, bus), oIrq = __builtin_offsetof(M68K, irq),
         oImask = __builtin_offsetof(M68K, imask), oFT = __builtin_offsetof(M68K, fT), oTlbGen = __builtin_offsetof(M68K, tlbGeneration),
         oSlow = __builtin_offsetof(M68K, slowAccesses),
+        oD = __builtin_offsetof(M68K, d), oA = __builtin_offsetof(M68K, a),
+        oFC = __builtin_offsetof(M68K, fC), oFV = __builtin_offsetof(M68K, fV), oFZ = __builtin_offsetof(M68K, fZ),
+        oFN = __builtin_offsetof(M68K, fN), oFX = __builtin_offsetof(M68K, fX), oFS = __builtin_offsetof(M68K, fS),
+        oTlb = __builtin_offsetof(M68K, tlb),
+        oTlbTag = __builtin_offsetof(M68K::TlbEntry, tag), oTlbPtr = __builtin_offsetof(M68K::TlbEntry, ptr),
+        oTlbWritable = __builtin_offsetof(M68K::TlbEntry, writable),
         oBusError = __builtin_offsetof(Bus, busError),
     };
 };
 
-Jit::Jit() : table(0), code(0), codeSize(0), codeUsed(0), copies(0), copiesSize(0), copiesUsed(0) {}
+Jit::Jit() : table(0), code(0), codeSize(0), codeUsed(0), copies(0), copiesSize(0), copiesUsed(0), pages(0) {}
 
 Jit::~Jit()
 {
     delete[] table;
     delete[] copies;
+    delete[] pages;
+}
+
+static inline u32 pageHash(u64 page) { return (u32)(page ^ (page >> 13)) & 8191u; }   // kPages - 1
+
+bool Jit::codePage(const u8 *host) const
+{
+    u64 page = (u64)(unsigned long)host >> 12;
+    if (!pages || !pageCount) return false;
+    for (u32 i = pageHash(page); ; i = (i + 1) & (kPages - 1)) {
+        if (pages[i] == page) return true;
+        if (!pages[i]) return false;
+    }
+}
+
+void Jit::addCodePage(M68K &c, const u8 *host)
+{
+    u64 page = (u64)(unsigned long)host >> 12;
+    if (codePage(host)) return;
+    if (pageCount >= kPages / 2) return;               // full: flushAll empties it
+    u32 i = pageHash(page);
+    while (pages[i]) i = (i + 1) & (kPages - 1);
+    pages[i] = page;
+    pageCount++;
+    JitAccess::dropTlb(c);                              // writable entries for it must go
 }
 
 bool Jit::init(u32 codeBytes)
@@ -73,6 +107,7 @@ bool Jit::init(u32 codeBytes)
     table = new Block[kTableSize];
     copiesSize = 4 * 1024 * 1024;
     copies = new u8[copiesSize];
+    pages = new u64[kPages];
     flushAll();
     flushes = 0;
     return true;
@@ -83,6 +118,8 @@ void Jit::flushAll()
     for (u32 i = 0; i < kTableSize; i++) table[i].fn = 0;
     codeUsed = 0;
     copiesUsed = 0;
+    for (u32 i = 0; i < kPages; i++) pages[i] = 0;
+    pageCount = 0;
     recording = false;
     flushes++;
 }
@@ -155,9 +192,20 @@ void Jit::recorded(M68K &c, u16 op, bool generic, bool busError)
 void Jit::finish(M68K &c)
 {
     recording = false;
-    if (recCount > 0) translate(c);
+    // The code may have changed since it was recorded (loaded over, or the
+    // recording ran on after a TLB miss): then the recording is no use.
+    bool same = recCount > 0;
+    for (int i = 0; same && i < recCount; i++) {
+        const u8 *p = recHost + (recs[i].pc - recStart);
+        same = (u16)((p[0] << 8) | p[1]) == recs[i].op;
+    }
+    if (same) translate(c);
     recCount = 0;
 }
+
+#include "jitnative.inc"
+
+bool Jit::hasOwnCode(u16 op) { return nativeSupported(op); }
 
 // Instructions that can send the PC somewhere other than the next
 // instruction (the fast handlers of the others cannot, short of a bus
@@ -185,14 +233,15 @@ void Jit::translate(M68K &c)
 {
     using namespace a64;
     typedef JitAccess J;
-    const u32 maxWords = 96 + (u32)recCount * 40;
-    if (codeUsed + maxWords * 4 > codeSize || copiesUsed + 256 > copiesSize) flushAll();
+    const u32 maxWords = 128 + (u32)recCount * 260;
+    if (codeUsed + maxWords * 4 > codeSize || copiesUsed + 4096 > copiesSize || pageCount >= kPages / 2) flushAll();
+    addCodePage(c, (const u8 *)((unsigned long)recHost & ~4095ul));
 
     u32 *buf = (u32 *)(code + codeUsed);
     Emitter e(buf, maxWords);
     const int shift = J::model(c) >= M68K::MC68040 ? 2 : 1;
 
-    e.stpPre(29, 30, SP, -96);
+    e.stpPre(29, 30, SP, -128);                        // 96..127: kept across slow accesses
     e.stp(19, 20, SP, 16);
     e.stp(21, 22, SP, 32);
     e.stp(23, 24, SP, 48);
@@ -208,23 +257,51 @@ void Jit::translate(M68K &c)
     e.ldrw(27, 19, J::oSlow);
     e.strb(ZR, 19, J::oNmiSeen);                       // (the loop clears these each time;
     e.strb(ZR, 19, J::oTraceNext);                     // only exceptions set them)
+    e.movx(24, J::oTlb);
+    e.addxLsl(24, 19, 24, 0);                           // x24: the data TLB
+    e.ldrw(28, 19, J::oFS);
+    e.lslwi(28, 28, 1);
+    e.movw(2, 1);
+    e.orrw(28, 28, 2);                                  // w28: TLB tag bits (fS is fixed in a block)
 
     u32 *exits[kMaxInsns * 4], *slows[kMaxInsns];
     int nExits = 0, nSlows = 0;
+    u32 end = recs[recCount - 1].pc + 2;                // the code the block depends on
     for (int i = 0; i < recCount; i++) {
         const Rec &r = recs[i];
         J::Handler h = J::handler(c, r.op);
         e.movw(0, r.pc);
         e.strw(0, 19, J::oInstPC);
-        e.addwi(0, 0, 2);
-        e.strw(0, 19, J::oPc);
-        e.movw(0, 4);
-        e.strw(0, 19, J::oCyc);
         e.movw(1, r.op);
-        if (h == J::generic()) e.strh(1, 19, J::oOpcode);
-        e.movrx(0, 19);
-        e.movx(16, (u64)(unsigned long)h);
-        e.blr(16);
+        e.strh(1, 19, J::oOpcode);
+        bool own = native && h != J::generic() && nativeSupported(r.op);
+        if (own) {
+            u32 *mark = e.here();
+            NativeGen g(e, recHost + (r.pc - recStart), r.pc);
+            e.movw(9, 0);
+            u32 len = 2;
+            g.translate(r.op, len);
+            if ((r.pc & 0xFFF) + len > 0x1000) {        // runs into the next page: the handler's
+                e.rewind(mark);
+                own = false;
+            } else {
+                e.addwi(9, 9, 4 + g.extra);
+                e.strw(9, 19, J::oCyc);
+                e.movw(0, r.pc + len);
+                e.strw(0, 19, J::oPc);
+                if (r.pc + len > end) end = r.pc + len;
+                nativeInstructions++;
+            }
+        }
+        if (!own) {
+            e.movw(0, r.pc + 2);
+            e.strw(0, 19, J::oPc);
+            e.movw(0, 4);
+            e.strw(0, 19, J::oCyc);
+            e.movrx(0, 19);
+            e.movx(16, (u64)(unsigned long)h);
+            e.blr(16);
+        }
         e.ldrw(1, 19, J::oSlow);
         e.cmpw(1, 27);
         slows[nSlows++] = e.bcond(NE);
@@ -279,12 +356,12 @@ void Jit::translate(M68K &c)
     e.ldp(23, 24, SP, 48);
     e.ldp(21, 22, SP, 32);
     e.ldp(19, 20, SP, 16);
-    e.ldpPost(29, 30, SP, 96);
+    e.ldpPost(29, 30, SP, 128);
     e.ret();
 
     u32 bytes = e.size() * 4;
-#if defined(JIT_DUMP)
-    if (FILE *f = fopen("/tmp/claude-0/jitblock.bin", "wb")) { fwrite(buf, 1, bytes, f); fclose(f); }
+#if defined(JIT_DUMP)                                   // each block's code to jit-PC-ADDRESS.bin
+    { char fn[64]; snprintf(fn, sizeof fn, "jit-%08X-%p.bin", recStart, (void *)buf); if (FILE *f = fopen(fn, "wb")) { fwrite(buf, 1, bytes, f); fclose(f); } }
 #endif
     jitFlushCode(buf, bytes);
     codeUsed += (bytes + 63) & ~63u;
@@ -292,7 +369,7 @@ void Jit::translate(M68K &c)
     Block &b = table[slot(recStart)];
     b.pc = recStart;
     b.host = recHost;
-    b.len = recs[recCount - 1].pc + 2 - recStart;
+    b.len = end - recStart;
     u8 *copy = copies + copiesUsed;
     for (u32 k = 0; k < b.len; k++) copy[k] = recHost[k];
     copiesUsed += (b.len + 7) & ~7u;
