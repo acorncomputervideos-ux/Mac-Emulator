@@ -125,6 +125,13 @@ private:
 	char m_DriveReply[128];
 	void DriveRequest (CSocket *pSocket, const char *pQuery);
 	void ClipboardPost (CSocket *pSocket, TRequest *pRequest);
+
+	// Circle's Receive() loses what does not fit of a packet when given
+	// less room than FRAME_BUFFER_SIZE: whole packets go here, and are
+	// handed out from here as asked.
+	int ReceiveSome (CSocket *pSocket, void *pBuffer, unsigned nLength);
+	u8 m_Frame[FRAME_BUFFER_SIZE];
+	unsigned m_nFramePos, m_nFrameLen;
 	char m_Activity[64];
 
 	u8 *m_pBuffer;				// transfer buffer

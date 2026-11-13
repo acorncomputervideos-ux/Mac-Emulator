@@ -62,7 +62,17 @@ CSocket *CSocket::Accept(CIPAddress *, u16 *)
     return c < 0 ? 0 : new CSocket(c);
 }
 int CSocket::Send(const void *p, unsigned n, int) { return (int)send(fd, p, n, MSG_NOSIGNAL); }
-int CSocket::Receive(void *p, unsigned n, int) { return (int)recv(fd, p, n, 0); }
+// As Circle's: a packet (at most 1460 bytes here, as on Ethernet and Wi-Fi)
+// a call, and what does not fit in the room given is lost.
+int CSocket::Receive(void *p, unsigned n, int)
+{
+    char packet[1460];
+    int got = (int)recv(fd, packet, sizeof packet, 0);
+    if (got <= 0) return got;
+    int keep = got < (int)n ? got : (int)n;
+    memcpy(p, packet, (size_t)keep);
+    return keep;
+}
 int CSocket::SetOptionReceiveTimeout(unsigned us)
 {
     timeval tv = {(time_t)(us / 1000000), (suseconds_t)(us % 1000000)};

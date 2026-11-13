@@ -637,26 +637,26 @@ s16 SharedFolder::commProc(u16 message, u32 pb)
     case 0: case 3: case 4: return noErr;               // nop, load, unload
     case 2: return (s16)r16(pb + ioVRefNum) == (s16)driveNum ? noErr : extFSErr;   // IDDisk
     case 5: return r32(r32(pb + ioBuffer) + vmiMedia) == kMedia ? noErr : extFSErr;   // IDVolMount
-    case 1: {                                           // GetIcon: a disk with a folder tab, large (32 x 32)
+    case 1: {                                           // GetIcon: a smiling computer on a disk (32 x 32)
         if (r8(pb + 14) != 1 || r32(pb + 6) < 256) return afpItemNotFound;
+        // Drawn for this emulator: a little computer with a smile on its
+        // screen, sitting on a hard disk.
+        static const u32 icon[32] = {
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x007FFE00, 0x00400200, 0x005FFA00, 0x00500A00,
+            0x00500A00, 0x00524A00, 0x00524A00, 0x00500A00, 0x00542A00, 0x0053CA00, 0x00500A00, 0x005FFA00,
+            0x00400200, 0x0040F200, 0x00400200, 0x007FFE00, 0x00200400, 0x7FFFFFFE, 0x40000002, 0x40000002,
+            0x5FFFFFFA, 0x5FFFFFFA, 0x5FFFFFCA, 0x5FFFFFFA, 0x40000002, 0x7FFFFFFE, 0x00000000, 0x00000000,
+        };
+        static const u32 mask[32] = {
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x007FFE00, 0x007FFE00, 0x007FFE00, 0x007FFE00,
+            0x007FFE00, 0x007FFE00, 0x007FFE00, 0x007FFE00, 0x007FFE00, 0x007FFE00, 0x007FFE00, 0x007FFE00,
+            0x007FFE00, 0x007FFE00, 0x007FFE00, 0x007FFE00, 0x003FFC00, 0x7FFFFFFE, 0x7FFFFFFE, 0x7FFFFFFE,
+            0x7FFFFFFE, 0x7FFFFFFE, 0x7FFFFFFE, 0x7FFFFFFE, 0x7FFFFFFE, 0x7FFFFFFE, 0x00000000, 0x00000000,
+        };
         u32 buf = r32(pb + 2);
         for (u32 y = 0; y < 32; y++) {
-            u32 icon = 0, mask = 0;
-            if (y >= 8 && y <= 25) {                    // the disk: a box with a dark band and a light
-                mask = 0x7FFFFFFE;
-                icon = (y == 8 || y == 25) ? 0x7FFFFFFE : 0x40000002;
-                if (y >= 19 && y <= 22) icon |= 0x5FFFFFFA;
-                if (y == 21) icon = (icon & ~0x0000000Cu) | 0x00000008;
-            }
-            if (y >= 3 && y <= 8) {                     // a folder tab on top: shared
-                u32 tab = y == 3 ? 0x00FF0000 : 0x01008000;
-                if (y == 8) tab = 0;
-                icon |= tab;
-                mask |= y == 3 ? 0x00FF0000 : 0x01FF8000;
-            }
-            if (y >= 11 && y <= 16) icon |= y == 11 || y == 16 ? 0x00FFFF00 : 0x00800100;   // a folder shape on its face
-            w32(buf + 4 * y, icon);
-            w32(buf + 128 + 4 * y, mask);
+            w32(buf + 4 * y, icon[y]);
+            w32(buf + 128 + 4 * y, mask[y]);
         }
         w32(pb + 10, 256);
         return noErr;

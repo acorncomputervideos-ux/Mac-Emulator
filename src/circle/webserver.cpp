@@ -191,6 +191,7 @@ CWebServer::CWebServer (CNetSubSystem *pNet, const char *pDrive, CWebServerHost 
 {
 	m_Activity[0] = '\0';
 	m_InsertName[0] = '\0';
+	m_nFramePos = m_nFrameLen = 0;
 	m_bDriveRequest = FALSE;
 	m_nDriveWhich = 0;
 	m_DriveName[0] = m_DriveReply[0] = '\0';
@@ -236,6 +237,7 @@ void CWebServer::Run (void)
 		ForeignIP.Format (&From);
 		CLogger::Get ()->Write (FromWeb, LogNotice, "Connection from %s", (const char *) From);
 
+		m_nFramePos = m_nFrameLen = 0;		// (a new connection: nothing held)
 		pConnection->SetOptionReceiveTimeout (10 * 1000000);	// (the page tries a piece again after 10 s)
 		pConnection->SetOptionSendTimeout (20 * 1000000);
 		Serve (pConnection);
@@ -403,6 +405,25 @@ static int HexDigit (char c)
 	return -1;
 }
 
+int CWebServer::ReceiveSome (CSocket *pSocket, void *pBuffer, unsigned nLength)
+{
+	if (m_nFramePos == m_nFrameLen)
+	{
+		int nResult = pSocket->Receive (m_Frame, sizeof m_Frame, 0);
+		if (nResult <= 0)
+		{
+			return nResult;
+		}
+		m_nFramePos = 0;
+		m_nFrameLen = (unsigned) nResult;
+	}
+	unsigned n = m_nFrameLen - m_nFramePos;
+	if (n > nLength) n = nLength;
+	memcpy (pBuffer, m_Frame + m_nFramePos, n);
+	m_nFramePos += n;
+	return (int) n;
+}
+
 boolean CWebServer::ReadRequest (CSocket *pSocket, TRequest *pRequest)
 {
 	// Read until the blank line that ends the header.
@@ -416,8 +437,8 @@ boolean CWebServer::ReadRequest (CSocket *pSocket, TRequest *pRequest)
 			return FALSE;
 		}
 
-		int nResult = pSocket->Receive (m_Header + m_nHeaderLength,
-						sizeof m_Header - 1 - m_nHeaderLength, 0);
+		int nResult = ReceiveSome (pSocket, m_Header + m_nHeaderLength,
+						sizeof m_Header - 1 - m_nHeaderLength);
 		if (nResult <= 0)
 		{
 			return FALSE;
@@ -719,7 +740,7 @@ void CWebServer::ClipboardPost (CSocket *pSocket, TRequest *pRequest)
 	m_nBodyUnread = 0;
 	while (nHave < nLength)
 	{
-		int n = pSocket->Receive (m_pBuffer + nHave, nLength - nHave, 0);
+		int n = ReceiveSome (pSocket, m_pBuffer + nHave, nLength - nHave);
 		if (n <= 0)
 		{
 			return;
@@ -1041,7 +1062,7 @@ void CWebServer::ReceiveFile (CSocket *pSocket, TRequest *pRequest, const char *
 			unsigned nWant = BufferSize - nHave;
 			if (nWant > nLeft) nWant = (unsigned) nLeft;
 			if (nWant > FRAME_BUFFER_SIZE) nWant = FRAME_BUFFER_SIZE;
-			int nResult = pSocket->Receive (m_pBuffer + nHave, nWant, 0);
+			int nResult = ReceiveSome (pSocket, m_pBuffer + nHave, nWant);
 			if (nResult <= 0)
 			{
 				bOK = FALSE;
@@ -1970,7 +1991,7 @@ void CWebServer::SendStatus (CSocket *pSocket, unsigned nCode, const char *pMess
 		while (m_nBodyUnread > 0)
 		{
 			unsigned nWant = m_nBodyUnread > FRAME_BUFFER_SIZE ? FRAME_BUFFER_SIZE : (unsigned) m_nBodyUnread;
-			int nResult = pSocket->Receive (m_pBuffer, nWant, 0);
+			int nResult = ReceiveSome (pSocket, m_pBuffer, nWant);
 			if (nResult <= 0)
 			{
 				break;
