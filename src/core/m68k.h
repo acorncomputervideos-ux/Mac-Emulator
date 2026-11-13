@@ -7,6 +7,8 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Bus {
 public:
     virtual ~Bus() {}
@@ -78,6 +80,7 @@ struct M68KFast;
 
 class M68K {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     enum Model { MC68000 = 0, MC68020 = 2, MC68030 = 3, MC68040 = 4 };
     typedef void (*Handler)(M68K &, u16);
 

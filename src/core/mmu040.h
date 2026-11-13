@@ -10,8 +10,11 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Mmu040 : public Coprocessor, public Translator {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     explicit Mmu040(Bus &physicalBus);
 
     // Translator

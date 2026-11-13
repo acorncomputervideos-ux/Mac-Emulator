@@ -24,6 +24,7 @@
 #include "../core/macii.h"
 #include "../core/quadra.h"
 #include "../core/jit.h"
+#include "../core/state.h"
 #include "../core/keys.h"
 #include "../frontend/config.h"
 #include "../frontend/osd.h"
@@ -36,6 +37,17 @@
 using namespace macemu;
 
 static Jit *gJit = 0;
+
+// A save state in a file.
+struct FileState : StateIO {
+    FILE *f;
+    FileState(FILE *file, bool save) : StateIO(save), f(file) {}
+    void raw(void *p, u32 n) override
+    {
+        if (!ok) return;
+        if (saving() ? fwrite(p, 1, n, f) != n : fread(p, 1, n, f) != n) ok = false;
+    }
+};
 
 #ifdef HAVE_CIRCLE_FONT
 struct TFont { unsigned width, height, extra_height, first_char, last_char; const void *data; };
@@ -249,7 +261,7 @@ int main(int argc, char **argv)
     bool menu = false, traceIo = false;
     int tracePc = 0;
     u32 watchPc = 0;
-    std::string floppy[2], hd[7], cd;
+    std::string floppy[2], hd[7], cd, saveState, loadState;
     for (int i = 2; i < argc; i++) {
         std::string a = argv[i];
         const char *v = i + 1 < argc ? argv[i + 1] : "";
@@ -258,6 +270,8 @@ int main(int argc, char **argv)
         else if (a == "--floppy1") { floppy[0] = v; i++; }
         else if (a == "--floppy2") { floppy[1] = v; i++; }
         else if (a == "--cd") { cd = v; i++; }
+        else if (a == "--save-state") { saveState = v; i++; }   // the Quadra, after the frames
+        else if (a == "--load-state") { loadState = v; i++; }   // ... and before them
         else if (a.size() == 5 && a.compare(0, 4, "--hd") == 0 && a[4] >= '0' && a[4] <= '6') { hd[a[4] - '0'] = v; i++; }
         else if (a == "--frames") { frames = atoi(v); i++; }
         else if (a == "--shot-every") { shotEvery = atoi(v); i++; }
@@ -431,6 +445,13 @@ int main(int argc, char **argv)
         while (*p && *p != ':') { heldKeys.push_back((int)strtol(p, (char **)&p, 16)); if (*p == ',') p++; }
         if (*p == ':') holdFrames = atoi(p + 1);
     }
+    if (!loadState.empty()) {
+        FILE *sf = fopen(loadState.c_str(), "rb");
+        FileState st(sf, false);
+        if (sf && quad) quad->state(st);
+        if (!sf || !quad || !st.ok) { fprintf(stderr, "cannot load the state %s\n", loadState.c_str()); return 1; }
+        fclose(sf);
+    }
     for (int f = 0; f < frames; f++) {
         if (f == (getenv("HOLD_FROM") ? atoi(getenv("HOLD_FROM")) : 1)) for (int k : heldKeys) mac.keyEvent(k, true);
         if (f == holdFrames) for (int k : heldKeys) mac.keyEvent(k, false);
@@ -591,6 +612,13 @@ int main(int argc, char **argv)
     if (gJit && getenv("JIT_STATS"))
         printf("JIT: %u blocks, %llu runs, %llu instructions, %u invalidated, %u flushes\n", gJit->blocks,
                (unsigned long long)gJit->blockRuns, (unsigned long long)gJit->jitInstructions, gJit->invalidated, gJit->flushes);
+    if (!saveState.empty()) {
+        FILE *sf = fopen(saveState.c_str(), "wb");
+        FileState st(sf, true);
+        if (sf && quad) { mac.flushDisks(); quad->state(st); }
+        if (sf) fclose(sf);
+        if (!sf || !quad || !st.ok) fprintf(stderr, "cannot save the state %s\n", saveState.c_str());
+    }
     printf("ran %d frames, %llu cycles, PRAM %s%s\n", frames, (unsigned long long)mac.cycles(),
            mac.clockChip().pramDirty ? "modified" : "untouched", mac.poweredOff() ? ", powered off" : "");
     return 0;

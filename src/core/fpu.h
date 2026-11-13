@@ -14,8 +14,11 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Fpu : public Coprocessor {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     enum Type { MC68881 = 1, MC68882 = 2, MC68040FPU = 4 };
 
     explicit Fpu(int type);

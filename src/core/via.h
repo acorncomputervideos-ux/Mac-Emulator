@@ -7,8 +7,11 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Via {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     class Host {
     public:
         virtual ~Host() {}

@@ -11,8 +11,11 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Dafb {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     enum { kVramSize = 0x400000 };
     enum Display { VGA = 0, Apple21 = 1 };
 

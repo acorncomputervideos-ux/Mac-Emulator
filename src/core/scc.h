@@ -12,8 +12,11 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Scc {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     Scc();
     void reset();
     // ch: 0 = channel B, 1 = channel A (the Mac's modem port).

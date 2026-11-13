@@ -9,8 +9,11 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Asc {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     enum Type { Original = 0, Enhanced = 1 };
 
     explicit Asc(int type);

@@ -9,8 +9,11 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Rtc {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     Rtc();
     void lines(u8 pins);                // new VIA port B levels
     bool dataLine() const { return !output || dataOut; }   // level the RTC drives on bit 0
@@ -24,7 +27,7 @@ public:
 private:
     bool clk, writeProtect;
     u8 shiftReg, cmd_, extAddr;
-    int bits, state;
+    int bits, state_;
     bool output, dataOut;
     void byte(u8 v);
     u8 readReg(u8 cmd);

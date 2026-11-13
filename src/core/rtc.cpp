@@ -9,7 +9,7 @@ Rtc::Rtc()
     pramDirty = false;
     clk = false; writeProtect = false;
     shiftReg = cmd_ = extAddr = 0;
-    bits = state = 0;
+    bits = state_ = 0;
     output = false; dataOut = true;
 }
 
@@ -18,7 +18,7 @@ void Rtc::lines(u8 pins)
     bool enabled = !(pins & 0x04);
     bool c = (pins & 0x02) != 0;
     if (!enabled) {
-        bits = 0; state = 0; output = false; dataOut = true;
+        bits = 0; state_ = 0; output = false; dataOut = true;
         clk = c;
         return;
     }
@@ -39,24 +39,24 @@ void Rtc::lines(u8 pins)
 
 void Rtc::byte(u8 v)
 {
-    switch (state) {
+    switch (state_) {
     case 0:
-        if ((v & 0x78) == 0x38) { cmd_ = v; state = 2; }          // extended command
+        if ((v & 0x78) == 0x38) { cmd_ = v; state_ = 2; }          // extended command
         else if (v & 0x80) { shiftReg = readReg(v); output = true; bits = 0; }
-        else { cmd_ = v; state = 1; }
+        else { cmd_ = v; state_ = 1; }
         break;
     case 1:
         writeReg(cmd_, v);
-        state = 0;
+        state_ = 0;
         break;
     case 2:
         extAddr = (u8)(((cmd_ & 7) << 5) | ((v >> 2) & 0x1F));
         if (cmd_ & 0x80) { shiftReg = pram[extAddr]; output = true; bits = 0; }
-        else state = 3;
+        else state_ = 3;
         break;
     default:
         if (!writeProtect && pram[extAddr] != v) { pram[extAddr] = v; pramDirty = true; }
-        state = 0;
+        state_ = 0;
         break;
     }
 }

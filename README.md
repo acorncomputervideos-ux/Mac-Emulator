@@ -286,6 +286,16 @@ Three models are emulated:
   temporary file first, so a broken transfer never leaves half a file.
 - Transfers are fastest while the F12 menu is open (the Mac is paused).
 
+**Hibernate (Quadra)**
+- *Hibernate: save the Mac, turn off* on the menu's main page freezes the
+  running Mac (memory, CPU and every chip) to `macemu.state` on the card and
+  turns the Pi off. The next start carries on exactly where it was, with
+  the same windows and programs open, in a few seconds. The state is used
+  once (the disks change as soon as the Mac runs again) and only with the
+  same emulator version, ROM, memory size and hard disks; otherwise the Mac
+  starts normally and the log says why. It takes about as much room on the
+  card as the Mac has memory.
+
 **JIT (being tested)**
 - *JIT* on the menu's preferences page, or `jit=on` in `macemu.cfg` (64-bit
   kernels, Quadra; it switches when the menu closes): the 68040's code runs as

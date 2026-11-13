@@ -10,8 +10,11 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Esp {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     enum { kTargets = 7 };
 
     Esp();

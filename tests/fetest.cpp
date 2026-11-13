@@ -225,6 +225,7 @@ struct FakeHost : OsdHost {
     void saveAndReboot() override { reboots++; }
     int offs = 0;
     void powerOff() override { offs++; }
+    bool hibernate() override { return false; }
     bool screenshot() override { shots++; return true; }
     const char *infoLine(int) override { return "info"; }
     const char *networkLine(int n) override { return n == 0 ? "http://192.168.1.20/" : "net"; }
@@ -361,10 +362,12 @@ static void testOsd()
     go(osd, 7); osd.key(Osd::NavSelect);
     CHECK(host.nmis == 1 && !osd.active());
     osd.open();
-    go(osd, 10); osd.key(Osd::NavSelect);
+    go(osd, 10); osd.key(Osd::NavSelect);                       // hibernate: this host cannot
+    CHECK(osd.active());
+    go(osd, 11); osd.key(Osd::NavSelect);
     CHECK(host.offs == 1);
     osd.open();
-    go(osd, 11); osd.key(Osd::NavSelect);
+    go(osd, 12); osd.key(Osd::NavSelect);
     CHECK(!osd.active());
 
     // Network page: connection type, Wi-Fi name and password typed in.

@@ -12,6 +12,8 @@
 
 namespace macemu {
 
+class StateIO;
+
 // GCR codec, exposed for the unit tests.
 namespace gcr {
     extern const u8 kEncode[64];
@@ -24,6 +26,7 @@ namespace gcr {
 
 class Iwm {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     enum { kDrives = 2, kMaxTrackBytes = 12 * 740 };
 
     Iwm();

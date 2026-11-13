@@ -32,8 +32,11 @@
 
 namespace macemu {
 
+class StateIO;
+
 class Quadra : public Bus, public Emulator {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     enum {
         kCpuHz = 33333333,
         kCyclesPerFrame = 554170,                       // 60.15 Hz

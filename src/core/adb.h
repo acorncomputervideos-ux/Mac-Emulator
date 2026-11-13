@@ -15,6 +15,8 @@
 
 namespace macemu {
 
+class StateIO;
+
 class AdbDevice {
 public:
     AdbDevice(u8 addr, u8 handler) : address(addr), defaultAddress(addr), handlerId(handler), defaultHandler(handler) {}
@@ -33,6 +35,7 @@ public:
 
 class AdbKeyboard : public AdbDevice {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     AdbKeyboard() : AdbDevice(2, 2) { reset(); }
     void reset() override;
     int talk(int reg, u8 *out) override;
@@ -54,6 +57,7 @@ private:
 
 class AdbMouse : public AdbDevice {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     AdbMouse() : AdbDevice(3, 1) { reset(); }
     void reset() override;
     int talk(int reg, u8 *out) override;
@@ -69,6 +73,7 @@ private:
 
 class AdbTransceiver {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     enum { kMaxDevices = 4 };
 
     explicit AdbTransceiver(Via &via);
@@ -93,7 +98,7 @@ private:
     Via &via;
     AdbDevice *devices[kMaxDevices];
     int count;
-    int state;
+    int state_;
     bool intHigh;
     bool pollBlocked;
     bool pollReply;             // the data waiting came from an autopoll

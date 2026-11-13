@@ -151,7 +151,7 @@ AdbTransceiver::AdbTransceiver(Via &v) : via(v)
 
 void AdbTransceiver::reset()
 {
-    state = StateIdle;
+    state_ = StateIdle;
     intHigh = true;
     pollBlocked = quietAfterReset;
     pollReply = false;
@@ -289,10 +289,10 @@ void AdbTransceiver::receive(int newState)
 void AdbTransceiver::portB(u8 pins)
 {
     int newState = (pins >> 4) & 3;
-    if (newState == state) return;
-    state = newState;
-    if (via.shiftingOut()) send(state, via.shiftRegister());
-    else receive(state);
+    if (newState == state_) return;
+    state_ = newState;
+    if (via.shiftingOut()) send(state_, via.shiftRegister());
+    else receive(state_);
 }
 
 void AdbTransceiver::tick()
@@ -304,7 +304,7 @@ void AdbTransceiver::tick()
         ticksSinceReset = -1;
         for (int i = 0; i < count; i++) devices[i]->rescan();
     }
-    if (pollBlocked || state != StateIdle || via.shiftingOut()) return;
+    if (pollBlocked || state_ != StateIdle || via.shiftingOut()) return;
     pollBlocked = true;
     u8 sr;
     if (inLen > 0 && inIndex == 0) {                    // an answer the Mac has not read yet

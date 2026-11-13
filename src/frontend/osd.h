@@ -28,6 +28,7 @@ public:
     virtual bool saveSettings() = 0;
     virtual void saveAndReboot() = 0;                   // for model, ROM and memory changes
     virtual void powerOff() = 0;                        // save everything and turn the Pi off
+    virtual bool hibernate() = 0;                       // save the running Mac and turn off (false: cannot)
     virtual bool screenshot() = 0;
     virtual const char *infoLine(int n) = 0;            // n = 0..1, status text
     virtual const char *networkLine(int n) = 0;         // n = 0..2, network status
@@ -62,7 +63,7 @@ private:
     enum Item {
         // main
         ItFloppy1, ItFloppy2, ItDisksPage, ItMachinePage, ItPrefsPage, ItNetworkPage,
-        ItReset, ItInterrupt, ItScreenshot, ItSave, ItPowerOff, ItResume,
+        ItReset, ItInterrupt, ItScreenshot, ItSave, ItHibernate, ItPowerOff, ItResume,
         // hard disks
         ItHd0, ItHd6 = ItHd0 + 6, ItCdrom, ItDisksBack,
         // machine

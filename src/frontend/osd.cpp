@@ -197,6 +197,7 @@ void Osd::activate(int item)
     case ItScreenshot: say(host.screenshot() ? "Screenshot saved" : "Could not save the screenshot"); break;
     case ItSave: say(host.saveSettings() ? "Settings saved to macemu.cfg" : "Could not write macemu.cfg"); break;
     case ItResume: isOpen = false; break;
+    case ItHibernate: if (!host.hibernate()) say("Could not save the Mac (Quadra only; is the card full?)"); break;
     case ItPowerOff: host.powerOff(); break;
     case ItRom: openPicker(PickRom, 0); break;
     case ItWifiScan: openPicker(PickWifi, 0); break;
@@ -382,6 +383,7 @@ void Osd::label(int item, char *out, u32 max)
     case ItScreenshot: strAppend(out, "Save a screenshot", max); break;
     case ItSave: strAppend(out, "Save settings", max); break;
     case ItResume: strAppend(out, "Resume", max); break;
+    case ItHibernate: strAppend(out, "Hibernate: save the Mac, turn off", max); break;
     case ItPowerOff: strAppend(out, "Turn off the Pi", max); break;
     case ItModel: {
         const char *m = strEqNoCase(cfg.machine, "plus") ? "Macintosh Plus" : strEqNoCase(cfg.machine, "ii") ? "Macintosh II"

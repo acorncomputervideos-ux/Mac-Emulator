@@ -17,6 +17,8 @@
 
 namespace macemu {
 
+class StateIO;
+
 class EtherLink {
 public:
     virtual ~EtherLink() {}
@@ -33,6 +35,7 @@ public:
 
 class Sonic {
 public:
+    void state(StateIO &s);             // save or load (state.cpp)
     Sonic();
     void reset();
 

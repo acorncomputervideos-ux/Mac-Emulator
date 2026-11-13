@@ -102,6 +102,7 @@ public:
 	bool saveSettings (void) override;
 	bool screenshot (void) override;
 	void powerOff (void) override;
+	bool hibernate (void) override;
 	const char *infoLine (int nLine) override	{ return m_InfoLine[nLine ? 1 : 0]; }
 
 	// CWebServerHost
@@ -156,6 +157,8 @@ private:
 	void UpdateInfo (void);
 	void StartNetwork (void);
 	void UpdateJit (void);
+	void ResumeHibernation (void);
+	boolean WriteHibernation (void);
 	void StartEthernet (void);
 	void StartWiFi (void);
 	boolean WriteWiFiConfig (const char *pPath);

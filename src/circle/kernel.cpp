@@ -1,6 +1,7 @@
 // Mac Emulator for Raspberry Pi (Circle bare-metal kernel).
 
 #include "kernel.h"
+#include "../core/state.h"
 #include <circle/util.h>
 #include <circle/usb/usbhid.h>
 #include <circle/synchronize.h>
@@ -741,6 +742,7 @@ TShutdownMode CKernel::Run (void)
 	m_pMachine->clockChip ().seconds = m_Config.clockSeconds (__DATE__, __TIME__);
 	LoadPRAM ();
 	AttachDisks ();
+	ResumeHibernation ();
 	StartMacEthernet ();
 
 	m_pOsd = new Osd (m_Config, *this);
@@ -1460,6 +1462,249 @@ void CKernel::UpdateInfo (void)
 }
 
 // ----------------------------------------------------------------- input
+
+// ----------------------------------------------------------------- hibernation
+
+// The Mac, frozen to SD:/macemu.state and carried on at the next start:
+// the whole Quadra (memory, CPU, every chip) after a header saying what it
+// needs to go on.  The disks must be just as they were, so the state is
+// used once (deleted as it is read), only by the same build, ROM, memory
+// size and hard disks, and the Pi turns off straight after saving it.
+
+#define HIBERNATION_FILE	DRIVE "/macemu.state"
+
+struct THibernationHeader
+{
+	char	Magic[16];			// "MACEMU-HIBERNATE"
+	char	Build[32];			// __DATE__ " " __TIME__
+	u32	nROMChecksum;
+	u32	nRAMKB;
+	char	HardDisk[macemu::Scsi::kTargets][160];
+	char	Floppy[2][64];
+	char	Cd[160];
+};
+
+namespace {
+
+// The state through FatFs, 64 KB at a time.
+class CFileState : public macemu::StateIO
+{
+public:
+	CFileState (FIL *pFile, boolean bSave, u8 *pBuffer)
+	:	StateIO (bSave), m_pFile (pFile), m_pBuffer (pBuffer), m_nFill (0), m_nPos (0) {}
+
+	void raw (void *p, u32 n) override
+	{
+		u8 *q = (u8 *) p;
+		while (ok && n > 0)
+		{
+			if (saving ())
+			{
+				u32 nChunk = n < Size - m_nFill ? n : Size - m_nFill;
+				memcpy (m_pBuffer + m_nFill, q, nChunk);
+				m_nFill += nChunk;
+				q += nChunk;
+				n -= nChunk;
+				if (m_nFill == Size)
+				{
+					Flush ();
+				}
+			}
+			else
+			{
+				if (m_nPos == m_nFill)
+				{
+					UINT nRead = 0;
+					if (f_read (m_pFile, m_pBuffer, Size, &nRead) != FR_OK || nRead == 0)
+					{
+						ok = false;
+						return;
+					}
+					m_nFill = nRead;
+					m_nPos = 0;
+				}
+				u32 nChunk = n < m_nFill - m_nPos ? n : m_nFill - m_nPos;
+				memcpy (q, m_pBuffer + m_nPos, nChunk);
+				m_nPos += nChunk;
+				q += nChunk;
+				n -= nChunk;
+			}
+		}
+	}
+
+	void Flush (void)
+	{
+		UINT nWritten = 0;
+		if (m_nFill > 0 && (f_write (m_pFile, m_pBuffer, m_nFill, &nWritten) != FR_OK || nWritten != m_nFill))
+		{
+			ok = false;
+		}
+		m_nFill = 0;
+	}
+
+	static const u32 Size = 64 * 1024;
+
+private:
+	FIL *m_pFile;
+	u8 *m_pBuffer;
+	u32 m_nFill, m_nPos;
+};
+
+}
+
+static void FillHibernationHeader (THibernationHeader *pHeader, const CKernel *, u32 nROMChecksum, u32 nRAMKB)
+{
+	memset (pHeader, 0, sizeof *pHeader);
+	memcpy (pHeader->Magic, "MACEMU-HIBERNATE", 16);
+	strCopy (pHeader->Build, __DATE__ " " __TIME__, sizeof pHeader->Build);
+	pHeader->nROMChecksum = nROMChecksum;
+	pHeader->nRAMKB = nRAMKB;
+}
+
+boolean CKernel::WriteHibernation (void)
+{
+	THibernationHeader Header;
+	FillHibernationHeader (&Header, this, be32 (m_pROM), m_Config.ramKB);
+	for (unsigned id = 0; id < macemu::Scsi::kTargets; id++)
+	{
+		if (m_pHardDisk[id] != 0)
+		{
+			strCopy (Header.HardDisk[id], m_HardDiskPath[id], sizeof Header.HardDisk[id]);
+		}
+	}
+	for (unsigned d = 0; d < 2; d++)
+	{
+		strCopy (Header.Floppy[d], m_FloppyName[d], sizeof Header.Floppy[d]);
+	}
+	if (m_pCdrom != 0)
+	{
+		strCopy (Header.Cd, m_Config.cdrom, sizeof Header.Cd);
+	}
+
+	FIL File;
+	if (f_open (&File, HIBERNATION_FILE, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	{
+		return FALSE;
+	}
+	u8 *pBuffer = new u8[CFileState::Size];
+	CFileState State (&File, TRUE, pBuffer);
+	State.raw (&Header, sizeof Header);
+	m_pQuadra->state (State);
+	State.Flush ();
+	boolean bOK = State.ok;
+	bOK = f_close (&File) == FR_OK && bOK;
+	delete [] pBuffer;
+	if (!bOK)
+	{
+		f_unlink (HIBERNATION_FILE);
+	}
+	return bOK;
+}
+
+bool CKernel::hibernate (void)
+{
+	if (m_pQuadra == 0)
+	{
+		return false;
+	}
+	m_Logger.Write (FromKernel, LogNotice, "Hibernating");
+	PauseEmu ();
+	for (unsigned d = 0; d < 2; d++)
+	{
+		if (m_pFloppy[d] != 0)
+		{
+			m_pFloppy[d]->flush ();
+		}
+	}
+	m_pMachine->flushDisks ();
+	ShowMessage ("Saving the Mac...", "");
+	Present ();
+	boolean bOK = WriteHibernation ();
+	ResumeEmu ();
+	if (!bOK)
+	{
+		m_Logger.Write (FromKernel, LogWarning, "Could not save the Mac");
+		return false;
+	}
+	powerOff ();
+	return true;
+}
+
+// At start-up, after the disks are attached: carry on from a saved state.
+void CKernel::ResumeHibernation (void)
+{
+	FIL File;
+	if (f_open (&File, HIBERNATION_FILE, FA_READ) != FR_OK)
+	{
+		return;
+	}
+
+	THibernationHeader Header, Now;
+	UINT nRead = 0;
+	boolean bMatch = f_read (&File, &Header, sizeof Header, &nRead) == FR_OK && nRead == sizeof Header
+			 && m_pQuadra != 0;
+	FillHibernationHeader (&Now, this, be32 (m_pROM), m_Config.ramKB);
+	const char *pWhy = 0;
+	if (!bMatch || memcmp (Header.Magic, Now.Magic, 16) != 0)
+	{
+		pWhy = "not a saved Quadra";
+	}
+	else if (strcmp (Header.Build, Now.Build) != 0)
+	{
+		pWhy = "saved by another version of the emulator";
+	}
+	else if (Header.nROMChecksum != Now.nROMChecksum || Header.nRAMKB != Now.nRAMKB)
+	{
+		pWhy = "the ROM or memory size has changed";
+	}
+	for (unsigned id = 0; pWhy == 0 && id < macemu::Scsi::kTargets; id++)
+	{
+		const char *pNow = m_pHardDisk[id] != 0 ? m_HardDiskPath[id] : "";
+		if (strcmp (Header.HardDisk[id], pNow) != 0)
+		{
+			pWhy = "the hard disks have changed";
+		}
+	}
+
+	if (pWhy == 0)
+	{
+		// The floppies and the CD as they were, then everything else.
+		for (unsigned d = 0; d < 2; d++)
+		{
+			if (m_pFloppy[d] != 0)
+			{
+				ejectDisk ((int) d);
+			}
+			if (Header.Floppy[d][0] != '\0')
+			{
+				insertDisk ((int) d, Header.Floppy[d]);
+			}
+		}
+		if (Header.Cd[0] != '\0')
+		{
+			insertCd (Header.Cd);
+		}
+
+		u8 *pBuffer = new u8[CFileState::Size];
+		CFileState State (&File, FALSE, pBuffer);
+		m_pQuadra->state (State);
+		delete [] pBuffer;
+		if (!State.ok)
+		{
+			pWhy = "the file is damaged";
+			m_pMachine->reset ();
+		}
+	}
+	f_close (&File);
+	f_unlink (HIBERNATION_FILE);			// once only: the disks change from now on
+
+	if (pWhy != 0)
+	{
+		m_Logger.Write (FromKernel, LogWarning, "Not resuming the hibernated Mac: %s", pWhy);
+		return;
+	}
+	m_Logger.Write (FromKernel, LogNotice, "Resumed the hibernated Mac");
+}
 
 // ----------------------------------------------------------------- JIT
 
