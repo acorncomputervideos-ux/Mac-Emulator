@@ -223,6 +223,10 @@ SharedFolder::SharedFolder(M68K &c, HostFS &f) : cpu(c), fs(f)
     namePool = new char[kNamePool];
     hash = new u32[kHashSize];
     for (auto &l : listings) { l.ids = new u32[kListMax]; l.valid = false; l.used = 0; }
+    // Nothing open yet (reset() closes what is: on the Pi, fresh memory is
+    // not zeros).
+    for (u32 i = 0; i < kMaxOpen; i++) { open[i].used = false; open[i].f = -1; }
+    for (int i = 0; i < 8; i++) returned[i] = false;
     reset();
     buildGlue();
 }
