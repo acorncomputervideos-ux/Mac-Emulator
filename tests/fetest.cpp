@@ -316,6 +316,10 @@ static void testOsd()
     CHECK(cfg.speed == 0);
     osd.key(Osd::NavRight);
     CHECK(cfg.speed == 1);
+    osd.key(Osd::NavDown); osd.key(Osd::NavSelect);                          // the JIT
+    CHECK(cfg.jit == 1);
+    osd.key(Osd::NavRight);
+    CHECK(cfg.jit == 0);
     osd.key(Osd::NavDown); osd.key(Osd::NavLeft);
     CHECK(cfg.palette == kPaletteCount - 1);
     osd.key(Osd::NavDown); osd.key(Osd::NavSelect);

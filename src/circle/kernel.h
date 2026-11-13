@@ -155,6 +155,7 @@ private:
 	void Housekeeping (void);
 	void UpdateInfo (void);
 	void StartNetwork (void);
+	void UpdateJit (void);
 	void StartEthernet (void);
 	void StartWiFi (void);
 	boolean WriteWiFiConfig (const char *pPath);

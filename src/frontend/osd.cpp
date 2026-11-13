@@ -85,6 +85,7 @@ void Osd::adjust(int item, int dir)
         cfg.speed = steps[cycle(i, dir, 0, 4)];
         break;
     }
+    case ItJit: cfg.jit = !cfg.jit; break;
     case ItPalette: cfg.palette = cycle(cfg.palette, dir, 0, kPaletteCount - 1); break;
     case ItSound: cfg.sound = !cfg.sound; break;
     case ItVolume:
@@ -408,6 +409,7 @@ void Osd::label(int item, char *out, u32 max)
         else strAppend(v, "Unlimited", sizeof v);
         field("Speed", v);
         break;
+    case ItJit: field("JIT (Quadra, testing)", cfg.jit ? "On" : "Off"); break;
     case ItPalette: field("B&W colours", paletteName(cfg.palette)); break;
     case ItSound: field("Sound", cfg.sound ? "On" : "Off"); break;
     case ItVolume: appendUint(v, (u32)cfg.volume, sizeof v); field("Volume", v); break;

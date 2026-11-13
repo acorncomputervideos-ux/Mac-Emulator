@@ -68,7 +68,7 @@ private:
         // machine
         ItModel, ItRom, ItRam, ItVideo, ItMonitor, ItScaling, ItApply, ItMachineBack,
         // display and sound
-        ItSpeed, ItPalette, ItSound, ItVolume, ItMouse, ItAlt, ItPrefsBack,
+        ItSpeed, ItJit, ItPalette, ItSound, ItVolume, ItMouse, ItAlt, ItPrefsBack,
         // network
         ItNetMode, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry, ItKeyboard, ItNetApply, ItNetworkBack,
     };

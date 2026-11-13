@@ -287,7 +287,8 @@ Three models are emulated:
 - Transfers are fastest while the F12 menu is open (the Mac is paused).
 
 **JIT (being tested)**
-- `jit=on` in `macemu.cfg` (64-bit kernels, Quadra): the 68040's code runs as
+- *JIT* on the menu's preferences page, or `jit=on` in `macemu.cfg` (64-bit
+  kernels, Quadra; it switches when the menu closes): the 68040's code runs as
   blocks of ARM code. Every block does exactly what the interpreter would,
   cycle for cycle, so the Mac behaves identically (the 7.1 and 7.5.3 boots
   give the same disk and screen bit for bit); only the speed differs. The

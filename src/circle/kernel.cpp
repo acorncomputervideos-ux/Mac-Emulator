@@ -716,20 +716,9 @@ TShutdownMode CKernel::Run (void)
 		{
 			bOK = m_pQuadra->init (m_pROM, m_nROMSize, m_pRAM, m_Config.ramKB * 1024);
 			m_pMachine = m_pQuadra;
-			if (bOK && m_Config.jit)
+			if (bOK)
 			{
-				m_pJit = new Jit;
-				if (m_pJit->init ())
-				{
-					m_pQuadra->cpu.jit = m_pJit;
-					m_Logger.Write (FromKernel, LogNotice, "JIT on");
-				}
-				else
-				{
-					m_Logger.Write (FromKernel, LogWarning, "No JIT on this Pi (64-bit kernels only)");
-					delete m_pJit;
-					m_pJit = 0;
-				}
+				UpdateJit ();
 			}
 		}
 		else if (m_pMacII != 0)
@@ -819,6 +808,7 @@ TShutdownMode CKernel::Run (void)
 		}
 		if (bMenuWasOpen && !m_pOsd->active ())
 		{
+			UpdateJit ();			// switched in the menu: from now on
 			ResumeEmu ();
 			fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 			m_bForceRedraw = TRUE;
@@ -1470,6 +1460,44 @@ void CKernel::UpdateInfo (void)
 }
 
 // ----------------------------------------------------------------- input
+
+// ----------------------------------------------------------------- JIT
+
+// The JIT on or off as the settings say (the Quadra only; while the Mac
+// is paused).  It is made the first time it is wanted.
+void CKernel::UpdateJit (void)
+{
+	if (m_pQuadra == 0)
+	{
+		return;
+	}
+	if (!m_Config.jit)
+	{
+		if (m_pQuadra->cpu.jit != 0)
+		{
+			m_Logger.Write (FromKernel, LogNotice, "JIT off");
+		}
+		m_pQuadra->cpu.jit = 0;
+		return;
+	}
+	if (m_pJit == 0)
+	{
+		m_pJit = new Jit;
+		if (m_pJit == 0 || !m_pJit->init ())
+		{
+			m_Logger.Write (FromKernel, LogWarning, "No JIT on this Pi (64-bit kernels only)");
+			delete m_pJit;
+			m_pJit = 0;
+			m_Config.jit = 0;
+			return;
+		}
+	}
+	if (m_pQuadra->cpu.jit == 0)
+	{
+		m_Logger.Write (FromKernel, LogNotice, "JIT on");
+	}
+	m_pQuadra->cpu.jit = m_pJit;
+}
 
 // ----------------------------------------------------------------- network
 
