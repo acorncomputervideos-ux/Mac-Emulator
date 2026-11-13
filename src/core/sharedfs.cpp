@@ -1112,7 +1112,7 @@ s16 SharedFolder::hfsProc(u32 vcb, u16 selectCode, u32 pb)
         Regs r = {};
         r.a[0] = vcb;
         s16 e = utCall(utDisposeVCB, r);
-        if (!e) { mounted = false; status = "put away (restart the Mac to get it back)"; }
+        if (!e) { mounted = false; status = "put away (it comes back when the Mac restarts)"; }
         return e;
     }
     case 0xA00F: return (s16)r16(pb + ioVRefNum) == (s16)driveNum ? noErr : extFSErr;   // MountVol

@@ -56,6 +56,10 @@ void Quadra::resetLine()
     sonicIrqSeen = false;
     memFill(djmemc, 0, sizeof djmemc);
     memFill(iosb, 0, sizeof iosb);
+    // Mac OS restarting itself (Special > Restart) comes through here, by
+    // the ROM's RESET instruction: the Shared disk and the clipboard are
+    // set up again when the new system is up.
+    if (shared) shared->reset();
 }
 
 void Quadra::reset()
@@ -71,7 +75,6 @@ void Quadra::reset()
     putBe32(ram, be32(rom));
     putBe32(ram + 4, 0x40800000 + be32(rom + 4));
     cpu.hardReset();
-    if (shared) shared->reset();
     updateIrq();
 }
 
