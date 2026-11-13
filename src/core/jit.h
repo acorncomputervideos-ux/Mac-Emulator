@@ -47,8 +47,18 @@ public:
     int exec(M68K &c, int remaining, u64 end, u32 &total);
     void recorded(M68K &c, u16 op, bool generic, bool busError);
 
+    // Translating on another core (the Pi's core 3): the CPU's core records
+    // blocks and queues them; workerLoop(), on the other core, translates
+    // them; exec() puts the results in place (after checking the code has
+    // not changed meanwhile).  Without it, blocks are translated at once.
+    bool startBackground(M68K &c);      // call before blocks are made
+    void workerLoop();                  // the other core: never returns
+    bool workOnce();                    // one job, if any (tests: a thread of their own)
+    void drain(M68K &c);                // tests: wait for the jobs, put them in place
+
     // Statistics
     u32 blocks = 0, flushes = 0, invalidated = 0;
+    u32 queued = 0, dropped = 0, stale = 0;     // background: jobs, full queue, code changed meanwhile
     u64 blockRuns = 0, jitInstructions = 0, interpreted = 0;
     u32 nativeInstructions = 0;         // translated to ARM code of their own
     bool native = true;                 // false: blocks call every handler (stage 1)
@@ -80,6 +90,27 @@ private:
     void startRecording(u32 pc, const u8 *host);
     void finish(M68K &c);
     void translate(M68K &c);
+    // The code for a block, into buf (any address: it runs where it is copied).
+    enum { kMaxWords = 128 + kMaxInsns * 260 };
+    u32 emitBlock(M68K &c, const Rec *r, int count, u32 start, const u8 *src, u32 *buf, u32 &end, u32 &nNative) const;
+    void install(M68K &c, u32 pc, const u8 *host, u32 len, const u8 *bytes, const u32 *words, u32 count);
+
+    // Background jobs: free -> queued (CPU core) -> working -> done (worker) -> free (CPU core).
+    enum { kSlots = 8, kSnapMax = kMaxInsns * 24 + 32 };
+    struct Job {
+        volatile int state;
+        u32 pc; const u8 *host; int count;
+        Rec recs[kMaxInsns];
+        u8 snap[kSnapMax]; u32 snapLen;        // the code as recorded
+        u32 words, end, nNative;
+        u32 buf[kMaxWords];
+    };
+    Job *jobs = 0;
+    M68K *worker = 0;                   // set: background on
+    volatile u32 doneCount = 0;
+    u32 seenDone = 0;
+    void queue(M68K &c);
+    void installDone(M68K &c);
     void flushAll();
     // Host pages holding translated code (open addressing; 0 = empty).
     enum { kPages = 8192 };

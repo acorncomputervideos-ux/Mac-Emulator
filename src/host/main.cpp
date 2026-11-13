@@ -138,6 +138,9 @@ struct Host : OsdHost {
     const char *networkLine(int n) override { return n == 0 ? "Web file manager: http://192.168.1.20/" : n == 1 ? "Open it from a browser on your network" : ""; }
     bool screenshot() override { return true; }
     bool newFloppy(bool, char *, unsigned) override { return false; }
+    const char *slotInfo(int n) override { return n == 1 ? "13 Nov 2026 16:20  hd0.img" : ""; }
+    bool saveSlot(int) override { return false; }
+    bool loadSlot(int, char *why, unsigned max) override { strCopy(why, "Not in this runner", max); return false; }
     const char *infoLine(int n) override {
         return n == 0 ? mac.modelName() : n == 1 ? "Shared disk: on   Web: http://192.168.1.20/" : "Built today";
     }

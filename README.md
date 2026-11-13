@@ -130,16 +130,18 @@ Three models are emulated:
   - *Machine, ROM and memory*: model (auto, Plus, II, Quadra), ROM file,
     memory size, the Mac II screen size, the Quadra's monitor (VGA, or a
     21-inch display at 1152×870) and screen scaling (Smooth fills the
-    screen; Sharp keeps square pixels at a whole-number zoom). *Save and
-    restart* restarts the Pi with them.
+    screen; Sharp keeps square pixels at a whole-number zoom; Scanlines
+    draws at the display's own resolution with a CRT's dark line under
+    every row of Mac pixels, on a display at least twice the Mac's size).
+    *Save and restart* restarts the Pi with them.
   - *Speed, display, sound, input*: speed (1×–8×, unlimited), the JIT,
     colour scheme, sound, volume, mouse speed and the Alt key.
   - *Network and sharing*: connection type, Wi-Fi name, password and
     country, the layout for typing them, the web page's address; and for
     the Mac: its internet, the HTTPS helper and the shared disk, on or off.
   - *The Mac*: restart, interrupt switch, screenshot, save settings,
-    hibernate, turn off the Pi. Restart, hibernate and turn off ask for
-    Enter a second time.
+    *Saved Macs*, hibernate, turn off the Pi. Restart, hibernate, turn off
+    and the Saved Macs ask for Enter a second time.
 - **Power key** (Pi 400: Fn+F10; Pi 5: the power button; keyboards with a
   power key): the Mac II and Quadra ask "Shut Down?". Shutting the Mac down
   shows Mac OS's own "It is now safe to switch off your Macintosh." screen
@@ -309,6 +311,11 @@ Three models are emulated:
 - *This Mac* shows what the Mac is doing (model and speed, the disks in
   each drive, the shared disk, the network), refreshed every few seconds,
   with a button to restart it.
+- *Clipboard* (Quadra, any System 7): text copied on the Mac shows on the
+  page; text typed or pasted there goes onto the Mac's clipboard, for
+  Command-V (accents, curly quotes and such converted; characters Mac Roman
+  lacks become `?`; up to 16 KB). Some programs only see a new clipboard
+  after you switch to another program and back, as on a real Mac.
 - *Insert* next to a floppy or CD image in the disks folder puts it in a
   drive; *Eject* next to a drive in *This Mac* takes it out (a CD only once
   the Mac has let go of it: drag it to the Trash first).
@@ -357,6 +364,19 @@ Three models are emulated:
   starts normally and the log says why. It takes about as much room on the
   card as the Mac has memory.
 
+**Saved Macs (Quadra)**
+- Four slots on the menu's *Saved Macs* page, each a snapshot: the running
+  Mac and copies of its hard disks and floppies, in `saved/slotN/` on the
+  card. *Save the Mac as it is now* keeps it in a slot (the Mac carries on);
+  *Restore* brings it back, disks and all, so the Mac may be used, other
+  slots restored, and so on, in between. A 500 MB disk takes about as much
+  room again per slot, and saving or restoring copies it (the screen shows
+  how far it is). Disks are put back beside the ones there and only then
+  in their place, so losing the power meanwhile harms nothing.
+- Saved states (these and Hibernate) load in later versions of the
+  emulator too, as long as the way they are written stays the same
+  (`kStateFormat` in `src/core/state.h`; a test fails when it must change).
+
 **JIT (being tested)**
 - *JIT* on the menu's preferences page, or `jit=on` in `macemu.cfg` (64-bit
   kernels, Quadra; it switches when the menu closes): the 68040's code runs as
@@ -371,6 +391,12 @@ Three models are emulated:
   interpreter's handlers. `make jittest` checks every one of those opcodes
   against the interpreter from random states (on ARM, or through
   qemu-aarch64), down to each flag, cycle and byte of memory.
+- On the Pi 3, 4 and 5 the translating is done on core 3, so the Mac's core
+  never waits for it: it records a run of instructions and queues it; core
+  3 makes the ARM code; the Mac's core puts it in place once its code is
+  checked to be unchanged. The log's `core3=` shows blocks queued, dropped
+  (queue full: recorded again later) and stale (the code changed meanwhile).
+  `make jittest` runs the checks both ways (`JIT_BG=1`: a second thread).
 
 **Multi-core**
 - On every Pi with more than one core, the emulated Mac has core 1 to

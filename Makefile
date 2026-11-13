@@ -99,8 +99,9 @@ test: $(BUILD)/hwtest $(BUILD)/fetest $(BUILD)/cpu020test $(BUILD)/videotest $(B
 .PHONY: jittest
 jittest:
 	mkdir -p build-arm64
-	aarch64-linux-gnu-g++ -O2 -g -Wall -Wextra -static -o build-arm64/jittest tests/jittest.cpp src/core/m68k.cpp src/core/jit.cpp
+	aarch64-linux-gnu-g++ -O2 -g -Wall -Wextra -static -pthread -o build-arm64/jittest tests/jittest.cpp src/core/m68k.cpp src/core/jit.cpp
 	qemu-aarch64 build-arm64/jittest 3
+	JIT_BG=1 qemu-aarch64 build-arm64/jittest 3
 
 $(BUILD)/vectors.txt: tools/sst2txt.py | $(BUILD)
 	python3 tools/sst2txt.py $(SST) $(SST_PER_INSTRUCTION) > $@

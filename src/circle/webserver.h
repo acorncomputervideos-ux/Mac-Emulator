@@ -25,6 +25,9 @@ public:
 	virtual const char *SharedDir (void) { return ""; }	// the Mac's shared folder, or ""
 	// What the Mac is doing, for the page: "name<TAB>value" lines.
 	virtual void StatusText (char *pOut, unsigned nMax) { if (nMax) pOut[0] = '\0'; }
+	// The Mac's clipboard (text, UTF-8): FALSE when there is none to share.
+	virtual boolean ClipboardText (char *pOut, unsigned nMax) { (void) pOut; (void) nMax; return FALSE; }
+	virtual boolean SetClipboardText (const char *pText, unsigned nLength) { (void) pText; (void) nLength; return FALSE; }
 	virtual const char *Version (void) = 0;			// shown on the page
 	virtual macemu::u32 MacTime (void) = 0;			// now, in the Mac's clock
 	virtual macemu::u32 MaxFloppyBytes (void) = 0;		// 819200, or 1474560 with a SuperDrive
@@ -121,6 +124,7 @@ private:
 	char m_DriveName[128];
 	char m_DriveReply[128];
 	void DriveRequest (CSocket *pSocket, const char *pQuery);
+	void ClipboardPost (CSocket *pSocket, TRequest *pRequest);
 	char m_Activity[64];
 
 	u8 *m_pBuffer;				// transfer buffer

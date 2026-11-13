@@ -29,6 +29,10 @@ public:
     virtual void saveAndReboot() = 0;                   // for model, ROM and memory changes
     virtual void powerOff() = 0;                        // save everything and turn the Pi off
     virtual bool hibernate() = 0;                       // save the running Mac and turn off (false: cannot)
+    // Saved Macs: snapshots of the Mac and its disks, slots 0..3.
+    virtual const char *slotInfo(int slot) = 0;         // "" when empty, else when and what
+    virtual bool saveSlot(int slot) = 0;
+    virtual bool loadSlot(int slot, char *why, unsigned max) = 0;   // why: for the menu
     virtual bool screenshot() = 0;
     // A new initialized floppy (800K, or 1.44 MB) in the disk folder, put in a drive; its name.
     virtual bool newFloppy(bool highDensity, char *name, unsigned max) = 0;
@@ -61,11 +65,11 @@ public:
 
 private:
     enum { kMaxFiles = 128, kVisible = 12, kMaxItems = 24 };
-    enum Page { PageMain, PageDisks, PageMachine, PagePrefs, PageNetwork, PagePicker };
+    enum Page { PageMain, PageDisks, PageMachine, PagePrefs, PageNetwork, PageSaved, PagePicker };
     enum Item {
         // main
         ItFloppy1, ItFloppy2, ItDisksPage, ItNewFloppy, ItMachinePage, ItPrefsPage, ItNetworkPage,
-        ItReset, ItInterrupt, ItScreenshot, ItSave, ItHibernate, ItPowerOff, ItResume,
+        ItReset, ItInterrupt, ItScreenshot, ItSave, ItSavedPage, ItHibernate, ItPowerOff, ItResume,
         // hard disks
         ItHd0, ItHd6 = ItHd0 + 6, ItCdrom, ItDisksBack,
         // machine
@@ -75,9 +79,12 @@ private:
         // network
         ItNetMode, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry, ItKeyboard,
         ItMacInternet, ItHttps, ItShared, ItNetApply, ItNetworkBack,
+        // saved Macs
+        ItLoad1, ItLoad4 = ItLoad1 + 3, ItSave1, ItSave4 = ItSave1 + 3, ItSavedBack,
         // section headings: shown, never selected
         ItHeadDisks, ItHeadSettings, ItHeadMac, ItHeadScsi, ItHeadCd, ItHeadEmulation, ItHeadDisplay,
-        ItHeadInput, ItHeadConnection, ItHeadWifi, ItHeadSharing, ItHeadLast = ItHeadSharing,
+        ItHeadInput, ItHeadConnection, ItHeadWifi, ItHeadSharing, ItHeadRestore, ItHeadSaveTo,
+        ItHeadLast = ItHeadSaveTo,
     };
     static bool heading(int item) { return item >= ItHeadDisks && item <= ItHeadLast; }
     enum PickTarget { PickFloppy1, PickFloppy2, PickHardDisk, PickRom, PickWifi, PickCd };
@@ -86,7 +93,7 @@ private:
     OsdHost &host;
     bool isOpen, dirty, pendingReboot, disksChanged;
     Page page;
-    int sel[6];
+    int sel[7];
     PickTarget pickTarget;
     int pickId;
     int pickCount, pickSel, pickTop;

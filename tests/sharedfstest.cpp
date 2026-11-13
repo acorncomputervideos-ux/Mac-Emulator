@@ -4,9 +4,11 @@
 // runner's SHARE_TEST=1 with --share.)
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <new>
 #include "../src/core/m68k.h"
 #include "../src/core/sharedfs.h"
+#include "../src/core/macnames.h"
 
 using namespace macemu;
 
@@ -52,8 +54,25 @@ struct NoBus : Bus {
     void write32(u32, u32) override {}
 };
 
+// The clipboard's text: Mac Roman and CR <-> UTF-8 and LF.
+static void testClipText()
+{
+    const u8 mac[] = {'C', 'a', 'f', 0x8E, '\r', 0xD2, 'q', 0xD3, ' ', 0xDB, '\r', '\n', 'x'};   // e-acute, curly quotes, euro
+    char utf[64];
+    u32 n = macTextToUtf8(mac, sizeof mac, utf, sizeof utf);
+    CHECK(std::string(utf, n) == "Caf\xC3\xA9\n\xE2\x80\x9Cq\xE2\x80\x9D \xE2\x82\xAC\nx");
+    u8 back[64];
+    u32 m = utf8ToMacText(utf, n, back, sizeof back);
+    const u8 want[] = {'C', 'a', 'f', 0x8E, '\r', 0xD2, 'q', 0xD3, ' ', 0xDB, '\r', 'x'};
+    CHECK(m == sizeof want && memcmp(back, want, m) == 0);
+    m = utf8ToMacText("a\r\nb \xF0\x9F\x98\x80 \xE4\xB8\xAD", 13, back, sizeof back);   // CR LF, emoji, CJK
+    CHECK(std::string((char *)back, m) == "a\rb ? ?");
+    CHECK(macTextToUtf8(mac, sizeof mac, utf, 4) <= 3);  // never past the end
+}
+
 int main()
 {
+    testClipText();
     // Made in memory full of rubbish (as on the Pi, where fresh memory is
     // not zeros), it must not take any of it for open files: it once tried
     // to close them, and the Pi did not start.

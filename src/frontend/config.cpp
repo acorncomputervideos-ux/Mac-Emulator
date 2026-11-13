@@ -44,7 +44,7 @@ void Config::sanitize()
     volume = clampInt(volume, 0, 10);
     mouseSpeed = clampInt(mouseSpeed, 1, 8);
     sound = sound ? 1 : 0;
-    sharp = sharp ? 1 : 0;
+    if (sharp < 0 || sharp > 2) sharp = 1;
     if (cdromId < -1 || cdromId > 6) cdromId = 3;
     altIsOption = altIsOption ? 1 : 0;
     floppyReadOnly = floppyReadOnly ? 1 : 0;
@@ -117,7 +117,7 @@ void Config::parse(const char *text, u32 len)
         else if (strEqNoCase(p, "cdrom_id")) cdromId = strEqNoCase(val, "none") ? -1 : toInt(val);
         else if (strEqNoCase(p, "speed")) speed = strEqNoCase(val, "max") ? 0 : toInt(val);
         else if (strEqNoCase(p, "scale")) scale = toInt(val);
-        else if (strEqNoCase(p, "scaling")) sharp = strEqNoCase(val, "sharp") ? 1 : 0;
+        else if (strEqNoCase(p, "scaling")) sharp = strEqNoCase(val, "sharp") ? 1 : strEqNoCase(val, "scanlines") ? 2 : 0;
         else if (strEqNoCase(p, "width")) width = toInt(val);
         else if (strEqNoCase(p, "height")) height = toInt(val);
         else if (strEqNoCase(p, "palette")) palette = toInt(val);
@@ -190,7 +190,7 @@ u32 Config::serialize(char *out, u32 max) const
     lineInt(out, max, "cdrom_id", cdromId);
     if (speed) lineInt(out, max, "speed", speed); else line(out, max, "speed", "max");
     lineInt(out, max, "scale", scale);
-    line(out, max, "scaling", sharp ? "sharp" : "smooth");
+    line(out, max, "scaling", sharp == 2 ? "scanlines" : sharp ? "sharp" : "smooth");
     lineInt(out, max, "width", width);
     lineInt(out, max, "height", height);
     lineInt(out, max, "palette", palette);

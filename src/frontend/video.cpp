@@ -136,7 +136,12 @@ int blitScreen(Surface &s, const Layout &l, const VideoFrame &f, u8 *previous, b
             if (swap) c = swapRB(c);
             for (int k = 0; k < scale; k++) *p++ = c;
         }
-        for (int k = 1; k < scale; k++) memCopy(dst + k * s.pitch, dst, (u32)(visW * scale) * 4);
+        int copies = l.scanlines && scale >= 2 ? scale - 1 : scale;
+        for (int k = 1; k < copies; k++) memCopy(dst + k * s.pitch, dst, (u32)(visW * scale) * 4);
+        if (copies < scale) {
+            u32 *dark = dst + (scale - 1) * s.pitch;
+            for (int x = 0; x < visW * scale; x++) dark[x] = (dst[x] >> 1) & 0x7F7F7Fu;
+        }
     }
     return drawn;
 }

@@ -25,6 +25,7 @@
 #include "../frontend/util.h"
 #include "../frontend/romid.h"
 #include "../frontend/hfs.h"
+#include "../core/macnames.h"
 
 using macemu::Machine; using macemu::Osd; using macemu::Config; using macemu::Scsi;
 using namespace macemu;
@@ -60,6 +61,7 @@ CKernel::CKernel (void)
 	m_pMacII (0),
 	m_pQuadra (0),
 	m_pJit (0),
+	m_pJitWorker (0),
 	m_pShareFS (0),
 	m_pShared (0),
 	m_pOsd (0),
@@ -149,6 +151,7 @@ CKernel::CKernel (void)
 	m_InfoLine[0][0] = m_InfoLine[1][0] = '\0';
 	m_SavedFloppy[0][0] = m_SavedFloppy[1][0] = m_SavedCdrom[0] = '\0';
 	m_SoundOutput[0] = m_SoundName[0] = '\0';
+	for (unsigned n = 0; n < SlotCount; n++) m_SlotInfo[n][0] = '\0';
 	m_nMacOffTicks = 0;
 	strCopy (m_InfoLine[2], "Built " __DATE__, sizeof m_InfoLine[2]);	// shows which version runs
 	strCopy (m_NetLine[0], "Network: off (Connection is set to Off)", sizeof m_NetLine[0]);
@@ -307,6 +310,14 @@ boolean CKernel::SetupDisplay (int nMacWidth, int nMacHeight)
 	}
 
 	unsigned nWidth = m_Config.width, nHeight = m_Config.height;
+	if (   (nWidth == 0 || nHeight == 0) && m_Config.sharp == 2
+	    && m_nDisplayWidth >= 2 * (unsigned) nMacWidth && m_nDisplayHeight >= 2 * (unsigned) nMacHeight)
+	{
+		// Scanlines: drawn at the display's own size, two or more screen
+		// lines a Mac row, the last of them dimmed.
+		nWidth = m_nDisplayWidth;
+		nHeight = m_nDisplayHeight;
+	}
 	if ((nWidth == 0 || nHeight == 0) && m_Config.sharp)
 	{
 		// Sharp: the display is a whole multiple of the frame buffer, and
@@ -371,6 +382,7 @@ boolean CKernel::SetupDisplay (int nMacWidth, int nMacHeight)
 
 	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 	m_Layout = layoutFor (m_Surface, nMacWidth, nMacHeight, m_Config.scale);
+	m_Layout.scanlines = m_Config.sharp == 2;
 	m_bForceRedraw = TRUE;
 
 	return TRUE;
@@ -836,6 +848,7 @@ TShutdownMode CKernel::Run (void)
 	LoadPRAM ();
 	AttachDisks ();
 	ResumeHibernation ();
+	RefreshSlots ();
 	StartMacEthernet ();
 
 	m_pOsd = new Osd (m_Config, *this);
@@ -869,6 +882,7 @@ TShutdownMode CKernel::Run (void)
 		}
 		m_Logger.Write (FromKernel, LogNotice, m_bEmuCoreRunning ? "The Mac runs on core 1"
 								     : "Core 1 did not start: running on one");
+		StartJitCore ();
 	}
 #endif
 
@@ -1122,6 +1136,16 @@ void CKernel::BootLog (boolean bForce)
 			appendUint (Line, nAll ? (unsigned) (m_pJit->jitInstructions * 100 / nAll) : 0, sizeof Line);
 			strAppend (Line, "%/", sizeof Line);
 			appendUint (Line, m_pJit->flushes, sizeof Line);
+			if (m_pJitWorker != 0)
+			{
+				// Core 3: blocks queued, dropped (queue full), stale (code changed).
+				strAppend (Line, " core3=", sizeof Line);
+				appendUint (Line, m_pJit->queued, sizeof Line);
+				strAppend (Line, "/", sizeof Line);
+				appendUint (Line, m_pJit->dropped, sizeof Line);
+				strAppend (Line, "/", sizeof Line);
+				appendUint (Line, m_pJit->stale, sizeof Line);
+			}
 		}
 		if (m_bWiFi)
 		{
@@ -1229,6 +1253,7 @@ void CKernel::DrawMac (boolean bForce)
 			SetupDisplay (Frame.width, Frame.height);
 		}
 		m_Layout = layoutFor (m_Surface, Frame.width, Frame.height, m_Config.scale);
+		m_Layout.scanlines = m_Config.sharp == 2;
 		fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 		bForce = TRUE;
 	}
@@ -1462,7 +1487,11 @@ void CEmuCores::Run (unsigned nCore)
 	{
 		m_pKernel->EmuCoreRun ();
 	}
-	// other cores: nothing to do yet
+	else if (nCore == 3)
+	{
+		m_pKernel->JitCoreRun ();
+	}
+	// core 2: nothing to do yet
 }
 #endif
 
@@ -1553,7 +1582,7 @@ void CKernel::UpdateInfo (void)
 	// Sharing: the shared disk and the web page.
 	p = m_InfoLine[1];
 	p[0] = '\0';
-	if (m_pShared != 0)
+	if (m_pShared != 0 && m_pShared->wantVolume)
 	{
 		strAppend (p, m_pShared->mounted ? "Shared disk: on   " : "Shared disk: waiting   ", 64);
 	}
@@ -1585,8 +1614,9 @@ void CKernel::UpdateInfo (void)
 
 struct THibernationHeader
 {
-	char	Magic[16];			// "MACEMU-HIBERNATE"
-	char	Build[32];			// __DATE__ " " __TIME__
+	char	Magic[16];			// "MACEMU-STATE-V02"
+	u32	nFormat;			// macemu::kStateFormat
+	char	Build[32];			// __DATE__ " " __TIME__ (for the log)
 	u32	nROMChecksum;
 	u32	nRAMKB;
 	char	HardDisk[macemu::Scsi::kTargets][160];
@@ -1665,13 +1695,19 @@ private:
 static void FillHibernationHeader (THibernationHeader *pHeader, const CKernel *, u32 nROMChecksum, u32 nRAMKB)
 {
 	memset (pHeader, 0, sizeof *pHeader);
-	memcpy (pHeader->Magic, "MACEMU-HIBERNATE", 16);
+	memcpy (pHeader->Magic, "MACEMU-STATE-V02", 16);
+	pHeader->nFormat = macemu::kStateFormat;
 	strCopy (pHeader->Build, __DATE__ " " __TIME__, sizeof pHeader->Build);
 	pHeader->nROMChecksum = nROMChecksum;
 	pHeader->nRAMKB = nRAMKB;
 }
 
 boolean CKernel::WriteHibernation (void)
+{
+	return WriteState (HIBERNATION_FILE);
+}
+
+boolean CKernel::WriteState (const char *pPath)
 {
 	THibernationHeader Header;
 	FillHibernationHeader (&Header, this, be32 (m_pROM), m_Config.ramKB);
@@ -1692,7 +1728,7 @@ boolean CKernel::WriteHibernation (void)
 	}
 
 	FIL File;
-	if (f_open (&File, HIBERNATION_FILE, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	if (f_open (&File, pPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
 	{
 		return FALSE;
 	}
@@ -1706,9 +1742,34 @@ boolean CKernel::WriteHibernation (void)
 	delete [] pBuffer;
 	if (!bOK)
 	{
-		f_unlink (HIBERNATION_FILE);
+		f_unlink (pPath);
 	}
 	return bOK;
+}
+
+// Why a saved state cannot be loaded into this Mac, or 0.
+const char *CKernel::StateMismatch (const void *pHeader)
+{
+	const THibernationHeader &Header = *(const THibernationHeader *) pHeader;
+	THibernationHeader Now;
+	FillHibernationHeader (&Now, this, be32 (m_pROM), m_Config.ramKB);
+	if (m_pQuadra == 0 || memcmp (Header.Magic, Now.Magic, 16) != 0)
+	{
+		return "not a saved Quadra";
+	}
+	if (Header.nFormat != Now.nFormat)
+	{
+		return "saved by a version of the emulator that saves differently";
+	}
+	if (Header.nROMChecksum != Now.nROMChecksum)
+	{
+		return "saved with another ROM";
+	}
+	if (Header.nRAMKB != Now.nRAMKB)
+	{
+		return "saved with another memory size (Machine page)";
+	}
+	return 0;
 }
 
 bool CKernel::hibernate (void)
@@ -1749,23 +1810,16 @@ void CKernel::ResumeHibernation (void)
 		return;
 	}
 
-	THibernationHeader Header, Now;
+	THibernationHeader Header;
 	UINT nRead = 0;
-	boolean bMatch = f_read (&File, &Header, sizeof Header, &nRead) == FR_OK && nRead == sizeof Header
-			 && m_pQuadra != 0;
-	FillHibernationHeader (&Now, this, be32 (m_pROM), m_Config.ramKB);
 	const char *pWhy = 0;
-	if (!bMatch || memcmp (Header.Magic, Now.Magic, 16) != 0)
+	if (f_read (&File, &Header, sizeof Header, &nRead) != FR_OK || nRead != sizeof Header)
 	{
-		pWhy = "not a saved Quadra";
+		pWhy = "the file is damaged";
 	}
-	else if (strcmp (Header.Build, Now.Build) != 0)
+	else
 	{
-		pWhy = "saved by another version of the emulator";
-	}
-	else if (Header.nROMChecksum != Now.nROMChecksum || Header.nRAMKB != Now.nRAMKB)
-	{
-		pWhy = "the ROM or memory size has changed";
+		pWhy = StateMismatch (&Header);
 	}
 	for (unsigned id = 0; pWhy == 0 && id < macemu::Scsi::kTargets; id++)
 	{
@@ -1814,6 +1868,404 @@ void CKernel::ResumeHibernation (void)
 		return;
 	}
 	m_Logger.Write (FromKernel, LogNotice, "Resumed the hibernated Mac");
+}
+
+// ----------------------------------------------------------------- saved Macs (slots)
+
+// A slot is a snapshot: the Mac's state and copies of its disks, in
+// saved/slotN/ on the card (mac.state, diskN.img, floppyN.dsk, info.txt).
+// Restoring one puts the disks back as they were, so the Mac may be used
+// in between.  mac.state is written last: without it a slot is empty.
+
+#define SLOT_DIR	DRIVE "/saved"
+
+static void SlotPath (char *pOut, unsigned nMax, unsigned nSlot, const char *pName)
+{
+	strCopy (pOut, SLOT_DIR "/slot", nMax);
+	appendUint (pOut, nSlot + 1, nMax);
+	strAppend (pOut, "/", nMax);
+	strAppend (pOut, pName, nMax);
+}
+
+// Mac time (seconds since 1904) as "13 Nov 2026 16:20".
+static void MacDateText (u32 nSeconds, char *pOut, unsigned nMax)
+{
+	static const char *Months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+	u32 nDays = nSeconds / 86400, nSecs = nSeconds % 86400;
+	// Days since 1904-01-01 to a date (Howard Hinnant's civil_from_days:
+	// days from 0000-03-01; 1904-01-01 is 24107 days before 1970-01-01).
+	int z = (int) nDays + 719468 - 24107;
+	int era = z / 146097, doe = z - era * 146097;
+	int yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	int y = yoe + era * 400, doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	int mp = (5 * doy + 2) / 153, d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
+	if (m <= 2) y++;
+	pOut[0] = '\0';
+	appendUint (pOut, (unsigned) d, nMax);
+	strAppend (pOut, " ", nMax);
+	strAppend (pOut, Months[m - 1], nMax);
+	strAppend (pOut, " ", nMax);
+	appendUint (pOut, (unsigned) y, nMax);
+	strAppend (pOut, " ", nMax);
+	appendUint (pOut, nSecs / 3600, nMax, 2);
+	strAppend (pOut, ":", nMax);
+	appendUint (pOut, nSecs / 60 % 60, nMax, 2);
+}
+
+void CKernel::RefreshSlots (void)
+{
+	for (unsigned n = 0; n < SlotCount; n++)
+	{
+		m_SlotInfo[n][0] = '\0';
+		char Path[64];
+		FILINFO Info;
+		SlotPath (Path, sizeof Path, n, "mac.state");
+		if (f_stat (Path, &Info) != FR_OK)
+		{
+			continue;
+		}
+		SlotPath (Path, sizeof Path, n, "info.txt");
+		FIL File;
+		UINT nRead = 0;
+		if (f_open (&File, Path, FA_READ) == FR_OK)
+		{
+			f_read (&File, m_SlotInfo[n], sizeof m_SlotInfo[n] - 1, &nRead);
+			f_close (&File);
+		}
+		m_SlotInfo[n][nRead] = '\0';
+		if (nRead == 0)
+		{
+			strCopy (m_SlotInfo[n], "saved", sizeof m_SlotInfo[n]);
+		}
+	}
+}
+
+// Copies with progress on the screen; pFrom is a disk the Mac uses (its
+// copy in memory makes this fast) or, with pFromPath, a file.
+boolean CKernel::CopyOut (macemu::Storage *pFrom, const char *pFromPath, const char *pTo, const char *pTitle,
+			  hostu64 &nDone, hostu64 nTotal)
+{
+	FIL In, Out;
+	u32 nSize = 0;
+	if (pFrom != 0)
+	{
+		nSize = pFrom->size ();
+	}
+	else
+	{
+		if (f_open (&In, pFromPath, FA_READ) != FR_OK)
+		{
+			return FALSE;
+		}
+		nSize = (u32) f_size (&In);
+	}
+	if (f_open (&Out, pTo, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
+	{
+		if (pFrom == 0) f_close (&In);
+		return FALSE;
+	}
+
+	static u8 *pBuffer = 0;
+	const u32 nChunk = 256 * 1024;
+	if (pBuffer == 0)
+	{
+		pBuffer = new u8[nChunk];
+	}
+	boolean bOK = TRUE;
+	unsigned nLastPercent = 101;
+	for (u32 nAt = 0; bOK && nAt < nSize; )
+	{
+		u32 n = nSize - nAt < nChunk ? nSize - nAt : nChunk;
+		UINT nIO = 0;
+		bOK = pFrom != 0 ? pFrom->read (nAt, pBuffer, n)
+				 : f_read (&In, pBuffer, n, &nIO) == FR_OK && nIO == n;
+		bOK = bOK && f_write (&Out, pBuffer, n, &nIO) == FR_OK && nIO == n;
+		nAt += n;
+		nDone += n;
+		unsigned nPercent = nTotal ? (unsigned) (nDone * 100 / nTotal) : 100;
+		if (nPercent != nLastPercent)
+		{
+			nLastPercent = nPercent;
+			char Line[40] = "";
+			appendUint (Line, nPercent, sizeof Line);
+			strAppend (Line, "%", sizeof Line);
+			ShowMessage (pTitle, Line);
+			Present ();
+		}
+		CDiskProxy::Service ();
+	}
+	if (pFrom == 0) f_close (&In);
+	bOK = f_close (&Out) == FR_OK && bOK;
+	if (!bOK)
+	{
+		f_unlink (pTo);
+	}
+	return bOK;
+}
+
+static hostu64 FreeBytes (void)
+{
+	DWORD nClusters = 0;
+	FATFS *pFS = 0;
+	if (f_getfree (DRIVE, &nClusters, &pFS) != FR_OK)
+	{
+		return 0;
+	}
+	return (hostu64) nClusters * pFS->csize * 512;
+}
+
+static void ClearSlot (unsigned nSlot)
+{
+	static const char *Names[] = {"mac.state", "mac.state.new", "info.txt", "floppy1.dsk", "floppy2.dsk",
+				      "disk0.img", "disk1.img", "disk2.img", "disk3.img", "disk4.img", "disk5.img", "disk6.img", 0};
+	for (unsigned i = 0; Names[i] != 0; i++)
+	{
+		char Path[64];
+		SlotPath (Path, sizeof Path, nSlot, Names[i]);
+		f_unlink (Path);
+	}
+}
+
+bool CKernel::saveSlot (int nSlot)
+{
+	if (m_pQuadra == 0 || nSlot < 0 || nSlot >= (int) SlotCount)
+	{
+		return false;
+	}
+	m_Logger.Write (FromKernel, LogNotice, "Saving the Mac to slot %d", nSlot + 1);
+	PauseEmu ();
+	for (unsigned d = 0; d < 2; d++)
+	{
+		if (m_pFloppy[d] != 0)
+		{
+			m_pFloppy[d]->flush ();
+		}
+	}
+	m_pMachine->flushDisks ();
+	SavePRAM ();
+
+	// Room for it (what is there now will go).
+	hostu64 nTotal = 0;
+	for (unsigned id = 0; id < macemu::Scsi::kTargets; id++)
+	{
+		if (m_pHardDisk[id] != 0) nTotal += m_pHardDisk[id]->size ();
+	}
+	for (unsigned d = 0; d < 2; d++)
+	{
+		if (m_pFloppy[d] != 0) nTotal += m_pFloppy[d]->size ();
+	}
+	ClearSlot ((unsigned) nSlot);
+	RefreshSlots ();
+	if (FreeBytes () < nTotal + ((hostu64) m_Config.ramKB << 10) + (16u << 20))
+	{
+		ResumeEmu ();
+		m_Logger.Write (FromKernel, LogWarning, "Not enough room on the card for slot %d", nSlot + 1);
+		return false;
+	}
+
+	char Title[48] = "Saving the Mac to slot ";
+	appendUint (Title, (unsigned) nSlot + 1, sizeof Title);
+	char Path[64], Final[64];
+	f_mkdir (SLOT_DIR);
+	SlotPath (Path, sizeof Path, (unsigned) nSlot, "");
+	Path[strLen (Path) - 1] = '\0';
+	f_mkdir (Path);
+
+	boolean bOK = TRUE;
+	hostu64 nDone = 0;
+	for (unsigned id = 0; bOK && id < macemu::Scsi::kTargets; id++)
+	{
+		if (m_pHardDisk[id] != 0)
+		{
+			char Name[16] = "disk";
+			appendUint (Name, id, sizeof Name);
+			strAppend (Name, ".img", sizeof Name);
+			SlotPath (Path, sizeof Path, (unsigned) nSlot, Name);
+			bOK = CopyOut (m_pHardDisk[id], 0, Path, Title, nDone, nTotal);
+		}
+	}
+	for (unsigned d = 0; bOK && d < 2; d++)
+	{
+		if (m_pFloppy[d] != 0)
+		{
+			SlotPath (Path, sizeof Path, (unsigned) nSlot, d == 0 ? "floppy1.dsk" : "floppy2.dsk");
+			bOK = CopyOut (m_pFloppy[d], 0, Path, Title, nDone, nTotal);
+		}
+	}
+
+	// What it is, for the menu; then the state, which makes the slot whole.
+	if (bOK)
+	{
+		char Info[64];
+		MacDateText (MacTime (), Info, sizeof Info);
+		const char *pDisk = m_pHardDisk[0] != 0 ? m_HardDiskPath[0] : m_FloppyName[0];
+		for (const char *q = pDisk; *q; q++) if (*q == '/') pDisk = q + 1;
+		if (*pDisk)
+		{
+			strAppend (Info, "  ", sizeof Info);
+			strAppend (Info, pDisk, sizeof Info);
+		}
+		SlotPath (Path, sizeof Path, (unsigned) nSlot, "info.txt");
+		bOK = WriteFileSafely (Path, Info, strLen (Info));
+	}
+	if (bOK)
+	{
+		ShowMessage (Title, "the Mac's memory");
+		Present ();
+		SlotPath (Path, sizeof Path, (unsigned) nSlot, "mac.state.new");
+		SlotPath (Final, sizeof Final, (unsigned) nSlot, "mac.state");
+		bOK = WriteState (Path) && f_rename (Path, Final) == FR_OK;
+	}
+	if (!bOK)
+	{
+		ClearSlot ((unsigned) nSlot);
+	}
+	RefreshSlots ();
+	m_bForceRedraw = TRUE;
+	ResumeEmu ();
+	m_Logger.Write (FromKernel, bOK ? LogNotice : LogWarning, bOK ? "Saved the Mac to slot %d" : "Could not save slot %d",
+			nSlot + 1);
+	return bOK;
+}
+
+bool CKernel::loadSlot (int nSlot, char *pWhy, unsigned nMax)
+{
+	pWhy[0] = '\0';
+	char Path[64], New[200], To[200];
+	SlotPath (Path, sizeof Path, (unsigned) nSlot, "mac.state");
+	FIL File;
+	if (nSlot < 0 || nSlot >= (int) SlotCount || f_open (&File, Path, FA_READ) != FR_OK)
+	{
+		strCopy (pWhy, "Nothing saved there", nMax);
+		return false;
+	}
+	THibernationHeader Header;
+	UINT nRead = 0;
+	const char *pBad = f_read (&File, &Header, sizeof Header, &nRead) != FR_OK || nRead != sizeof Header
+			   ? "the file is damaged" : StateMismatch (&Header);
+	if (pBad != 0)
+	{
+		f_close (&File);
+		strCopy (pWhy, "Cannot: ", nMax);
+		strAppend (pWhy, pBad, nMax);
+		return false;
+	}
+
+	// Room for the disks as they were, beside the ones now there.
+	hostu64 nTotal = 0;
+	for (unsigned id = 0; id < macemu::Scsi::kTargets; id++)
+	{
+		char Name[16] = "disk";
+		appendUint (Name, id, sizeof Name);
+		strAppend (Name, ".img", sizeof Name);
+		SlotPath (Path, sizeof Path, (unsigned) nSlot, Name);
+		FILINFO Info;
+		if (Header.HardDisk[id][0] != '\0' && f_stat (Path, &Info) == FR_OK) nTotal += Info.fsize;
+	}
+	if (FreeBytes () < nTotal + (16u << 20))
+	{
+		f_close (&File);
+		strCopy (pWhy, "Not enough room on the card to restore it", nMax);
+		return false;
+	}
+
+	m_Logger.Write (FromKernel, LogNotice, "Restoring the Mac from slot %d", nSlot + 1);
+	char Title[48] = "Restoring the Mac from slot ";
+	appendUint (Title, (unsigned) nSlot + 1, sizeof Title);
+	PauseEmu ();
+
+	// The disks back as they were: copied beside, then in place of, the
+	// ones there now (a power cut leaves those whole).
+	for (unsigned id = 0; id < macemu::Scsi::kTargets; id++)
+	{
+		strCopy (m_Config.hd[id], "none", Config::kPath);
+	}
+	AttachHardDisks ();				// (none: the files are free)
+	for (unsigned d = 0; d < 2; d++)
+	{
+		if (m_pFloppy[d] != 0)
+		{
+			ejectDisk ((int) d);
+		}
+	}
+	boolean bOK = TRUE;
+	hostu64 nDone = 0;
+	for (unsigned id = 0; bOK && id < macemu::Scsi::kTargets; id++)
+	{
+		if (Header.HardDisk[id][0] == '\0')
+		{
+			continue;
+		}
+		char Name[16] = "disk";
+		appendUint (Name, id, sizeof Name);
+		strAppend (Name, ".img", sizeof Name);
+		SlotPath (Path, sizeof Path, (unsigned) nSlot, Name);
+		strCopy (To, DRIVE "/", sizeof To);
+		strAppend (To, Header.HardDisk[id], sizeof To);
+		strCopy (New, To, sizeof New);
+		strAppend (New, ".new", sizeof New);
+		bOK = CopyOut (0, Path, New, Title, nDone, nTotal);
+		if (bOK)
+		{
+			f_unlink (To);
+			bOK = f_rename (New, To) == FR_OK;
+		}
+		strCopy (m_Config.hd[id], Header.HardDisk[id], Config::kPath);
+	}
+	AttachHardDisks ();
+	for (unsigned d = 0; bOK && d < 2; d++)
+	{
+		if (Header.Floppy[d][0] == '\0')
+		{
+			continue;
+		}
+		SlotPath (Path, sizeof Path, (unsigned) nSlot, d == 0 ? "floppy1.dsk" : "floppy2.dsk");
+		strCopy (To, DRIVE "/", sizeof To);
+		if (strchr (Header.Floppy[d], '/') == 0)
+		{
+			strAppend (To, m_Config.diskDir, sizeof To);
+			strAppend (To, "/", sizeof To);
+		}
+		strAppend (To, Header.Floppy[d], sizeof To);
+		strCopy (New, To, sizeof New);
+		strAppend (New, ".new", sizeof New);
+		if (CopyOut (0, Path, New, Title, nDone, nTotal))
+		{
+			f_unlink (To);
+			f_rename (New, To);
+		}
+		InsertDiskPaused ((int) d, Header.Floppy[d]);
+	}
+	if (Header.Cd[0] != '\0')
+	{
+		ResumeEmu ();
+		insertCd (Header.Cd);			// (pauses by itself)
+		PauseEmu ();
+	}
+
+	// Then the Mac itself.
+	if (bOK)
+	{
+		u8 *pBuffer = new u8[CFileState::Size];
+		CFileState State (&File, FALSE, pBuffer);
+		m_pQuadra->state (State);
+		delete [] pBuffer;
+		bOK = State.ok;
+	}
+	f_close (&File);
+	if (!bOK)
+	{
+		m_pMachine->reset ();
+		strCopy (pWhy, "Restoring failed: the Mac starts afresh", nMax);
+	}
+	m_nMacOffTicks = 0;
+	m_bHaveVideo = FALSE;
+	m_bForceRedraw = TRUE;
+	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
+	ResumeEmu ();
+	m_Logger.Write (FromKernel, bOK ? LogNotice : LogWarning, bOK ? "Restored slot %d" : "Could not restore slot %d",
+			nSlot + 1);
+	return bOK;
 }
 
 // ----------------------------------------------------------------- the web page's status
@@ -1885,7 +2337,7 @@ void CKernel::StatusText (char *pOut, unsigned nMax)
 	strCopy (V, !m_Config.sound ? "off" : m_SoundName[0] ? m_SoundName : "none", sizeof V);
 	Line ("Sound", V);
 
-	if (m_pShared != 0)
+	if (m_pShared != 0 && m_pShared->wantVolume)
 	{
 		strCopy (V, m_pShared->status, sizeof V);
 		strAppend (V, " (folder ", sizeof V);
@@ -1913,19 +2365,68 @@ void CKernel::StatusText (char *pOut, unsigned nMax)
 
 // A folder on the card as a disk on the Mac's desktop (the Quadra, Mac OS
 // 7.5 and later); it appears once Mac OS has started.
+// The Mac integration (the Quadra): the shared folder as a disk, when one
+// is chosen, and the clipboard shared with the web page, always.
 void CKernel::StartSharedFolder (void)
 {
-	if (m_pQuadra == 0 || m_Config.sharedFolder[0] == '\0')
+	if (m_pQuadra == 0)
 	{
 		return;
 	}
+	boolean bFolder = m_Config.sharedFolder[0] != '\0';
 	char Root[160] = DRIVE "/";
-	strAppend (Root, m_Config.sharedFolder, sizeof Root);
-	f_mkdir (Root);
+	strAppend (Root, bFolder ? m_Config.sharedFolder : "shared", sizeof Root);
+	if (bFolder)
+	{
+		f_mkdir (Root);
+	}
 	m_pShareFS = new CFatHostFS (Root);
 	m_pShared = new macemu::SharedFolder (m_pQuadra->cpu, *m_pShareFS);
+	m_pShared->wantVolume = bFolder;
 	m_pQuadra->attachSharedFolder (m_pShared);
-	m_Logger.Write (FromKernel, LogNotice, "Shared folder: %s", Root);
+	if (bFolder)
+	{
+		m_Logger.Write (FromKernel, LogNotice, "Shared folder: %s", Root);
+	}
+}
+
+boolean CKernel::ClipboardText (char *pOut, unsigned nMax)
+{
+	if (m_pShared == 0 || !m_pShared->clipboardReady ())
+	{
+		return FALSE;
+	}
+	// A consistent copy: the Mac's core may be writing it (the count is odd then).
+	static u8 Mac[macemu::SharedFolder::kClipMax];
+	u32 nLength = 0;
+	for (unsigned nTry = 0; nTry < 20; nTry++)
+	{
+		u32 nBefore = m_pShared->clipSerial;
+		DataMemBarrier ();
+		nLength = m_pShared->clipLength ();
+		if (nLength > sizeof Mac) nLength = sizeof Mac;
+		memcpy (Mac, m_pShared->clipText (), nLength);
+		DataMemBarrier ();
+		if (!(nBefore & 1) && m_pShared->clipSerial == nBefore)
+		{
+			break;
+		}
+		m_Timer.MsDelay (1);
+	}
+	macemu::macTextToUtf8 (Mac, nLength, pOut, nMax);
+	return TRUE;
+}
+
+boolean CKernel::SetClipboardText (const char *pText, unsigned nLength)
+{
+	if (m_pShared == 0 || !m_pShared->clipboardReady ())
+	{
+		return FALSE;
+	}
+	static u8 Mac[macemu::SharedFolder::kClipMax];
+	u32 n = macemu::utf8ToMacText (pText, nLength, Mac, sizeof Mac);
+	m_pShared->setClipText ((const char *) Mac, n);
+	return TRUE;
 }
 
 // The shared folder's state, in the log when it changes.
@@ -1940,6 +2441,32 @@ void CKernel::ReportSharedFolder (void)
 }
 
 // ----------------------------------------------------------------- JIT
+
+// Translation on core 3, so that the Mac does not wait for it: once the
+// JIT is made and the Mac runs on core 1 (whichever comes last).
+void CKernel::StartJitCore (void)
+{
+#ifdef ARM_ALLOW_MULTI_CORE
+	if (m_pJit != 0 && m_pJitWorker == 0 && m_bEmuCoreRunning && m_pJit->startBackground (m_pQuadra->cpu))
+	{
+		m_pJitWorker = m_pJit;
+		asm volatile ("dsb ish\n\tsev" ::: "memory");
+		m_Logger.Write (FromKernel, LogNotice, "The JIT translates on core 3");
+	}
+#endif
+}
+
+#ifdef ARM_ALLOW_MULTI_CORE
+// Core 3: asleep until the JIT is made, then its translator for good.
+void CKernel::JitCoreRun (void)
+{
+	while (m_pJitWorker == 0)
+	{
+		asm volatile ("wfe");
+	}
+	m_pJitWorker->workerLoop ();
+}
+#endif
 
 // The JIT on or off as the settings say (the Quadra only; while the Mac
 // is paused).  It is made the first time it is wanted.
@@ -1969,6 +2496,7 @@ void CKernel::UpdateJit (void)
 			m_Config.jit = 0;
 			return;
 		}
+		StartJitCore ();
 	}
 	if (m_pQuadra->cpu.jit == 0)
 	{
@@ -3569,6 +4097,7 @@ void CKernel::settingsChanged (void)
 {
 	ApplyPalette ();
 	m_Layout = layoutFor (m_Surface, m_nVideoWidth ? m_nVideoWidth : 512, m_nVideoHeight ? m_nVideoHeight : 342, m_Config.scale);
+	m_Layout.scanlines = m_Config.sharp == 2;
 	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 	m_bForceRedraw = TRUE;
 

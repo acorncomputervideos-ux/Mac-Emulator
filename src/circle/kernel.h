@@ -85,6 +85,8 @@ public:
 	TShutdownMode Run (void);
 
 	void EmuCoreRun (void);			// the Mac's own core (core 1)
+	void JitCoreRun (void);			// core 3: translates the JIT's blocks
+	void StartJitCore (void);
 
 	// macemu::OsdHost
 	int listFiles (FileKind Kind, char (*ppNames)[kNameLen], int nMax) override;
@@ -104,6 +106,9 @@ public:
 	void powerOff (void) override;
 	void TurnOff (boolean bShowMessage);		// powerOff (), or quietly (the Mac's own screen stays)
 	bool hibernate (void) override;
+	const char *slotInfo (int nSlot) override	{ return nSlot >= 0 && nSlot < (int) SlotCount ? m_SlotInfo[nSlot] : ""; }
+	bool saveSlot (int nSlot) override;
+	bool loadSlot (int nSlot, char *pWhy, unsigned nMax) override;
 	bool newFloppy (bool bHighDensity, char *pName, unsigned nMax) override;
 	const char *infoLine (int nLine) override	{ return m_InfoLine[nLine < 0 || nLine > 2 ? 0 : nLine]; }
 
@@ -112,6 +117,8 @@ public:
 	const char *DiskDir (void) override		{ return m_Config.diskDir; }
 	const char *SharedDir (void) override		{ return m_pShared != 0 ? m_Config.sharedFolder : ""; }
 	void StatusText (char *pOut, unsigned nMax) override;
+	boolean ClipboardText (char *pOut, unsigned nMax) override;
+	boolean SetClipboardText (const char *pText, unsigned nLength) override;
 	const char *Version (void) override		{ return "built " __DATE__ " " __TIME__; }
 	macemu::u32 MacTime (void) override		{ return m_pMachine->clockChip ().seconds; }
 	macemu::u32 MaxFloppyBytes (void) override	{ return m_pQuadra != 0 ? 1474560 : 819200; }
@@ -172,6 +179,11 @@ private:
 	void ReportSharedFolder (void);
 	void ResumeHibernation (void);
 	boolean WriteHibernation (void);
+	boolean WriteState (const char *pPath);
+	const char *StateMismatch (const void *pHeader);
+	void RefreshSlots (void);
+	boolean CopyOut (macemu::Storage *pFrom, const char *pFromPath, const char *pTo, const char *pTitle,
+			 ::u64 &nDone, ::u64 nTotal);
 	void StartEthernet (void);
 	void StartWiFi (void);
 	boolean WriteWiFiConfig (const char *pPath);
@@ -216,6 +228,7 @@ private:
 	macemu::MacII		*m_pMacII;
 	macemu::Quadra		*m_pQuadra;
 	macemu::Jit		*m_pJit;
+	macemu::Jit * volatile	m_pJitWorker;		// set: core 3 translates for it
 	class CFatHostFS	*m_pShareFS;
 	macemu::SharedFolder	*m_pShared;
 	macemu::Osd		*m_pOsd;
@@ -295,6 +308,8 @@ private:
 	u64			m_nStatsTime;
 	unsigned		m_nSpeedPercent;
 	char			m_InfoLine[3][64];
+	enum { SlotCount = 4 };
+	char			m_SlotInfo[SlotCount][48];	// "" when empty
 	unsigned		m_nMacOffTicks;		// when the Mac shut down (0: running)
 	char			m_SavedFloppy[2][macemu::Config::kPath];	// as macemu.cfg has them
 	char			m_SavedCdrom[macemu::Config::kPath];

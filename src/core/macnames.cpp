@@ -103,6 +103,42 @@ int hostToMacName(const char *host, u8 *mac, bool utf8)
     return 31;
 }
 
+u32 macTextToUtf8(const u8 *mac, u32 len, char *out, u32 max)
+{
+    u32 o = 0;
+    for (u32 i = 0; i < len; i++) {
+        u8 c = mac[i];
+        u32 u = c == '\r' ? '\n' : c < 0x80 ? c : kMacRoman[c - 0x80];
+        if (c == '\r' && i + 1 < len && mac[i + 1] == '\n') i++;   // (CR LF: one line end)
+        if (u < 0x80) { if (o + 1 >= max) break; out[o++] = (char)u; }
+        else if (u < 0x800) { if (o + 2 >= max) break; out[o++] = (char)(0xC0 | (u >> 6)); out[o++] = (char)(0x80 | (u & 0x3F)); }
+        else { if (o + 3 >= max) break; out[o++] = (char)(0xE0 | (u >> 12)); out[o++] = (char)(0x80 | ((u >> 6) & 0x3F)); out[o++] = (char)(0x80 | (u & 0x3F)); }
+    }
+    if (o < max) out[o] = 0;
+    return o;
+}
+
+u32 utf8ToMacText(const char *utf8, u32 len, u8 *out, u32 max)
+{
+    u32 o = 0;
+    const u8 *p = (const u8 *)utf8, *end = p + len;
+    while (p < end && o < max) {
+        u32 u;
+        if (*p < 0x80) u = *p++;
+        else if ((*p & 0xE0) == 0xC0 && end - p >= 2) { u = (u32)(*p & 0x1F) << 6 | (p[1] & 0x3F); p += 2; }
+        else if ((*p & 0xF0) == 0xE0 && end - p >= 3) { u = (u32)(*p & 0x0F) << 12 | (u32)(p[1] & 0x3F) << 6 | (p[2] & 0x3F); p += 3; }
+        else if ((*p & 0xF8) == 0xF0 && end - p >= 4) { u = '?'; p += 4; }
+        else { u = '?'; p++; }
+        if (u == '\r' && p < end && *p == '\n') continue;   // CR LF: the LF makes the line end
+        if (u == '\n') { out[o++] = '\r'; continue; }
+        if (u == 0x2028 || u == 0x2029) { out[o++] = '\r'; continue; }
+        if (u == 0xA0) u = ' ';
+        int b = u < 0x80 ? (int)u : fromUnicode(kMacRoman, u);
+        out[o++] = (u8)(b < 0 ? '?' : b);
+    }
+    return o;
+}
+
 bool sameMacName(const u8 *a, int la, const u8 *b, int lb)
 {
     if (la != lb) return false;

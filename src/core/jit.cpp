@@ -69,6 +69,7 @@ Jit::Jit() : table(0), code(0), codeSize(0), codeUsed(0), copies(0), copiesSize(
 
 Jit::~Jit()
 {
+    delete[] jobs;
     delete[] table;
     delete[] copies;
     delete[] pages;
@@ -134,6 +135,7 @@ static inline bool sameBytes(const u8 *a, const u8 *b, u32 n)
 
 int Jit::exec(M68K &c, int remaining, u64 end, u32 &total)
 {
+    if (worker && __atomic_load_n(&doneCount, __ATOMIC_ACQUIRE) != seenDone) installDone(c);
     u32 pc = c.pc;
     const u8 *host = JitAccess::codeHost(c, pc);
     if (!host) {
@@ -199,7 +201,10 @@ void Jit::finish(M68K &c)
         const u8 *p = recHost + (recs[i].pc - recStart);
         same = (u16)((p[0] << 8) | p[1]) == recs[i].op;
     }
-    if (same) translate(c);
+    if (same) {
+        if (worker) queue(c);
+        else translate(c);
+    }
     recCount = 0;
 }
 
@@ -231,13 +236,46 @@ static bool mayBranch(u16 op)
 // than last time.
 void Jit::translate(M68K &c)
 {
+    u32 end = 0, nNative = 0;
+    static u32 buf[kMaxWords];                          // (the CPU's core only)
+    u32 words = emitBlock(c, recs, recCount, recStart, recHost, buf, end, nNative);
+    nativeInstructions += nNative;
+    install(c, recStart, recHost, end - recStart, recHost, buf, words);
+}
+
+// Puts a block's code in place (the CPU's core).
+void Jit::install(M68K &c, u32 pc, const u8 *host, u32 len, const u8 *bytes, const u32 *words, u32 count)
+{
+    if (codeUsed + count * 4 + 64 > codeSize || copiesUsed + 4096 > copiesSize || pageCount >= kPages / 2) flushAll();
+    addCodePage(c, (const u8 *)((unsigned long)host & ~4095ul));
+    u32 *at = (u32 *)(code + codeUsed);
+    for (u32 i = 0; i < count; i++) at[i] = words[i];
+    jitFlushCode(at, count * 4);
+    codeUsed += (count * 4 + 63) & ~63u;
+
+    Block &b = table[slot(pc)];
+    b.pc = pc;
+    b.host = host;
+    b.len = len;
+    u8 *copy = copies + copiesUsed;
+    for (u32 k = 0; k < len; k++) copy[k] = bytes[k];
+    copiesUsed += (len + 7) & ~7u;
+    b.copy = copy;
+    b.fn = (BlockFn)(void *)at;
+    blocks++;
+}
+
+// The code for a block: what translate() always did.  Reads only the CPU's
+// fixed tables (its handlers, its model) and the code at src, so another
+// core may run it.  Returns its length in words; end is where the code it
+// depends on ends.
+u32 Jit::emitBlock(M68K &c, const Rec *recs, int recCount, u32 recStart, const u8 *recHost, u32 *buf,
+                   u32 &endOut, u32 &nNative) const
+{
     using namespace a64;
     typedef JitAccess J;
     const u32 maxWords = 128 + (u32)recCount * 260;
-    if (codeUsed + maxWords * 4 > codeSize || copiesUsed + 4096 > copiesSize || pageCount >= kPages / 2) flushAll();
-    addCodePage(c, (const u8 *)((unsigned long)recHost & ~4095ul));
-
-    u32 *buf = (u32 *)(code + codeUsed);
+    nNative = 0;
     Emitter e(buf, maxWords);
     const int shift = J::model(c) >= M68K::MC68040 ? 2 : 1;
 
@@ -290,7 +328,7 @@ void Jit::translate(M68K &c)
                 e.movw(0, r.pc + len);
                 e.strw(0, 19, J::oPc);
                 if (r.pc + len > end) end = r.pc + len;
-                nativeInstructions++;
+                nNative++;
             }
         }
         if (!own) {
@@ -359,23 +397,119 @@ void Jit::translate(M68K &c)
     e.ldpPost(29, 30, SP, 128);
     e.ret();
 
-    u32 bytes = e.size() * 4;
 #if defined(JIT_DUMP)                                   // each block's code to jit-PC-ADDRESS.bin
-    { char fn[64]; snprintf(fn, sizeof fn, "jit-%08X-%p.bin", recStart, (void *)buf); if (FILE *f = fopen(fn, "wb")) { fwrite(buf, 1, bytes, f); fclose(f); } }
+    { char fn[64]; snprintf(fn, sizeof fn, "jit-%08X-%p.bin", recStart, (void *)buf); if (FILE *f = fopen(fn, "wb")) { fwrite(buf, 4, e.size(), f); fclose(f); } }
 #endif
-    jitFlushCode(buf, bytes);
-    codeUsed += (bytes + 63) & ~63u;
+    endOut = end;
+    return e.size();
+}
 
-    Block &b = table[slot(recStart)];
-    b.pc = recStart;
-    b.host = recHost;
-    b.len = end - recStart;
-    u8 *copy = copies + copiesUsed;
-    for (u32 k = 0; k < b.len; k++) copy[k] = recHost[k];
-    copiesUsed += (b.len + 7) & ~7u;
-    b.copy = copy;
-    b.fn = (BlockFn)(void *)buf;
-    blocks++;
+// ---------------------------------------------------------------- background
+
+bool Jit::startBackground(M68K &c)
+{
+    if (!code) return false;
+    if (!jobs) {
+        jobs = new Job[kSlots];
+        for (u32 i = 0; i < kSlots; i++) jobs[i].state = 0;
+    }
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    worker = &c;
+    return true;
+}
+
+static inline void wakeWorker()
+{
+#if defined(__aarch64__)
+    asm volatile("dsb ish\n sev" ::: "memory");
+#endif
+}
+
+// The CPU's core: the recording as a job (a copy of the code with it, as
+// the worker must not read the Mac's memory while it changes).
+void Jit::queue(M68K &c)
+{
+    (void)c;
+    for (u32 i = 0; i < kSlots; i++)
+        if (__atomic_load_n(&jobs[i].state, __ATOMIC_ACQUIRE) != 0 && jobs[i].pc == recStart && jobs[i].host == recHost)
+            return;                                     // already on its way
+    for (u32 i = 0; i < kSlots; i++) {
+        Job &j = jobs[i];
+        if (__atomic_load_n(&j.state, __ATOMIC_ACQUIRE) != 0) continue;
+        j.pc = recStart;
+        j.host = recHost;
+        j.count = recCount;
+        for (int k = 0; k < recCount; k++) j.recs[k] = recs[k];
+        u32 want = recs[recCount - 1].pc - recStart + 24, room = 4096 - (recStart & 0xFFF);
+        j.snapLen = want < room ? want : room;
+        if (j.snapLen > kSnapMax) j.snapLen = kSnapMax;
+        for (u32 k = 0; k < j.snapLen; k++) j.snap[k] = recHost[k];
+        __atomic_store_n(&j.state, 1, __ATOMIC_RELEASE);
+        queued++;
+        wakeWorker();
+        return;
+    }
+    dropped++;                                          // all busy: it will be recorded again
+}
+
+bool Jit::workOnce()
+{
+    M68K *c = worker;
+    if (!c || !jobs) return false;
+    for (u32 i = 0; i < kSlots; i++) {
+        Job &j = jobs[i];
+        int queuedState = 1;
+        if (!__atomic_compare_exchange_n(&j.state, &queuedState, 2, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) continue;
+        j.words = emitBlock(*c, j.recs, j.count, j.pc, j.snap, j.buf, j.end, j.nNative);
+        __atomic_store_n(&j.state, 3, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&doneCount, 1, __ATOMIC_RELEASE);
+        return true;
+    }
+    return false;
+}
+
+void Jit::workerLoop()
+{
+    for (;;) {
+        if (!workOnce()) {
+#if defined(__aarch64__)
+            asm volatile("wfe");                        // until the CPU's core queues a job (sev)
+#endif
+        }
+    }
+}
+
+// The CPU's core: finished jobs into place, if their code is still as recorded.
+void Jit::installDone(M68K &c)
+{
+    seenDone = __atomic_load_n(&doneCount, __ATOMIC_ACQUIRE);
+    for (u32 i = 0; i < kSlots; i++) {
+        Job &j = jobs[i];
+        if (__atomic_load_n(&j.state, __ATOMIC_ACQUIRE) != 3) continue;
+        u32 len = j.end - j.pc;
+        bool same = len <= j.snapLen && sameBytes(j.host, j.snap, len);
+        if (same) {
+            nativeInstructions += j.nNative;
+            install(c, j.pc, j.host, len, j.snap, j.buf, j.words);
+        } else {
+            stale++;
+        }
+        __atomic_store_n(&j.state, 0, __ATOMIC_RELEASE);
+    }
+}
+
+void Jit::drain(M68K &c)
+{
+    if (!worker) return;
+    for (;;) {
+        bool busy = false;
+        for (u32 i = 0; i < kSlots; i++) {
+            int st = __atomic_load_n(&jobs[i].state, __ATOMIC_ACQUIRE);
+            if (st == 1 || st == 2) busy = true;
+        }
+        if (!busy) break;
+    }
+    installDone(c);
 }
 
 } // namespace macemu

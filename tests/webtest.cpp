@@ -148,6 +148,9 @@ public:
     boolean FileInUse(const char *p) override { return strcmp(p, "hd0.img") == 0 || strcmp(p, "disks/inuse.dsk") == 0; }
     const char *DiskDir() override { return "disks"; }
     const char *SharedDir() override { return "shared"; }
+    std::string clip = "Caf\xC3\xA9\nline 2";
+    boolean ClipboardText(char *o, unsigned n) override { snprintf(o, n, "%s", clip.c_str()); return TRUE; }
+    boolean SetClipboardText(const char *t, unsigned n) override { clip.assign(t, n); return TRUE; }
     void StatusText(char *o, unsigned n) override { snprintf(o, n, "Mac\tQuadra 650 & <b>\nFloppy drive 1\tSys.dsk\t0\nNetwork\tup\n"); }
     const char *Version() override { return "test <1>"; }
     macemu::u32 MacTime() override { return 0xE0000000u; }
@@ -170,7 +173,7 @@ static Reply request(const std::string &method, const std::string &path, const s
         fd = socket(AF_INET, SOCK_STREAM, 0);
     }
     std::string req = method + " " + path + " HTTP/1.1\r\nHost: test\r\n";
-    if (method == "PUT")
+    if (method == "PUT" || !body.empty())
         req += "Content-Length: " + std::to_string(claimedLength >= 0 ? claimedLength : (long)body.size()) + "\r\n";
     req += "\r\n" + body;
     for (size_t off = 0; off < req.size(); ) {
@@ -303,6 +306,15 @@ int main(int argc, char **argv)
         r = request("PUT", "/files/shared/plain.bin", "just bytes");
         CHECK(r.code == 201 && readFile("shared/plain.bin") == "just bytes");
     }
+
+    // The clipboard: with the status (after a record separator), and set from the page.
+    r = request("GET", "/status?clip=1");
+    CHECK(r.code == 200 && r.body.find("\x1E" "Caf\xC3\xA9\nline 2") != std::string::npos);
+    CHECK(r.body.find("Network\tup") < r.body.find("\x1E"));
+    r = request("POST", "/clipboard", "from the page\n\xE2\x82\xAC");
+    CHECK(r.code == 200 && host.clip == "from the page\n\xE2\x82\xAC");
+    r = request("GET", "/");
+    CHECK(r.body.find("id=clipsec") != std::string::npos);
 
     // Upload, in a size that is not a multiple of anything.
     std::string data;

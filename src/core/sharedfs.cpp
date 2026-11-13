@@ -229,6 +229,8 @@ void SharedFolder::reset()
     invalidate();
     tried = mounted = false;
     data = stack = glueAddr = 0;
+    clipCode = 0;
+    scrapSeen = false;
     drvrRefNum = 0;
     lastPoll = volDate = 0;
     vRefNum = 0;
@@ -321,9 +323,12 @@ void SharedFolder::trapHookFn(void *ctx, M68K &c, u16 op)
     if (!s.tried && (op == 0xA860 || op == 0xA970) && s.depth == 0) {
         s.tried = true;
         s.install();
-    } else if (s.mounted && (op == 0xA860 || op == 0xA970) && s.depth == 0) {
-        s.poll();
-        if (s.onIdle) s.onIdle(s.idleCtx);
+    } else if (s.glueAddr && (op == 0xA860 || op == 0xA970) && s.depth == 0) {
+        s.clipboardSync();
+        if (s.mounted) {
+            s.poll();
+            if (s.onIdle) s.onIdle(s.idleCtx);
+        }
     }
 }
 
@@ -367,6 +372,97 @@ s16 SharedFolder::utCall(u32 ut, Regs &r)
     return (s16)(r.d[0] & 0xFFFF);
 }
 
+// ================================================================ the clipboard
+
+// Low-memory globals of the Scrap Manager.
+enum { ScrapSize = 0x960, ScrapHandle = 0x964, ScrapCount = 0x968, ScrapState = 0x96A };
+
+void SharedFolder::setClipText(const char *macRoman, u32 len)
+{
+    if (len > kClipMax) len = kClipMax;
+    clipPending = false;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    for (u32 i = 0; i < len; i++) pend[i] = macRoman[i];
+    pendLen = len;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    clipPending = true;                                 // (taken by the Mac's core at its next idle moment)
+}
+
+// The Scrap Manager's calls take their arguments on the stack: a few
+// lines of 68k for them, in the system heap (made the first time).
+s32 SharedFolder::scrapCall(u32 offset, Regs &r)
+{
+    if (!clipCode) {
+        Regs a = {};
+        a.d[0] = 32;
+        if (!runTrap(0xA71E, a) || !a.a[0]) return -108;   // NewPtrSysClear
+        clipCode = a.a[0];
+        static const u16 code[16] = {
+            0x42A7, 0xA9FC, 0x201F, 0x4E75,                 // 0:  ZeroScrap
+            0x42A7, 0x2F00, 0x2F01, 0x2F08, 0xA9FE, 0x201F, 0x4E75, 0,   // 8:  PutScrap(d0 length, d1 type, a0 data)
+            0x42A7, 0xA9FB, 0x201F, 0x4E75,                 // 24: LoadScrap
+        };
+        for (u32 i = 0; i < 16; i++) w16(clipCode + 2 * i, code[i]);
+    }
+    if (!run68k(clipCode + offset, r)) return -1;
+    return (s32)r.d[0];
+}
+
+void SharedFolder::clipboardSync()
+{
+    // From the host: onto the Mac's clipboard (as text).
+    if (clipPending) {
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        Regs r = {};
+        r.d[0] = pendLen ? pendLen : 1;
+        if (runTrap(0xA71E, r) && r.a[0]) {             // NewPtrSysClear: the text, for PutScrap
+            u32 buf = r.a[0];
+            hostToMacMem(buf, pend, pendLen);
+            Regs z = {};
+            scrapCall(0, z);
+            Regs p = {};
+            p.d[0] = pendLen; p.d[1] = 0x54455854; p.a[0] = buf;   // 'TEXT'
+            scrapCall(8, p);
+            Regs d = {};
+            d.a[0] = buf;
+            runTrap(0xA01F, d);                         // DisposePtr
+        }
+        clipPending = false;
+        lastScrapCount = (s16)r16(ScrapCount);          // ours: not news for the host
+        scrapSeen = true;
+    }
+
+    // From the Mac: its clipboard changed (ZeroScrap counts).
+    s16 count = (s16)r16(ScrapCount);
+    if (scrapSeen && count == lastScrapCount) return;
+    lastScrapCount = count;
+
+    scrapSeen = true;
+    if ((s16)r16(ScrapState) == 0) {                    // in the Clipboard file: into memory
+        Regs l = {};
+        scrapCall(24, l);
+    }
+    u32 h = r32(ScrapHandle), size = r32(ScrapSize);
+    if ((s16)r16(ScrapState) <= 0 || !h || !r32(h) || size > (1u << 24)) return;
+    u32 p = r32(h), end = p + size;
+    while (p + 8 <= end) {
+        u32 type = r32(p), len = r32(p + 4);
+        if (len > end - p - 8) break;
+        if (type == 0x54455854) {                       // 'TEXT'
+            u32 n = len < kClipMax - 1 ? len : kClipMax - 1;
+            clipSerial = clipSerial + 1;                // odd: being written
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            macToHostMem(p + 8, clip, n);
+            clip[n] = 0;
+            clipLen = n;
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            clipSerial = clipSerial + 1;
+            return;
+        }
+        p += 8 + ((len + 1) & ~1u);
+    }
+}
+
 // ================================================================ Mac memory
 
 u8 SharedFolder::r8(u32 a) { return (u8)cpu.rd(a, 0); }
@@ -406,6 +502,8 @@ void SharedFolder::install()
     glueAddr = r.a[0];
     hostToMacMem(glueAddr, glue, kGlueSize);
     r = Regs();
+
+    if (!wantVolume) { status = "off (no folder chosen)"; return; }
 
     // The File System Manager (Mac OS 7.5, or 7.1 with it installed).
     r.d[0] = 0x66732020;                                // Gestalt('fs  ')

@@ -64,16 +64,50 @@ struct ShareTest {
     }
 
     static void idle(void *ctx) { ((ShareTest *)ctx)->tick(); }
+    int phaseAt = 0;
     void tick() {
-        if (done || ++frame < 30) return;               // let the Finder settle first
-        done = 1;
-        SharedFolder::Regs r = {};
-        r.d[0] = 0x4000;
-        sf.runTrap(0xA71E, r);                          // NewPtrSysClear
-        mem = r.a[0];
-        if (!mem) { check(false, "memory for the test"); return; }
-        run();
-        printf("shared folder test: %d checks, %d failures\n", checks, failures);
+        ++frame;
+        if (done == 0) {
+            if (frame < 30) return;                     // let the Finder settle first
+            done = 1;
+            SharedFolder::Regs r = {};
+            r.d[0] = 0x4000;
+            sf.runTrap(0xA71E, r);                      // NewPtrSysClear
+            mem = r.a[0];
+            if (!mem) { check(false, "memory for the test"); return; }
+            run();
+            // The clipboard: from the host onto the Mac's (at the next idle moment) ...
+            sf.setClipText("Hello from the host\rline 2", 26);
+            phaseAt = frame;
+        } else if (done == 1 && frame >= phaseAt + 3) {
+            done = 2;
+            check(scrapText() == "Hello from the host\rline 2", "the host's text on the Mac's clipboard");
+            // ... and a copy on the Mac (as an application does) to the host.
+            static const char text[] = "From the Mac";
+            for (u32 i = 0; i < sizeof text - 1; i++) w8(mem + BUF + i, (u8)text[i]);
+            static const u16 code[] = {0x42A7, 0xA9FC, 0x201F,              // ZeroScrap
+                                       0x42A7, 0x2F03, 0x2F04, 0x2F0A, 0xA9FE, 0x201F, 0x4E75};   // PutScrap(d3 length, d4 type, a2 text)
+            for (u32 i = 0; i < sizeof code / 2; i++) w16(mem + 0x3F00 + 2 * i, code[i]);
+            SharedFolder::Regs r = {};
+            r.d[3] = sizeof text - 1; r.d[4] = 0x54455854; r.a[2] = mem + BUF;
+            sf.run68k(mem + 0x3F00, r);
+            phaseAt = frame;
+        } else if (done == 2 && frame >= phaseAt + 3) {
+            done = 3;
+            check(std::string(sf.clipText(), sf.clipLength()) == "From the Mac" && !(sf.clipSerial & 1),
+                  "the Mac's copy on the host");
+            printf("shared folder test: %d checks, %d failures\n", checks, failures);
+        }
+    }
+    std::string scrapText() {                           // the Mac's clipboard, 'TEXT'
+        u32 h = r32(0x964), size = r32(0x960);
+        if (!h || !r32(h)) return "<none>";
+        for (u32 p = r32(h), end = p + size; p + 8 <= end; ) {
+            u32 type = r32(p), len = r32(p + 4);
+            if (type == 0x54455854) { std::string t; for (u32 i = 0; i < len; i++) t += (char)r8(p + 8 + i); return t; }
+            p += 8 + ((len + 1) & ~1u);
+        }
+        return "<no text>";
     }
 
     void run() {

@@ -50,6 +50,7 @@ void paletteColors(int index, u32 *rgb);
 struct Layout {
     int scale, x0, y0;
     int width, height;          // Mac screen size the layout was made for
+    bool scanlines = false;     // a CRT's dark lines: each Mac row's last screen line at half brightness (scale >= 2)
 };
 // Largest integer zoom that fits (or the requested one, if it fits), centred.
 Layout layoutFor(const Surface &s, int macWidth, int macHeight, int requestedScale);

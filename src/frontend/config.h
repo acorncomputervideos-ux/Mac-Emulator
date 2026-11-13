@@ -22,7 +22,7 @@ struct Config {
     int cdromId;                // SCSI ID of the CD-ROM drive (0..6, -1 = no drive)
     int speed;                  // 1, 2, 4, 8 or 0 = unlimited
     int scale;                  // integer zoom, 0 = largest that fits
-    int sharp;                  // 1: whole-number scaling with square pixels; 0: smooth, fills the height
+    int sharp;                  // 1: whole-number scaling with square pixels; 2: that with scanlines; 0: smooth, fills the height
     int width, height;          // framebuffer size, 0 = display's native mode
     int palette;
     int sound;                  // 0 = off

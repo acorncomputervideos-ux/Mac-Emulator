@@ -14,7 +14,7 @@ Osd::Osd(Config &config, OsdHost &h) : cfg(config), host(h)
 {
     isOpen = dirty = pendingReboot = disksChanged = false;
     page = PageMain;
-    for (int i = 0; i < 6; i++) sel[i] = 0;
+    for (int i = 0; i < 7; i++) sel[i] = 0;
     pickTarget = PickFloppy1;
     pickId = 0;
     pickCount = pickSel = pickTop = 0;
@@ -44,7 +44,7 @@ int Osd::items(Page p, int *out) const
 {
     static const int main[] = {ItHeadDisks, ItFloppy1, ItFloppy2, ItDisksPage, ItNewFloppy,
                                ItHeadSettings, ItMachinePage, ItPrefsPage, ItNetworkPage,
-                               ItHeadMac, ItReset, ItInterrupt, ItScreenshot, ItSave, ItHibernate, ItPowerOff, ItResume};
+                               ItHeadMac, ItReset, ItInterrupt, ItScreenshot, ItSave, ItSavedPage, ItHibernate, ItPowerOff, ItResume};
     static const int disks[] = {ItHeadScsi, ItHd0, ItHd0 + 1, ItHd0 + 2, ItHd0 + 3, ItHd0 + 4, ItHd0 + 5, ItHd6,
                                 ItHeadCd, ItCdrom, ItDisksBack};
     static const int machine[] = {ItModel, ItRom, ItRam, ItVideo, ItMonitor, ItScaling, ItApply, ItMachineBack};
@@ -52,10 +52,13 @@ int Osd::items(Page p, int *out) const
                                 ItHeadInput, ItMouse, ItAlt, ItPrefsBack};
     static const int net[] = {ItHeadConnection, ItNetMode, ItHeadWifi, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry,
                               ItKeyboard, ItHeadSharing, ItMacInternet, ItHttps, ItShared, ItNetApply, ItNetworkBack};
-    const int *list = p == PageMain ? main : p == PageDisks ? disks : p == PageMachine ? machine : p == PagePrefs ? prefs : net;
+    static const int saved[] = {ItHeadRestore, ItLoad1, ItLoad1 + 1, ItLoad1 + 2, ItLoad4,
+                                ItHeadSaveTo, ItSave1, ItSave1 + 1, ItSave1 + 2, ItSave4, ItSavedBack};
+    const int *list = p == PageMain ? main : p == PageDisks ? disks : p == PageMachine ? machine : p == PagePrefs ? prefs
+                    : p == PageSaved ? saved : net;
     int n = p == PageMain ? (int)(sizeof main / sizeof main[0]) : p == PageDisks ? (int)(sizeof disks / sizeof disks[0])
           : p == PageMachine ? (int)(sizeof machine / sizeof machine[0]) : p == PagePrefs ? (int)(sizeof prefs / sizeof prefs[0])
-          : (int)(sizeof net / sizeof net[0]);
+          : p == PageSaved ? (int)(sizeof saved / sizeof saved[0]) : (int)(sizeof net / sizeof net[0]);
     for (int i = 0; i < n; i++) out[i] = list[i];
     return n;
 }
@@ -158,7 +161,7 @@ void Osd::adjust(int item, int dir)
         return;
     }
     case ItScaling:
-        cfg.sharp = !cfg.sharp;
+        cfg.sharp = cycle(cfg.sharp, dir, 0, 2);
         pendingReboot = true;
         return;
     case ItMonitor:
@@ -223,16 +226,30 @@ void Osd::openPicker(PickTarget target, int id)
 void Osd::activate(int item)
 {
     // What cannot be undone asks first: Enter once more to do it.
-    if (item == ItReset || item == ItHibernate || item == ItPowerOff) {
+    bool isLoad = item >= ItLoad1 && item <= ItLoad4, isSave = item >= ItSave1 && item <= ItSave4;
+    if (isLoad && !host.slotInfo(item - ItLoad1)[0]) { say("Nothing saved there yet"); return; }
+    if (item == ItReset || item == ItHibernate || item == ItPowerOff || isLoad || isSave) {
         if (confirmItem != item) {
             confirmItem = item;
             say(item == ItReset ? "Press Enter again to restart the Mac"
                 : item == ItHibernate ? "Press Enter again to save the Mac and turn off"
+                : isLoad ? "Enter again: the Mac and its disks go back"
+                : isSave ? (host.slotInfo(item - ItSave1)[0] ? "Enter again to save here (replaces it)" : "Press Enter again to save the Mac here")
                 : "Press Enter again to turn off the Pi");
             return;
         }
         confirmItem = -1;
         message[0] = 0;
+    }
+    if (isSave) {
+        say(host.saveSlot(item - ItSave1) ? "Saved" : "Could not save it (Quadra only; is the card full?)");
+        return;
+    }
+    if (isLoad) {
+        char why[64];
+        if (host.loadSlot(item - ItLoad1, why, sizeof why)) { isOpen = false; page = PageMain; }
+        else say(why);
+        return;
     }
     switch (item) {
     case ItNewFloppy: {
@@ -253,6 +270,7 @@ void Osd::activate(int item)
     case ItMachinePage: page = PageMachine; break;
     case ItPrefsPage: page = PagePrefs; break;
     case ItNetworkPage: page = PageNetwork; break;
+    case ItSavedPage: page = PageSaved; break;
     case ItReset:
         host.resetMachine();
         disksChanged = false;
@@ -272,7 +290,7 @@ void Osd::activate(int item)
         editItem = item;
         strCopy(editBuf, item == ItWifiName ? cfg.wifiSsid : cfg.wifiPassword, sizeof editBuf);
         break;
-    case ItDisksBack: case ItMachineBack: case ItPrefsBack: case ItNetworkBack:
+    case ItDisksBack: case ItMachineBack: case ItPrefsBack: case ItNetworkBack: case ItSavedBack:
         page = PageMain;
         break;
     default:
@@ -420,6 +438,9 @@ void Osd::label(int item, char *out, u32 max)
         field("Shared disk", v);
         break;
     case ItHeadDisks: strAppend(out, "DISKS", max); break;
+    case ItSavedPage: strAppend(out, "Saved Macs (snapshots)  >", max); break;
+    case ItHeadRestore: strAppend(out, "RESTORE (the Mac now running is lost)", max); break;
+    case ItHeadSaveTo: strAppend(out, "SAVE THE MAC AS IT IS NOW", max); break;
     case ItHeadSettings: strAppend(out, "SETTINGS", max); break;
     case ItHeadMac: strAppend(out, "THE MAC", max); break;
     case ItHeadScsi: strAppend(out, "SCSI HARD DISKS (restart the Mac to change)", max); break;
@@ -490,7 +511,9 @@ void Osd::label(int item, char *out, u32 max)
         appendUint(v, (u32)cfg.videoHeight, sizeof v);
         field("Mac II screen", v);
         break;
-    case ItScaling: field("Screen scaling", cfg.sharp ? "Sharp (whole pixels)" : "Smooth (fills screen)"); break;
+    case ItScaling:
+        field("Screen scaling", cfg.sharp == 2 ? "Scanlines (like a CRT)" : cfg.sharp ? "Sharp (whole pixels)" : "Smooth (fills screen)");
+        break;
     case ItMonitor: field("Quadra monitor", strEq(cfg.monitor, "21") ? "21-inch, 1152 x 870" : "VGA, 640 x 480 / 800 x 600"); break;
     case ItApply: strAppend(out, pendingReboot ? "Apply: save and restart now" : "Save and restart", max); break;
     case ItSpeed:
@@ -510,10 +533,19 @@ void Osd::label(int item, char *out, u32 max)
     }
     case ItMouse: appendUint(v, (u32)cfg.mouseSpeed, sizeof v); field("Mouse speed", v); break;
     case ItAlt: field("Alt key", cfg.altIsOption ? "Option (Win = Cmd)" : "Command (Win = Opt)"); break;
-    case ItDisksBack: case ItMachineBack: case ItPrefsBack: case ItNetworkBack:
+    case ItDisksBack: case ItMachineBack: case ItPrefsBack: case ItNetworkBack: case ItSavedBack:
         strAppend(out, "<  Back", max);
         break;
     default:
+        if ((item >= ItLoad1 && item <= ItLoad4) || (item >= ItSave1 && item <= ItSave4)) {
+            int slot = item >= ItSave1 ? item - ItSave1 : item - ItLoad1;
+            char name[12] = "Slot ";
+            appendUint(name, (u32)slot + 1, sizeof name);
+            const char *info = host.slotInfo(slot);
+            for (u32 n = strLen(name); n < 8; n++) strAppend(name, " ", sizeof name);
+            strAppend(out, name, max);
+            strAppend(out, info[0] ? info : "(empty)", max);
+        }
         if (item >= ItHd0 && item <= ItHd6) {
             char name[16] = "SCSI ID ";
             appendUint(name, (u32)(item - ItHd0), sizeof name);
@@ -556,7 +588,7 @@ void Osd::draw(Surface &s, const Font &f)
     char line[96];
 
     static const char *titles[] = {"Mac Emulator", "Hard disks and CD-ROM", "Machine, ROM and memory",
-                                   "Speed, display, sound and input", "Network and sharing", ""};
+                                   "Speed, display, sound and input", "Network and sharing", "Saved Macs", ""};
     const char *title = titles[page];
     if (page == PagePicker)
         title = pickTarget == PickHardDisk ? "Choose a hard disk image" : pickTarget == PickRom ? "Choose a ROM"

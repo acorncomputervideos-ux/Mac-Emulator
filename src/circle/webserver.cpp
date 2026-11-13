@@ -39,6 +39,8 @@ static const char PageHead[] =
 ".drop{border:2px dashed var(--line);border-radius:8px;padding:18px;text-align:center;color:var(--dim)}"
 ".drop.on{border-color:var(--accent);background:var(--drop)}progress{width:100%}.n{color:var(--dim);font-size:13px}"
 "label{font-size:14px}.ok{color:#2a8a3e}"
+"textarea{width:100%;box-sizing:border-box;font:14px ui-monospace,monospace;padding:6px;"
+"background:var(--card);color:inherit;border:1px solid var(--line);border-radius:6px}"
 "</style></head><body>";
 
 static const char PageUpload[] =
@@ -100,10 +102,17 @@ static const char PageTail[] =
 "if(!q.length)setTimeout(function(){location.reload()},1500)})"
 ".catch(function(x){st.textContent=f.name+': '+x}).finally(function(){busy=0;p.hidden=true;next()})}"
 "function send(fl){if(SHARE&&!$('tfl').checked)add(fl,SHARE+'/','tst','tpr');else transfer(fl)}"
-"function stat(){if(busy||xfer||q.length)return;fetch('/status').then(function(r){return r.text()}).then(function(t){var h='';"
+"var lastClip=null,clipEdited=0;"
+"function clipSend(){var t=$('clip').value;$('cst').textContent='...';"
+"fetch('/clipboard',{method:'POST',body:t}).then(function(r){return r.text()}).then(function(m){$('cst').textContent=m;clipEdited=0;lastClip=null})}"
+"function clipCopy(){var a=$('clip');a.select();try{navigator.clipboard.writeText(a.value)}catch(x){document.execCommand('copy')}$('cst').textContent='Copied.'}"
+"function showClip(c){if(c=='\\x1F')return;$('clipsec').hidden=false;"
+"if(c!==lastClip){lastClip=c;if(!clipEdited&&document.activeElement!==$('clip'))$('clip').value=c}}"
+"function stat(){if(busy||xfer||q.length)return;fetch('/status?clip=1').then(function(r){return r.text()}).then(function(t){var h='';"
+"var k=t.indexOf('\\x1E');if(k>=0){showClip(t.slice(k+1));t=t.slice(0,k)}"
 "t.split('\\n').forEach(function(l){var c=l.split('\\t');if(c.length>1)h+='<tr><td class=k>'+esc(c[0])+'</td><td>'+esc(c[1])"
 "+(c[2]?' <button onclick=\\\"drv(\\''+c[2]+'\\',\\'\\')\\\">Eject</button>':'')+'</td></tr>'});"
-"$('stat').innerHTML=h}).catch(function(){})}setInterval(stat,5000);"
+"$('stat').innerHTML=h}).catch(function(){})}setInterval(stat,5000);stat();"
 "function del(n){if(!confirm('Delete '+n+'?'))return;"
 "fetch('/files/'+n,{method:'DELETE'}).then(function(r){return r.text().then(function(t){"
 "if(r.ok)location.reload();else alert(t)})})}"
@@ -254,10 +263,29 @@ void CWebServer::Serve (CSocket *pSocket)
 		return;
 	}
 
+	if (strEq (Request.Method, "POST") && strEq (pPath, "clipboard"))
+	{
+		ClipboardPost (pSocket, &Request);
+		return;
+	}
+
 	if (bGet && strEq (pPath, "status"))
 	{
-		static char Text[1024];
-		m_pHost->StatusText (Text, sizeof Text);
+		// The status lines; with ?clip=1 then a record separator and the
+		// Mac's clipboard (the page shows both, one request every 5 s).
+		static char Text[1024 + 3 * 16384 + 4];
+		m_pHost->StatusText (Text, 1024);
+		char Value[4];
+		if (QueryValue (Request.Query, "clip", Value, sizeof Value))
+		{
+			unsigned n = strLen (Text);
+			Text[n] = '\x1E';
+			if (!m_pHost->ClipboardText (Text + n + 1, sizeof Text - n - 1))
+			{
+				Text[n + 1] = '\x1F';			// none to share
+				Text[n + 2] = '\0';
+			}
+		}
 		char Head[160] = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n"
 				 "Cache-Control: no-store\r\nConnection: close\r\nContent-Length: ";
 		appendUint (Head, strLen (Text), sizeof Head);
@@ -523,6 +551,14 @@ void CWebServer::SendIndex (CSocket *pSocket)
 	Out ("</table><p id=dst class=n></p><p><button onclick=restart()>Restart the Mac</button> "
 	     "<span class=n>Saves the disks and starts the Mac again with the disks chosen in the menu.</span></p></section>");
 
+	// The clipboard (shown once the Mac has one to share).
+	Out ("<section id=clipsec hidden><h2>Clipboard</h2>"
+	     "<textarea id=clip rows=4 spellcheck=false oninput='clipEdited=1'></textarea>"
+	     "<p><button onclick=clipSend()>Put on the Mac's clipboard</button> "
+	     "<button onclick=clipCopy()>Copy</button> <span id=cst class=n></span></p>"
+	     "<p class=n>Text you copy on the Mac shows here. Text put on the Mac's clipboard from here is pasted "
+	     "with Command-V; some programs see it only after you switch to another program and back.</p></section>");
+
 	// Sending files: to the shared folder when there is one.
 	const char *pShared = m_pHost->SharedDir ();
 	for (const char *p = PageSend; *p; )
@@ -663,6 +699,39 @@ void CWebServer::ListFolder (const char *pFolder, boolean bDiskDir, const char *
 		Out ("<tr><td class=n>No files.</td></tr>");
 	}
 	Out ("</table></section>");
+}
+
+// ----------------------------------------------------------------- the clipboard
+
+// POST /clipboard: the body (UTF-8 text) onto the Mac's clipboard.
+void CWebServer::ClipboardPost (CSocket *pSocket, TRequest *pRequest)
+{
+	const unsigned nMax = 3 * 16384;
+	if (!pRequest->bHaveLength || pRequest->nContentLength > nMax)
+	{
+		SendStatus (pSocket, 413, "That is more text than the Mac's clipboard takes here (16 KB).");
+		return;
+	}
+	unsigned nLength = (unsigned) pRequest->nContentLength;
+	unsigned nHave = m_nHeaderLength - m_nBodyStart;
+	if (nHave > nLength) nHave = nLength;
+	memcpy (m_pBuffer, m_Header + m_nBodyStart, nHave);
+	m_nBodyUnread = 0;
+	while (nHave < nLength)
+	{
+		int n = pSocket->Receive (m_pBuffer + nHave, nLength - nHave, 0);
+		if (n <= 0)
+		{
+			return;
+		}
+		nHave += (unsigned) n;
+	}
+	if (!m_pHost->SetClipboardText ((const char *) m_pBuffer, nLength))
+	{
+		SendStatus (pSocket, 409, "The Mac has no clipboard to share yet (a Quadra, once System 7 is up).");
+		return;
+	}
+	SendStatus (pSocket, 200, "On the Mac's clipboard: paste it with Command-V.");
 }
 
 // ----------------------------------------------------------------- drives

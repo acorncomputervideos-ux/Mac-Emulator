@@ -17,6 +17,11 @@ int hostToMacName(const char *host, u8 *mac, bool utf8);
 // Mac names compare without regard to (ASCII) case.
 bool sameMacName(const u8 *a, int la, const u8 *b, int lb);
 
+// Text (the clipboard): Mac Roman with CR line ends <-> UTF-8 with LF.
+// Characters Mac Roman lacks become '?'.  Both return the length written.
+u32 macTextToUtf8(const u8 *mac, u32 len, char *out, u32 max);
+u32 utf8ToMacText(const char *utf8, u32 len, u8 *out, u32 max);
+
 } // namespace macemu
 
 #endif

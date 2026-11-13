@@ -149,6 +149,24 @@ static void testVideo()
     CHECK(blitScreen(b, l8, f8, prev8.data(), true) == 480);
     CHECK(bigPx[l8.y0 * 1920 + l8.x0] == 0x070707);
     CHECK(bigPx[(l8.y0 + 959) * 1920 + l8.x0 + 1279] == 0xC8C8C8);
+    // Scanlines: at 2x, each Mac row's second screen line at half brightness.
+    Layout lsc = l8;
+    lsc.scanlines = true;
+    CHECK(blitScreen(b, lsc, f8, prev8.data(), true) == 480);
+    {
+        u32 top = bigPx[(lsc.y0 + 958) * 1920 + lsc.x0 + 1279], low = bigPx[(lsc.y0 + 959) * 1920 + lsc.x0 + 1279];
+        CHECK(top == 0xC8C8C8 && low == 0x646464);
+        CHECK(bigPx[lsc.y0 * 1920 + lsc.x0] == 0x070707 && bigPx[(lsc.y0 + 1) * 1920 + lsc.x0] == 0x030303);
+    }
+    {
+        Config c;
+        c.setDefaults();
+        c.parse("scaling=scanlines\n", 18);
+        char out[4096];
+        u32 n = c.serialize(out, sizeof out);
+        out[n] = 0;
+        CHECK(c.sharp == 2 && strstr(out, "scaling=scanlines") != nullptr);
+    }
     // 2- and 4-bit packing, 16-bit x555 and 32-bit direct colour.
     u8 p2[1] = {0x1B}, p4[1] = {0xA5}, p16[2] = {0x7C, 0x00}, p32[4] = {0, 0x12, 0x34, 0x56};
     std::vector<u32> tinyPx;
@@ -237,6 +255,11 @@ struct FakeHost : OsdHost {
     bool hibernate() override { return false; }
     bool screenshot() override { shots++; return true; }
     int blanks = 0; bool blankHd = false;
+    std::string slots[4];
+    int loads = 0;
+    const char *slotInfo(int n) override { return slots[n].c_str(); }
+    bool saveSlot(int n) override { slots[n] = "13 Nov 2026 16:20  hd0.img"; return true; }
+    bool loadSlot(int n, char *why, unsigned max) override { loads++; strCopy(why, "no", max); return n == 2; }
     bool newFloppy(bool hd, char *name, unsigned max) override { blanks++; blankHd = hd; strCopy(name, "Blank 1.dsk", max); return true; }
     const char *infoLine(int) override { return "info"; }
     const char *networkLine(int n) override { return n == 0 ? "http://192.168.1.20/" : "net"; }
@@ -385,20 +408,37 @@ static void testOsd()
     go(osd, 8); osd.key(Osd::NavSelect);
     CHECK(host.nmis == 1 && !osd.active());
     osd.open();
-    go(osd, 11); osd.key(Osd::NavSelect); osd.key(Osd::NavSelect);   // hibernate: this host cannot
+    go(osd, 12); osd.key(Osd::NavSelect); osd.key(Osd::NavSelect);   // hibernate: this host cannot
     CHECK(osd.active());
-    go(osd, 12); osd.key(Osd::NavSelect);
+    go(osd, 13); osd.key(Osd::NavSelect);
     CHECK(host.offs == 0);                                      // asks first
     osd.key(Osd::NavDown); osd.key(Osd::NavUp); osd.key(Osd::NavSelect);
     CHECK(host.offs == 0);                                      // moving away forgets it
     osd.key(Osd::NavSelect);
     CHECK(host.offs == 1);
     osd.open();
-    go(osd, 13); osd.key(Osd::NavSelect);
+    go(osd, 14); osd.key(Osd::NavSelect);
     CHECK(!osd.active());
     osd.open();                                                 // a blank floppy, 1.44 MB
     go(osd, 3); osd.key(Osd::NavRight); osd.key(Osd::NavSelect);
     CHECK(host.blanks == 1 && host.blankHd && osd.active());
+
+    // Saved Macs: restore slots 1-4, then save slots 1-4; both ask first.
+    osd.open();
+    go(osd, 11); osd.key(Osd::NavSelect);                       // the page
+    osd.key(Osd::NavSelect);                                    // restore slot 1: empty
+    CHECK(host.loads == 0 && osd.active());
+    for (int i = 0; i < 5; i++) osd.key(Osd::NavDown);          // save slot 2 (past the heading)
+    osd.key(Osd::NavSelect);
+    CHECK(host.slots[1].empty());                               // asks first
+    osd.key(Osd::NavSelect);
+    CHECK(!host.slots[1].empty());
+    osd.key(Osd::NavPageUp); osd.key(Osd::NavDown);             // restore slot 2
+    osd.key(Osd::NavSelect); osd.key(Osd::NavSelect);
+    CHECK(host.loads == 1 && osd.active());                     // this host says no: still open
+    host.slots[2] = "x";
+    osd.key(Osd::NavDown); osd.key(Osd::NavSelect); osd.key(Osd::NavSelect);   // slot 3: restored
+    CHECK(host.loads == 2 && !osd.active());
 
     // Network page: connection type, Wi-Fi name and password typed in.
     Osd net(cfg, host);

@@ -4,7 +4,12 @@
 // Every part has a state(StateIO &) that lists its fields; the same
 // function saves and loads.  Pointers (to the ROM, the disks, the host)
 // are not saved: the machine is set up as before, then its state loaded
-// over it.  The format is for the same build only (the host checks).
+// over it.
+//
+// kStateFormat names the format: a state saved by any build with the same
+// number loads.  Change any state() (a field more, one fewer, another
+// size), or the 68k code the emulator puts in the Mac, and it must go up:
+// tests/hwtest.cpp checks the layout and fails until it does.
 
 #ifndef MACEMU_STATE_H
 #define MACEMU_STATE_H
@@ -13,12 +18,16 @@
 
 namespace macemu {
 
+enum { kStateFormat = 1 };
+
 class StateIO {
 public:
     virtual ~StateIO() {}
     bool ok = true;
 
     bool saving() const { return isSaving; }
+    // Only the layout (field sizes, in order), no data: for the check above.
+    virtual bool describing() const { return false; }
 
     // The bytes of a plain value or array (no pointers in it).
     template <class T> void v(T &x) { raw(&x, sizeof x); }
@@ -40,6 +49,7 @@ public:
     // Memory (RAM, video RAM): 4 KB pages, the all-zero ones as one byte.
     void memory(u8 *p, u32 n)
     {
+        if (describing()) { raw(p, n); return; }
         for (u32 at = 0; at < n && ok; at += 4096) {
             u32 len = n - at < 4096 ? n - at : 4096;
             u8 zero = 1;

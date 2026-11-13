@@ -37,6 +37,19 @@ public:
     enum { kGlueSize = 0x400 };                         // the 68k glue, copied to the system heap
 
     void setVolumeName(const char *name);               // "Shared" by default
+    bool wantVolume = true;                             // false: only the clipboard (no folder chosen)
+
+    // The clipboard's text, shared with the host (any System 7; Mac Roman,
+    // CR line ends).  Mac -> host: clipText() and clipSerial, which counts
+    // the Mac's changes (read it before and after copying: odd while one
+    // is being written).  Host -> Mac: setClipText(), put on the Mac's
+    // clipboard at its next idle moment.
+    enum { kClipMax = 16384 };
+    volatile u32 clipSerial = 0;
+    bool clipboardReady() const { return glueAddr != 0; }   // Mac OS is up
+    const char *clipText() const { return clip; }
+    u32 clipLength() const { return clipLen; }
+    void setClipText(const char *macRoman, u32 len);
     void attach();                                      // take the CPU's hooks
     void reset();                                       // the Mac restarted: mount again later
 
@@ -75,6 +88,16 @@ private:
     s16 vRefNum = 0, drvrRefNum = 0;
     u32 lastPoll = 0, volDate = 0;
     void poll();                                        // the host's changes: the volume's date moves on
+
+    // The clipboard
+    char clip[kClipMax], pend[kClipMax];
+    u32 clipLen = 0, pendLen = 0;
+    volatile bool clipPending = false;
+    s16 lastScrapCount = 0;
+    bool scrapSeen = false;
+    u32 clipCode = 0;                                   // ZeroScrap, PutScrap, LoadScrap calls (system heap)
+    void clipboardSync();
+    s32 scrapCall(u32 offset, Regs &r);
     u16 driveNum = 0;
     u32 vcbAddr = 0;
 

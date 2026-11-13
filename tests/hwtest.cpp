@@ -8,6 +8,7 @@
 #include "../src/core/keys.h"
 #include "../src/core/esp.h"
 #include "../src/core/quadra.h"
+#include "../src/core/state.h"
 #include "../src/core/iwm.h"
 #include "../src/core/sonic.h"
 
@@ -860,8 +861,33 @@ static void testQuadraScsiIrq()
     CHECK(!(q.read8(via2 + 13 * 0x200) & 0x08));        // nothing left over
 }
 
+// The save-state layout of a Quadra: if this changes, saved states from
+// earlier builds no longer fit.  Then raise kStateFormat (src/core/state.h)
+// and put the new value here.
+struct LayoutIO : StateIO {
+    u32 hash = 2166136261u, fields = 0;
+    LayoutIO() : StateIO(true) {}
+    bool describing() const override { return true; }
+    void raw(void *, u32 n) override { hash = (hash ^ n) * 16777619u; fields++; }
+};
+
+static void testStateLayout()
+{
+    std::vector<u8> rom(0x100000), ram(0x800000);
+    static Quadra q;
+    CHECK(q.init(rom.data(), (u32)rom.size(), ram.data(), (u32)ram.size()));
+    LayoutIO io;
+    q.state(io);
+    const u32 kLayout = 0xA4820F09, kFormat = 1;
+    if (io.hash != kLayout || kStateFormat != kFormat)
+        printf("state layout %08X (%u fields), format %d: if the layout changed, raise kStateFormat "
+               "and set kLayout and kFormat in testStateLayout()\n", io.hash, io.fields, (int)kStateFormat);
+    CHECK(io.hash == kLayout && kStateFormat == kFormat);
+}
+
 int main()
 {
+    testStateLayout();
     testQuadraScsiIrq();
     testSonic();
     testSwimMfm();

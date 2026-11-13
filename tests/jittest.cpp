@@ -7,6 +7,8 @@
 #include <vector>
 #include "../src/core/m68k.h"
 #include "../src/core/jit.h"
+#include <atomic>
+#include <thread>
 
 using namespace macemu;
 
@@ -104,6 +106,15 @@ int main(int argc, char **argv)
     Jit jit;
     if (!jit.init()) { puts("JIT init failed"); return 1; }
     cj.jit = &jit;
+    // JIT_BG=1: blocks are translated by a thread of their own, as by the
+    // Pi's core 3 (then put in place before each measured run).
+    bool bg = getenv("JIT_BG") && atoi(getenv("JIT_BG"));
+    static std::atomic<bool> running(true), hold(false);
+    std::thread worker;
+    if (bg) {
+        jit.startBackground(cj);
+        worker = std::thread([&jit] { while (running) if (hold || !jit.workOnce()) std::this_thread::yield(); });
+    }
 
     std::vector<u8> mem(kRam);
     int ops = 0, inBlocks = 0;
@@ -126,7 +137,7 @@ int main(int argc, char **argv)
                 s.ext.push_back((u8)(v >> 8)); s.ext.push_back((u8)v);
             }
             // The JIT: first runs fill the TLB, record and translate ...
-            for (int w = 0; w < 2; w++) { setup(cj, bj, s, (u16)op, mem); cj.run(64, ~0ull); }
+            for (int w = 0; w < 2; w++) { setup(cj, bj, s, (u16)op, mem); cj.run(64, ~0ull); if (bg) jit.drain(cj); }
             // ... the second runs it; the interpreter runs the same.
             setup(cj, bj, s, (u16)op, mem);
             setup(ci, bi, s, (u16)op, mem);
@@ -149,7 +160,7 @@ int main(int argc, char **argv)
         for (auto &v : mem) v = 0;
         s.d[1] = 0x4E71;
         setup(cj, bj, s, 0x33C1, mem); cj.run(1, ~0ull);     // (fills the TLB: the block then starts here)
-        for (int w = 0; w < 2; w++) { setup(cj, bj, s, 0x33C1, mem); cj.run(64, ~0ull); }
+        for (int w = 0; w < 2; w++) { setup(cj, bj, s, 0x33C1, mem); cj.run(64, ~0ull); if (bg) jit.drain(cj); }
         u64 before = jit.jitInstructions;
         s.d[1] = 0x7005;
         setup(cj, bj, s, 0x33C1, mem);
@@ -164,6 +175,34 @@ int main(int argc, char **argv)
 
     printf("%d opcodes with code of their own; %u blocks, %u instructions translated\n", ops, jit.blocks, jit.nativeInstructions);
     printf("%d of the runs were in a block\n", inBlocks);
+    // Background: code changed while its block was being translated is
+    // not used (the result is dropped, the new code runs as it should).
+    if (bg) {
+        jit.drain(cj);
+        u32 before = jit.stale;
+        State s = {};
+        s.sr = 0x2700; s.ssp = 0x30000; s.usp = 0x31000;
+        s.ext = {0x4E, 0x71, 0x4E, 0x71, 0x4E, 0x71, 0x4E, 0x71};   // NOPs after a NOP
+        for (auto &v : mem) v = 0;
+        hold = true;                                                  // the worker waits ...
+        setup(cj, bj, s, 0x4E71, mem); cj.run(1, ~0ull);              // (the TLB)
+        setup(cj, bj, s, 0x4E71, mem); cj.run(64, ~0ull);             // ... while blocks are recorded and queued
+        setup(cj, bj, s, 0x7005, mem);                                // then the code changes: MOVEQ #5,D0 first
+        hold = false;
+        jit.drain(cj);
+        checks++;
+        if (jit.stale == before) { failures++; puts("FAIL background: a block for changed code was put in place"); }
+        setup(cj, bj, s, 0x7005, mem);
+        cj.d[0] = 0;
+        cj.run(4, ~0ull);
+        checks++;
+        if (cj.d[0] != 5) { failures++; printf("FAIL background: d0 %08X after the changed code\n", cj.d[0]); }
+    }
+    if (bg) {
+        printf("background: %u queued, %u dropped (queue full), %u stale (code changed)\n", jit.queued, jit.dropped, jit.stale);
+        running = false;
+        worker.join();
+    }
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
