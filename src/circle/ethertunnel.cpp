@@ -30,8 +30,7 @@ CEtherTunnel::CEtherTunnel (void)
 	memset (m_OwnIP, 0, sizeof m_OwnIP);
 	memset (m_LastIP, 0, sizeof m_LastIP);
 
-	// Without any IP address: Apple's prefix and three bytes of the board's
-	// serial number.
+	// Apple's prefix and three bytes of the board's serial number.
 	u8 Fallback[6] = {0x08, 0x00, 0x07, 0x5A, 0x00, 0x01};
 	CBcmPropertyTags Tags;
 	TPropertyTagSerial Serial;
@@ -118,18 +117,14 @@ boolean CEtherTunnel::Start (CNetSubSystem *pNet, u16 nPort, const char *pPeer, 
 
 // ---------------------------------------------------------------- core 1
 
+// The Mac's Ethernet address: Apple's prefix and three bytes of the Pi's
+// serial number.  Not Basilisk II's "B2" + IP address: Apple's own Ethernet
+// driver (.ENET, which MacTCP and AppleTalk open) refuses to open with an
+// address that is not Apple's (openErr), so the Mac had no network at all.
+// Peers learn it from the frames (m_Peers); Basilisk II's broadcast to it.
 void CEtherTunnel::etherAddress (u8 mac[6])
 {
-	DataMemBarrier ();
-	const u8 *pIP = m_bHaveIP ? m_OwnIP : m_bHaveLastIP ? m_LastIP : 0;
-	if (pIP == 0)
-	{
-		memcpy (mac, m_Fallback, 6);
-		return;
-	}
-	mac[0] = 'B';
-	mac[1] = '2';
-	memcpy (mac + 2, pIP, 4);
+	memcpy (mac, m_Fallback, 6);
 }
 
 void CEtherTunnel::etherSend (const u8 *pFrame, u32 nLength)

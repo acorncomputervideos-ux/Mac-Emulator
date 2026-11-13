@@ -237,6 +237,11 @@ struct UdpEther : EtherLink {
     }
     void etherAddress(u8 mac[6]) override {
         u8 a[6] = {0x08, 0x00, 0x07, 0x5A, (u8)(port >> 8), (u8)port};
+        if (const char *m = getenv("ETHER_MAC")) {     // ETHER_MAC=42:32:C0:A8:00:0E (as the Pi's "B2" + its IP)
+            unsigned v[6];
+            if (sscanf(m, "%x:%x:%x:%x:%x:%x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) == 6)
+                for (int i = 0; i < 6; i++) a[i] = (u8)v[i];
+        }
         memcpy(mac, a, 6);
     }
     void etherSend(const u8 *f, u32 n) override {

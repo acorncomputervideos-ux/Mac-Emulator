@@ -228,8 +228,11 @@ Three models are emulated:
   with `udptunnel true`, see each other over AppleTalk: file sharing,
   printers and network games through the Chooser.
 - To use it, choose *EtherTalk Built In* in the Mac's Network control panel
-  (System 7.1 includes EtherTalk). The Mac's Ethernet address is `B2`
-  followed by the Pi's IP address, as Basilisk II's tunnel expects.
+  (System 7.1 includes EtherTalk). The Mac's Ethernet address is Apple's
+  prefix `08:00:07` and three bytes of the Pi's serial number (Apple's
+  Ethernet driver refuses Basilisk II's `B2` + IP addresses). Basilisk II
+  and SheepShaver still talk to it: they broadcast to addresses not their
+  own kind.
 - `mac_ethernet=off` turns it off and `mac_ethernet=6067` picks another
   port. `mac_ethernet_peer=a.b.c.d` also sends broadcasts to one host
   that they don't reach (on another subnet, or across a VPN).
