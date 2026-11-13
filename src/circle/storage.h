@@ -32,10 +32,20 @@ private:
 	static volatile int s_nState;			// 0 idle, 1 requested, 2 done
 };
 
-// A hard disk image: read and written in place, block by block.
+// A hard disk or CD image: read and written in place, block by block.
+//
+// The image is also kept in memory, as far as memory allows (a 500 MB disk
+// fits on a Pi with 2 GB or more): reads found there need no help from
+// core 0, so the Mac never stops for them.  Core 0 fills the copy in its
+// idle time (Prefetch); a read that misses fetches a whole 64 KB piece.
+// Writes go to the card at once and to the copy.
 class CFileStorage : public macemu::Storage
 {
 public:
+	// Core 0, when idle: read one more piece of an open image into memory.
+	// FALSE when there is nothing left to read.
+	static boolean Prefetch (void);
+
 	CFileStorage (void);
 	~CFileStorage (void);
 
@@ -47,12 +57,29 @@ public:
 	bool readOnly (void) override			{ return m_bReadOnly; }
 	void flush (void) override;
 
+	unsigned CachedMB (void) const;			// how much is in memory now
+
 private:
 	FIL m_File;
 	boolean m_bOpen;
 	boolean m_bReadOnly;
 	boolean m_bDirty;
 	u32 m_nSize;
+
+	// The copy in memory: pieces of 64 KB, piece n in slot n % m_nSlots.
+	enum { PieceShift = 16, PieceSize = 1 << PieceShift, NoPiece = 0xFFFFFFFF };
+	u8 *m_pCache;
+	size_t m_nCacheBytes;
+	u32 m_nSlots;
+	volatile u32 *m_pTag;				// the piece in each slot, or NoPiece
+	u32 m_nPieces;
+	u32 m_nPrefetchNext;				// the next piece Prefetch() looks at
+	void SetUpCache (void);
+	void FreeCache (void);
+	bool ReadPiece (u32 nPiece);			// core 0: into its slot
+
+	enum { MaxOpen = 12 };
+	static CFileStorage *s_pOpen[MaxOpen];
 };
 
 // A floppy image: small enough to live in memory.  Changes are written back

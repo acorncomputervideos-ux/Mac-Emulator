@@ -2,6 +2,8 @@
 #include <circle/multicore.h>
 #include <circle/synchronize.h>
 #include <circle/util.h>
+#include <circle/memory.h>
+#include <circle/logger.h>
 
 macemu::Storage * volatile CDiskProxy::s_pStorage = 0;
 volatile int CDiskProxy::s_nOp = 0;
@@ -71,20 +73,215 @@ void CDiskProxy::Service (void)
 	s_nState = 2;
 }
 
+CFileStorage *CFileStorage::s_pOpen[MaxOpen];
+
+// Cache buffers are kept for the next image once allocated: Circle does not
+// take back blocks this big, and the disks are opened again at each restart.
+struct TSpareCache { u8 *pBuffer; size_t nBytes; };
+static TSpareCache s_Spare[8];
+
+static u8 *TakeCache (size_t nWant, size_t *pGot)
+{
+	// A spare that holds it all, the smallest such.
+	int nBest = -1;
+	for (int i = 0; i < 8; i++)
+	{
+		if (   s_Spare[i].pBuffer != 0 && s_Spare[i].nBytes >= nWant
+		    && (nBest < 0 || s_Spare[i].nBytes < s_Spare[nBest].nBytes))
+		{
+			nBest = i;
+		}
+	}
+
+	// Otherwise new memory, leaving plenty for everything else.
+	if (nBest < 0)
+	{
+		CMemorySystem *pMemory = CMemorySystem::Get ();
+		size_t nHigh = pMemory->GetHeapFreeSpace (HEAP_HIGH);
+		size_t nLow = pMemory->GetHeapFreeSpace (HEAP_LOW);
+		const size_t nKeepHigh = 32u << 20, nKeepLow = 160u << 20;
+		size_t nRoom = nHigh > nKeepHigh + (64u << 20) ? nHigh - nKeepHigh : 0;
+		int nHeap = HEAP_HIGH;
+		if (nRoom == 0)
+		{
+			nRoom = nLow > nKeepLow ? nLow - nKeepLow : 0;
+			nHeap = HEAP_LOW;
+		}
+		size_t nBytes = nWant < nRoom ? nWant : nRoom;
+		nBytes &= ~(size_t) 0xFFFF;
+		if (nBytes >= (4u << 20))
+		{
+			u8 *p = (u8 *) CMemorySystem::HeapAllocate (nBytes, nHeap);
+			if (p != 0)
+			{
+				*pGot = nBytes;
+				return p;
+			}
+		}
+
+		// The largest spare, then: part of the image.
+		for (int i = 0; i < 8; i++)
+		{
+			if (s_Spare[i].pBuffer != 0 && (nBest < 0 || s_Spare[i].nBytes > s_Spare[nBest].nBytes))
+			{
+				nBest = i;
+			}
+		}
+		if (nBest < 0)
+		{
+			*pGot = 0;
+			return 0;
+		}
+	}
+
+	u8 *p = s_Spare[nBest].pBuffer;
+	*pGot = s_Spare[nBest].nBytes;
+	s_Spare[nBest].pBuffer = 0;
+	return p;
+}
+
+static void GiveBackCache (u8 *pBuffer, size_t nBytes)
+{
+	for (int i = 0; i < 8; i++)
+	{
+		if (s_Spare[i].pBuffer == 0)
+		{
+			s_Spare[i].pBuffer = pBuffer;
+			s_Spare[i].nBytes = nBytes;
+			return;
+		}
+	}
+	// (more than eight: lost, as Circle would lose it anyway)
+}
+
 CFileStorage::CFileStorage (void)
 :	m_bOpen (FALSE),
 	m_bReadOnly (FALSE),
 	m_bDirty (FALSE),
-	m_nSize (0)
+	m_nSize (0),
+	m_pCache (0),
+	m_nCacheBytes (0),
+	m_nSlots (0),
+	m_pTag (0),
+	m_nPieces (0),
+	m_nPrefetchNext (0)
 {
 }
 
 CFileStorage::~CFileStorage (void)
 {
+	FreeCache ();
 	if (m_bOpen)
 	{
 		f_close (&m_File);
 	}
+}
+
+void CFileStorage::SetUpCache (void)
+{
+	m_nPieces = (m_nSize + PieceSize - 1) >> PieceShift;
+	m_pCache = TakeCache ((size_t) m_nPieces << PieceShift, &m_nCacheBytes);
+	if (m_pCache == 0)
+	{
+		return;
+	}
+	m_nSlots = (u32) (m_nCacheBytes >> PieceShift);
+	if (m_nSlots > m_nPieces)
+	{
+		m_nSlots = m_nPieces;
+	}
+	m_pTag = new u32[m_nSlots];
+	for (u32 i = 0; i < m_nSlots; i++)
+	{
+		m_pTag[i] = NoPiece;
+	}
+	for (unsigned i = 0; i < MaxOpen; i++)
+	{
+		if (s_pOpen[i] == 0)
+		{
+			s_pOpen[i] = this;
+			break;
+		}
+	}
+	CLogger::Get ()->Write ("disk", LogNotice, "%u of %u MB kept in memory", m_nSlots >> 4, m_nPieces >> 4);
+}
+
+void CFileStorage::FreeCache (void)
+{
+	for (unsigned i = 0; i < MaxOpen; i++)
+	{
+		if (s_pOpen[i] == this)
+		{
+			s_pOpen[i] = 0;
+		}
+	}
+	if (m_pCache != 0)
+	{
+		GiveBackCache (m_pCache, m_nCacheBytes);
+		m_pCache = 0;
+	}
+	delete [] (u32 *) m_pTag;
+	m_pTag = 0;
+	m_nSlots = 0;
+}
+
+unsigned CFileStorage::CachedMB (void) const
+{
+	u32 n = 0;
+	for (u32 i = 0; i < m_nSlots; i++)
+	{
+		n += m_pTag[i] != NoPiece;
+	}
+	return n >> 4;
+}
+
+bool CFileStorage::ReadPiece (u32 nPiece)
+{
+	u32 nSlot = nPiece % m_nSlots;
+	m_pTag[nSlot] = NoPiece;
+	DataMemBarrier ();
+	u32 nOffset = nPiece << PieceShift;
+	u32 nLength = m_nSize - nOffset < PieceSize ? m_nSize - nOffset : PieceSize;
+	UINT nRead = 0;
+	if (   f_lseek (&m_File, nOffset) != FR_OK
+	    || f_read (&m_File, m_pCache + ((size_t) nSlot << PieceShift), nLength, &nRead) != FR_OK
+	    || nRead != nLength)
+	{
+		return false;
+	}
+	DataMemBarrier ();				// the data, then the tag (read in that order elsewhere)
+	m_pTag[nSlot] = nPiece;
+	return true;
+}
+
+boolean CFileStorage::Prefetch (void)
+{
+	for (unsigned i = 0; i < MaxOpen; i++)
+	{
+		CFileStorage *p = s_pOpen[i];
+		if (p == 0 || p->m_nSlots == 0)
+		{
+			continue;
+		}
+		// Only into empty slots: a slot the Mac may be reading is never changed here.
+		while (p->m_nPrefetchNext < p->m_nPieces)
+		{
+			u32 nPiece = p->m_nPrefetchNext++;
+			if (p->m_pTag[nPiece % p->m_nSlots] == NoPiece)
+			{
+				if (!p->ReadPiece (nPiece))
+				{
+					p->m_nPrefetchNext = p->m_nPieces;	// a bad card: leave it
+				}
+				else if (p->m_nPrefetchNext == p->m_nPieces && p->m_nSlots == p->m_nPieces)
+				{
+					CLogger::Get ()->Write ("disk", LogNotice, "All %u MB now in memory", p->m_nPieces >> 4);
+				}
+				return TRUE;
+			}
+		}
+	}
+	return FALSE;
 }
 
 boolean CFileStorage::Open (const char *pPath)
@@ -102,22 +299,73 @@ boolean CFileStorage::Open (const char *pPath)
 
 	m_bOpen = TRUE;
 	m_nSize = (u32) f_size (&m_File);
-
-	return m_nSize >= 512;
+	if (m_nSize < 512)
+	{
+		return FALSE;
+	}
+	SetUpCache ();
+	return TRUE;
 }
 
 bool CFileStorage::read (macemu::u32 nOffset, void *pBuffer, macemu::u32 nLength)
 {
+	if (!m_bOpen || nOffset + nLength > m_nSize || nOffset + nLength < nOffset)
+	{
+		return false;
+	}
+
+	// From memory, as far as it is there (any core).
+	u8 *pOut = (u8 *) pBuffer;
+	while (m_nSlots != 0 && nLength > 0)
+	{
+		u32 nPiece = nOffset >> PieceShift;
+		u32 nSlot = nPiece % m_nSlots;
+		if (m_pTag[nSlot] != nPiece)
+		{
+			break;
+		}
+		DataMemBarrier ();
+		u32 nIn = nOffset & (PieceSize - 1);
+		u32 n = PieceSize - nIn < nLength ? PieceSize - nIn : nLength;
+		memcpy (pOut, m_pCache + ((size_t) nSlot << PieceShift) + nIn, n);
+		pOut += n;
+		nOffset += n;
+		nLength -= n;
+	}
+	if (nLength == 0)
+	{
+		return true;
+	}
+
 	if (CDiskProxy::Remote ())
 	{
-		return CDiskProxy::Call (this, CDiskProxy::OpRead, nOffset, pBuffer, nLength);
+		return CDiskProxy::Call (this, CDiskProxy::OpRead, nOffset, pOut, nLength);
+	}
+
+	// Core 0: the missing pieces into memory, then from there.
+	if (m_nSlots != 0)
+	{
+		while (nLength > 0)
+		{
+			u32 nPiece = nOffset >> PieceShift;
+			u32 nSlot = nPiece % m_nSlots;
+			if (m_pTag[nSlot] != nPiece && !ReadPiece (nPiece))
+			{
+				return false;
+			}
+			u32 nIn = nOffset & (PieceSize - 1);
+			u32 n = PieceSize - nIn < nLength ? PieceSize - nIn : nLength;
+			memcpy (pOut, m_pCache + ((size_t) nSlot << PieceShift) + nIn, n);
+			pOut += n;
+			nOffset += n;
+			nLength -= n;
+		}
+		return true;
 	}
 
 	UINT nRead = 0;
-	if (   !m_bOpen
-	    || nOffset + nLength > m_nSize
-	    || f_lseek (&m_File, nOffset) != FR_OK
-	    || f_read (&m_File, pBuffer, nLength, &nRead) != FR_OK)
+	if (   f_lseek (&m_File, nOffset) != FR_OK
+	    || f_read (&m_File, pOut, nLength, &nRead) != FR_OK)
 	{
 		return false;
 	}
@@ -143,6 +391,22 @@ bool CFileStorage::write (macemu::u32 nOffset, const void *pBuffer, macemu::u32 
 	}
 
 	m_bDirty = TRUE;
+
+	// The copy in memory too (the Mac is waiting for this: it reads none of it now).
+	const u8 *pIn = (const u8 *) pBuffer;
+	for (u32 nDone = 0; m_nSlots != 0 && nDone < nWritten; )
+	{
+		u32 nAt = nOffset + nDone;
+		u32 nPiece = nAt >> PieceShift;
+		u32 nSlot = nPiece % m_nSlots;
+		u32 nIn = nAt & (PieceSize - 1);
+		u32 n = PieceSize - nIn < nWritten - nDone ? PieceSize - nIn : nWritten - nDone;
+		if (m_pTag[nSlot] == nPiece)
+		{
+			memcpy (m_pCache + ((size_t) nSlot << PieceShift) + nIn, pIn + nDone, n);
+		}
+		nDone += n;
+	}
 
 	return nWritten == nLength;
 }

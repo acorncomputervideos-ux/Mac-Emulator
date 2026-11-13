@@ -89,6 +89,12 @@ Three models are emulated:
 - Up to seven SCSI hard disks (NCR 5380, IDs 0–6) for System 6 and System 7 on
   a Mac Plus. Supports pseudo-DMA and programmed I/O, plus INQUIRY, READ/WRITE
   (6/10), READ CAPACITY, MODE SENSE/SELECT and REQUEST SENSE.
+- Hard disk and CD images are also kept in the Pi's memory, as far as it
+  allows (a 500 MB disk fits with 1 GB or more): the Pi copies them in while
+  it is otherwise idle, in the first minute or so, and from then on the Mac
+  reads them without waiting for the card, so the cursor no longer stops
+  while it loads things. Writes go to the card straight away.
+  `macemu.log` says how much is in memory.
 
 **Display, sound and input**
 - 512×342 screen, scaled by the largest whole number that fits, or a chosen
