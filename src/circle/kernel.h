@@ -237,6 +237,16 @@ private:
 	unsigned		m_nFront;		// the half on the display (0, 1)
 	int			m_nPendTop[2], m_nPendBottom[2];	// lines each half still lacks
 	::u64			m_nLastFlip;		// when the display was last switched (us)
+	// Frames locked to the display's refresh (when it is near the Mac's
+	// 60.15 Hz): core 0 waits for each refresh, counts it for core 1 (one
+	// Mac frame each) and has core 2 draw, so each frame is shown once.
+	boolean			m_bVsyncLock;
+	::u64			m_nRefresh256;		// the refresh period (us x 256)
+	::u64			m_nLastVsync;		// when the last refresh was (us)
+	volatile unsigned	m_nVsyncTicks;		// refreshes, for core 1
+	unsigned		m_nVsyncMissed;		// refreshes core 0 was too late for
+	void MeasureRefresh (void);
+	void WaitForRefresh (void);
 	volatile u32 *FrontPixels (void) const
 	{
 		return m_pFrameBufferPixels + (m_bDoubleBuffered ? m_nFront * m_Surface.height * m_nFrameBufferPitch : 0);

@@ -440,6 +440,18 @@ Three models are emulated:
   never shows half of one frame and half of the next. Core 0 makes the
   switch (the firmware's messages are its alone) as soon as core 2 has the
   frame ready; it draws the menu and messages itself, with core 2 idle.
+- Frames are locked to the monitor's refresh. At start-up the emulator
+  times the display's refresh (the log says e.g. `Display refresh: 60.020
+  Hz, frames locked to it`); if it is within 1.5% of the Mac's 60.15 Hz,
+  core 0 waits for each refresh, core 1 runs one Mac frame per refresh and
+  core 2 draws it straight after, so every frame is on the screen exactly
+  once (no frame shown twice, none skipped as the two clocks drift). The
+  Mac then runs at the monitor's rate (60.0 instead of 60.15 frames a
+  second: 0.25% slower, unnoticeable); the sound is resampled to match.
+  The log's `vsync=` gives the refresh (mHz) and how many refreshes core
+  0 was too late for. Other refresh rates (50, 75 Hz ...), or a firmware
+  that does not report refreshes, keep the timer as before; `vsync=off`
+  in `macemu.cfg` turns the lock off.
 - The Pi 1 and Zero (one core) run everything on that core, as before.
 
 **Fast start-up**

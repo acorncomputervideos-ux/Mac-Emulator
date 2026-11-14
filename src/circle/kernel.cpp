@@ -141,6 +141,11 @@ CKernel::CKernel (void)
 	m_nPendTop[0] = m_nPendTop[1] = 0;
 	m_nPendBottom[0] = m_nPendBottom[1] = 0;
 	m_nLastFlip = 0;
+	m_bVsyncLock = FALSE;
+	m_nRefresh256 = (::u64) FrameMicros * 256;
+	m_nLastVsync = 0;
+	m_nVsyncTicks = 0;
+	m_nVsyncMissed = 0;
 	m_nDisplayWidth = m_nDisplayHeight = 0;
 	m_Surface.pixels = 0;
 	m_Surface.width = m_Surface.height = m_Surface.pitch = 0;
@@ -894,6 +899,7 @@ TShutdownMode CKernel::Run (void)
 #ifdef ARM_ALLOW_MULTI_CORE
 	// The Mac gets core 1 to itself; this core keeps USB, the network, the
 	// screen, sound and the SD card.
+	MeasureRefresh ();				// (before core 1 needs this one for its disk)
 	m_pCores = new CEmuCores (this);
 	if (m_pCores == 0 || !m_pCores->Initialize ())
 	{
@@ -988,13 +994,21 @@ TShutdownMode CKernel::Run (void)
 		{
 			// The Mac runs on its own core: this one just draws, plays the
 			// sound and serves the SD card at the display's pace.
-			nNextFrame += FrameMicros;
-			hostu64 nNow = CTimer::GetClockTicks64 ();
-			if (nNow + 4 * FrameMicros < nNextFrame || nNow > nNextFrame + 4 * FrameMicros)
+			if (m_bVsyncLock && m_bDrawCore && m_Config.vsync)
 			{
-				nNextFrame = nNow;
+				WaitForRefresh ();		// (and counts it for core 1)
+				nNextFrame = m_nLastVsync;
 			}
-			WaitUntil (nNextFrame);
+			else
+			{
+				nNextFrame += FrameMicros;
+				hostu64 nNow = CTimer::GetClockTicks64 ();
+				if (nNow + 4 * FrameMicros < nNextFrame || nNow > nNextFrame + 4 * FrameMicros)
+				{
+					nNextFrame = nNow;
+				}
+				WaitUntil (nNextFrame);
+			}
 		}
 		else if (nSpeed == 0)
 		{
@@ -1171,8 +1185,11 @@ boolean CKernel::PresentPrepare (boolean bFrame)
 	// Frames come every 16.6 ms: then a refresh has been.  Closer than half
 	// a refresh, the regular frame leaves it to the next (core 0 must not
 	// wait: it serves the Mac's disk and network); other screens wait.
+	// With frames locked to the refresh, a switch made before the last
+	// refresh has happened (and the hidden half is free) however recent.
 	hostu64 nNow = CTimer::GetClockTicks64 ();
-	if (nNow - m_nLastFlip < 8000)
+	boolean bSwitched = m_bVsyncLock && m_bDrawCore && m_Config.vsync && m_nLastFlip < m_nLastVsync;
+	if (nNow - m_nLastFlip < 8000 && !bSwitched)
 	{
 		if (bFrame)
 		{
@@ -1185,6 +1202,89 @@ boolean CKernel::PresentPrepare (boolean bFrame)
 	m_nPendTop[nBack] = m_Surface.height;
 	m_nPendBottom[nBack] = 0;
 	return TRUE;
+}
+
+// Core 0, at start-up: the display's refresh period, timed over a few
+// refreshes.  Frames are locked to it if it is within 1.5% of the Mac's
+// 60.15 Hz (and the firmware waits for refreshes at all).
+void CKernel::MeasureRefresh (void)
+{
+	m_bVsyncLock = FALSE;
+	if (m_pFrameBuffer == 0 || !m_bDoubleBuffered)
+	{
+		return;
+	}
+	if (!m_pFrameBuffer->WaitForVerticalSync ())
+	{
+		m_Logger.Write (FromKernel, LogNotice, "Display refresh: not reported by the firmware (frames by the clock)");
+		return;
+	}
+	enum { Count = 12 };
+	hostu64 nFirst = CTimer::GetClockTicks64 (), nPrev = nFirst;
+	hostu64 nMin = ~(hostu64) 0, nMax = 0;
+	for (unsigned i = 0; i < Count; i++)
+	{
+		m_pFrameBuffer->WaitForVerticalSync ();
+		hostu64 nNow = CTimer::GetClockTicks64 ();
+		hostu64 nGap = nNow - nPrev;
+		if (nGap < nMin) nMin = nGap;
+		if (nGap > nMax) nMax = nGap;
+		nPrev = nNow;
+	}
+	hostu64 nPeriod256 = (nPrev - nFirst) * 256 / Count;
+	unsigned nMilliHz = (unsigned) (256000000000ULL / (nPeriod256 ? nPeriod256 : 1));
+	boolean bSteady = nMax - nMin < 1500;
+	boolean bNear = nPeriod256 > (::u64) FrameMicros * 256 * 985 / 1000 && nPeriod256 < (::u64) FrameMicros * 256 * 1015 / 1000;
+	CString Msg;
+	Msg.Format ("Display refresh: %u.%03u Hz%s", nMilliHz / 1000, nMilliHz % 1000,
+		    !bSteady ? " (unsteady: frames by the clock)"
+		    : !bNear ? " (not near 60 Hz: frames by the clock)"
+		    : !m_Config.vsync ? " (vsync=off: frames by the clock)"
+		    : ", frames locked to it");
+	m_Logger.Write (FromKernel, LogNotice, "%s", (const char *) Msg);
+	if (bSteady && bNear)
+	{
+		m_nRefresh256 = nPeriod256;
+		m_nLastVsync = nPrev;
+		m_bVsyncLock = TRUE;
+	}
+}
+
+// Core 0: until the display's next refresh, serving the SD card, the
+// network and core 2's frame meanwhile; then the refresh counts for core 1.
+// The firmware is asked to wait only for the last moment before it.
+void CKernel::WaitForRefresh (void)
+{
+	hostu64 nPeriod = m_nRefresh256 / 256;
+	hostu64 nExpect = m_nLastVsync + nPeriod;
+	hostu64 nNow = CTimer::GetClockTicks64 ();
+	if (nNow + nPeriod / 3 > nExpect + nPeriod)
+	{
+		// Too late for that one (core 0 was busy): the next.
+		unsigned nLate = (unsigned) ((nNow - nExpect) / nPeriod) + 1;
+		nExpect += nLate * nPeriod;
+		m_nVsyncMissed += nLate;
+	}
+	WaitUntil (nExpect - 1500);
+	m_pFrameBuffer->WaitForVerticalSync ();
+	nNow = CTimer::GetClockTicks64 ();
+	unsigned nRefreshes = (unsigned) ((nNow - m_nLastVsync + nPeriod / 2) / nPeriod);
+	if (nRefreshes == 1)
+	{
+		// Follow the refresh's own clock (a little at a time).
+		hostu64 nGap256 = (nNow - m_nLastVsync) * 256;
+		m_nRefresh256 = (m_nRefresh256 * 31 + nGap256) / 32;
+		if (m_nRefresh256 < (::u64) FrameMicros * 256 * 985 / 1000) m_nRefresh256 = (::u64) FrameMicros * 256 * 985 / 1000;
+		if (m_nRefresh256 > (::u64) FrameMicros * 256 * 1015 / 1000) m_nRefresh256 = (::u64) FrameMicros * 256 * 1015 / 1000;
+	}
+	if (nRefreshes == 0) nRefreshes = 1;
+	if (nRefreshes > 4) nRefreshes = 1;		// (a long pause: start again)
+	m_nLastVsync = nNow;
+	DataMemBarrier ();
+	m_nVsyncTicks += nRefreshes;
+#ifdef ARM_ALLOW_MULTI_CORE
+	asm volatile ("dsb ish\n\tsev" ::: "memory");
+#endif
 }
 
 // Core 0 only (a firmware message).
@@ -1305,6 +1405,14 @@ void CKernel::BootLog (boolean bForce)
 		strAppend (Line, "MHz temp=", sizeof Line);
 		appendUint (Line, m_CPUThrottle.GetTemperature (), sizeof Line);
 		strAppend (Line, "C", sizeof Line);
+		if (m_bVsyncLock && m_bDrawCore && m_Config.vsync)
+		{
+			// Locked to the display: its refresh (mHz), refreshes core 0 was late for.
+			strAppend (Line, " vsync=", sizeof Line);
+			appendUint (Line, (unsigned) (256000000000ULL / m_nRefresh256), sizeof Line);
+			strAppend (Line, "mHz/", sizeof Line);
+			appendUint (Line, m_nVsyncMissed, sizeof Line);
+		}
 		if (m_pShared != 0)
 		{
 			strAppend (Line, m_pShared->mounted ? " share=up/" : " share=down/", sizeof Line);
@@ -1490,6 +1598,11 @@ void CKernel::QueueSound (void)
 
 	static s16 Buffer[2 * 2400];
 	unsigned nInRate = m_nSoundRate;
+	if (m_bVsyncLock && m_bDrawCore && m_Config.vsync)
+	{
+		// One Mac frame a refresh: its samples come at the display's pace.
+		nInRate = (unsigned) ((::u64) m_nSoundRate * FrameMicros * 256 / m_nRefresh256);
+	}
 	unsigned nOut = 0;
 	int nVolume = m_Config.volume;
 	while (nOut < 2400)
@@ -1631,6 +1744,7 @@ void CKernel::EmuCoreRun (void)
 	m_bEmuCoreRunning = TRUE;
 	DataMemBarrier ();
 	hostu64 nNext = CTimer::GetClockTicks64 ();
+	unsigned nSeenTicks = m_nVsyncTicks;
 	while (1)
 	{
 		if (m_nPauseRequests != 0)
@@ -1665,6 +1779,30 @@ void CKernel::EmuCoreRun (void)
 		for (unsigned i = 0; i < nSpeed && m_nPauseRequests == 0; i++)
 		{
 			ExecuteFrame ();
+		}
+
+		if (m_bVsyncLock && m_bDrawCore && m_Config.vsync)
+		{
+			// One frame (at 1x) for each of the display's refreshes, which
+			// core 0 counts.  Refreshes missed meanwhile are made up (a
+			// few at most); without any for 50 ms, on by the clock.
+			hostu64 nStart = CTimer::GetClockTicks64 ();
+			while (   m_nVsyncTicks == nSeenTicks && m_nPauseRequests == 0
+			       && CTimer::GetClockTicks64 () - nStart < 50000)
+			{
+			}
+			unsigned nTicks = m_nVsyncTicks;
+			unsigned nBehind = nTicks - nSeenTicks;
+			nSeenTicks = nTicks;
+			for (unsigned k = 1; k < nBehind && k < 4 && m_nPauseRequests == 0; k++)
+			{
+				for (unsigned i = 0; i < nSpeed && m_nPauseRequests == 0; i++)
+				{
+					ExecuteFrame ();
+				}
+			}
+			nNext = CTimer::GetClockTicks64 ();
+			continue;
 		}
 
 		nNext += FrameMicros;
