@@ -164,7 +164,9 @@ CFileStorage::CFileStorage (void)
 	m_nSlots (0),
 	m_pTag (0),
 	m_nPieces (0),
-	m_nPrefetchNext (0)
+	m_nPrefetchNext (0),
+	m_nPrefetchPiece (NoPiece),
+	m_nPrefetchDone (0)
 {
 }
 
@@ -254,8 +256,13 @@ bool CFileStorage::ReadPiece (u32 nPiece)
 	return true;
 }
 
+// Core 0, when it has a moment: a little more of a disk into memory, 8 KB
+// at a time (well under a millisecond, so the screen and the Mac's own disk
+// requests never wait long for it).  A piece's tag is set once all of it
+// is there; until then the Mac reads that piece the usual way.
 boolean CFileStorage::Prefetch (void)
 {
+	enum { Step = 8192 };
 	for (unsigned i = 0; i < MaxOpen; i++)
 	{
 		CFileStorage *p = s_pOpen[i];
@@ -263,23 +270,56 @@ boolean CFileStorage::Prefetch (void)
 		{
 			continue;
 		}
-		// Only into empty slots: a slot the Mac may be reading is never changed here.
-		while (p->m_nPrefetchNext < p->m_nPieces)
+		if (p->m_nPrefetchPiece == NoPiece)
 		{
-			u32 nPiece = p->m_nPrefetchNext++;
-			if (p->m_pTag[nPiece % p->m_nSlots] == NoPiece)
+			// Only into empty slots: a slot the Mac may be reading is never changed here.
+			while (p->m_nPrefetchNext < p->m_nPieces)
 			{
-				if (!p->ReadPiece (nPiece))
+				u32 nPiece = p->m_nPrefetchNext++;
+				if (p->m_pTag[nPiece % p->m_nSlots] == NoPiece)
 				{
-					p->m_nPrefetchNext = p->m_nPieces;	// a bad card: leave it
+					p->m_nPrefetchPiece = nPiece;
+					p->m_nPrefetchDone = 0;
+					break;
 				}
-				else if (p->m_nPrefetchNext == p->m_nPieces && p->m_nSlots == p->m_nPieces)
-				{
-					CLogger::Get ()->Write ("disk", LogNotice, "All %u MB now in memory", p->m_nPieces >> 4);
-				}
-				return TRUE;
+			}
+			if (p->m_nPrefetchPiece == NoPiece)
+			{
+				continue;			// all of this one done
 			}
 		}
+
+		u32 nPiece = p->m_nPrefetchPiece;
+		u32 nSlot = nPiece % p->m_nSlots;
+		if (p->m_pTag[nSlot] != NoPiece)
+		{
+			p->m_nPrefetchPiece = NoPiece;		// the Mac's reads brought it (or another) meanwhile
+			return TRUE;
+		}
+		u32 nOffset = (nPiece << PieceShift) + p->m_nPrefetchDone;
+		u32 nLength = p->m_nSize - (nPiece << PieceShift) < PieceSize ? p->m_nSize - (nPiece << PieceShift) : PieceSize;
+		u32 n = nLength - p->m_nPrefetchDone < Step ? nLength - p->m_nPrefetchDone : Step;
+		UINT nRead = 0;
+		if (   f_lseek (&p->m_File, nOffset) != FR_OK
+		    || f_read (&p->m_File, p->m_pCache + ((size_t) nSlot << PieceShift) + p->m_nPrefetchDone, n, &nRead) != FR_OK
+		    || nRead != n)
+		{
+			p->m_nPrefetchPiece = NoPiece;
+			p->m_nPrefetchNext = p->m_nPieces;	// a bad card: leave it
+			return TRUE;
+		}
+		p->m_nPrefetchDone += n;
+		if (p->m_nPrefetchDone >= nLength)
+		{
+			DataMemBarrier ();			// the data, then the tag (read in that order elsewhere)
+			p->m_pTag[nSlot] = nPiece;
+			p->m_nPrefetchPiece = NoPiece;
+			if (p->m_nPrefetchNext == p->m_nPieces && p->m_nSlots == p->m_nPieces)
+			{
+				CLogger::Get ()->Write ("disk", LogNotice, "All %u MB now in memory", p->m_nPieces >> 4);
+			}
+		}
+		return TRUE;
 	}
 	return FALSE;
 }
@@ -391,6 +431,16 @@ bool CFileStorage::write (macemu::u32 nOffset, const void *pBuffer, macemu::u32 
 	}
 
 	m_bDirty = TRUE;
+
+	// A piece half copied into memory by Prefetch() would keep the old
+	// bytes of its first part: it starts again.
+	if (   m_nPrefetchPiece != NoPiece
+	    && nOffset < ((m_nPrefetchPiece + 1) << PieceShift)
+	    && nOffset + nWritten > (m_nPrefetchPiece << PieceShift))
+	{
+		m_nPrefetchNext = m_nPrefetchPiece;
+		m_nPrefetchPiece = NoPiece;
+	}
 
 	// The copy in memory too (the Mac is waiting for this: it reads none of it now).
 	const u8 *pIn = (const u8 *) pBuffer;

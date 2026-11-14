@@ -74,6 +74,8 @@ private:
 	volatile u32 *m_pTag;				// the piece in each slot, or NoPiece
 	u32 m_nPieces;
 	u32 m_nPrefetchNext;				// the next piece Prefetch() looks at
+	u32 m_nPrefetchPiece;				// a piece being copied a little at a time (or NoPiece)
+	u32 m_nPrefetchDone;				// ... bytes of it so far
 	void SetUpCache (void);
 	void FreeCache (void);
 	bool ReadPiece (u32 nPiece);			// core 0: into its slot
