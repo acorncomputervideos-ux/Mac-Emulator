@@ -22,6 +22,7 @@
 #include "asc.h"
 #include "nubusvideo.h"
 #include "emulator.h"
+#include "pointer.h"
 
 namespace macemu {
 
@@ -47,6 +48,7 @@ public:
     const s16 *sound(u32 &count, u32 &rate) override { count = kSamplesPerFrame; rate = 22257; return soundBuf; }
     void keyEvent(int macKey, bool down) override { keyboard.key(macKey, down); }
     void mouseMove(int dx, int dy) override { mouse.move(dx, dy); }
+    void mouseMoveDirect(int dx, int dy) override { if (!movePointerDirect(ram, ramSize, dx, dy)) mouse.move(dx, dy); }
     void mouseButton(bool down) override { mouse.setButton(down); }
     void interruptButton() override { nmiFrames = 6; updateIrq(); }
     Iwm &floppy() override { return iwm; }

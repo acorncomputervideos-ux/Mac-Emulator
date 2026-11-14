@@ -9,6 +9,7 @@
 #include "../src/core/esp.h"
 #include "../src/core/quadra.h"
 #include "../src/core/state.h"
+#include "../src/core/pointer.h"
 #include "../src/core/iwm.h"
 #include "../src/core/sonic.h"
 
@@ -885,9 +886,31 @@ static void testStateLayout()
     CHECK(io.hash == kLayout && kStateFormat == kFormat);
 }
 
+// The direct mouse: the pointer moved in Mac OS's low memory, kept inside
+// CrsrPin; left to the ADB mouse when uncoupled or before Mac OS is up.
+static void testDirectPointer()
+{
+    std::vector<u8> ram(0x10000, 0);
+    auto put = [&](u32 a, int v) { ram[a] = (u8)((u16)v >> 8); ram[a + 1] = (u8)v; };
+    auto get = [&](u32 a) { return (int)(s16)((ram[a] << 8) | ram[a + 1]); };
+    CHECK(!movePointerDirect(ram.data(), (u32)ram.size(), 5, 5));      // nothing set up yet
+    put(0x834, 0); put(0x836, 0); put(0x838, 480); put(0x83A, 640);     // CrsrPin: the screen
+    put(0x828, 100); put(0x82A, 200);                                   // MTemp: v, h
+    ram[0x8CF] = 0xFF;                                                  // CrsrCouple
+    CHECK(movePointerDirect(ram.data(), (u32)ram.size(), 7, -3));
+    CHECK(get(0x828) == 97 && get(0x82A) == 207 && get(0x82C) == 97 && get(0x82E) == 207 && ram[0x8CE] == 0xFF);
+    CHECK(movePointerDirect(ram.data(), (u32)ram.size(), 5000, 5000));
+    CHECK(get(0x828) == 479 && get(0x82A) == 639);                      // kept on the screen
+    CHECK(movePointerDirect(ram.data(), (u32)ram.size(), -9000, -9000));
+    CHECK(get(0x828) == 0 && get(0x82A) == 0);
+    ram[0x8CF] = 0;                                                     // a game uncoupled it
+    CHECK(!movePointerDirect(ram.data(), (u32)ram.size(), 5, 5) && get(0x82A) == 0);
+}
+
 int main()
 {
     testStateLayout();
+    testDirectPointer();
     testQuadraScsiIrq();
     testSonic();
     testSwimMfm();

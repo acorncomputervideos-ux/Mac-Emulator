@@ -39,6 +39,11 @@ public:
     // Key codes are Apple ADB key codes (keys.h).
     virtual void keyEvent(int macKey, bool down) = 0;
     virtual void mouseMove(int dx, int dy) = 0;
+    // The pointer moved straight to where it should be (as Basilisk II
+    // does), without the ADB mouse and Mac OS's acceleration; the ADB mouse
+    // when Mac OS is not up or a program has uncoupled the pointer (games
+    // that read the mouse's own movement).
+    virtual void mouseMoveDirect(int dx, int dy) { mouseMove(dx, dy); }
     virtual void mouseButton(bool down) = 0;
     virtual void interruptButton() = 0;
 

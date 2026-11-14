@@ -75,7 +75,7 @@ private:
         // machine
         ItModel, ItRom, ItRam, ItVideo, ItMonitor, ItScaling, ItApply, ItMachineBack,
         // display and sound
-        ItSpeed, ItJit, ItPalette, ItSound, ItVolume, ItSoundOut, ItMouse, ItAlt, ItPrefsBack,
+        ItSpeed, ItJit, ItPalette, ItSound, ItVolume, ItSoundOut, ItMouse, ItMouseMode, ItAlt, ItPrefsBack,
         // network
         ItNetMode, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry, ItKeyboard,
         ItMacInternet, ItHttps, ItShared, ItNetApply, ItNetworkBack,

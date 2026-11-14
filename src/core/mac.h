@@ -19,6 +19,7 @@
 #include "adb.h"
 #include "scc.h"
 #include "emulator.h"
+#include "pointer.h"
 
 namespace macemu {
 
@@ -55,6 +56,7 @@ public:
     const s16 *sound(u32 &count, u32 &rate) override { count = kSoundSamplesPerFrame; rate = 22255; return soundBuf; }
     void keyEvent(int macKey, bool down) override;      // ADB key codes (keys.h)
     void mouseMove(int dx, int dy) override;
+    void mouseMoveDirect(int dx, int dy) override { if (!movePointerDirect(ram, ramSize, dx, dy)) mouseMove(dx, dy); }
     void mouseButton(bool down) override { if (se) adbMouse.setButton(down); else mouseDown = down; }
     void interruptButton() override { nmiFrames = 6; }
     Iwm &floppy() override { return iwm; }

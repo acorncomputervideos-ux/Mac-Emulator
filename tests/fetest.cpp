@@ -57,6 +57,13 @@ static void testConfig()
         CHECK(strEq(d.soundDevice, "usb"));
         d.parse("sound_device=nonsense\n", 22);
         CHECK(strEq(d.soundDevice, "auto"));
+        CHECK(d.directMouse == 1);
+        d.parse("mouse=adb\n", 10);
+        CHECK(d.directMouse == 0);
+        char out[4096];
+        u32 n = d.serialize(out, sizeof out);
+        out[n] = 0;
+        CHECK(strstr(out, "mouse=adb") != nullptr);
     }
 
     char buf[2048];

@@ -49,7 +49,7 @@ int Osd::items(Page p, int *out) const
                                 ItHeadCd, ItCdrom, ItDisksBack};
     static const int machine[] = {ItModel, ItRom, ItRam, ItVideo, ItMonitor, ItScaling, ItApply, ItMachineBack};
     static const int prefs[] = {ItHeadEmulation, ItSpeed, ItJit, ItHeadDisplay, ItPalette, ItSound, ItVolume, ItSoundOut,
-                                ItHeadInput, ItMouse, ItAlt, ItPrefsBack};
+                                ItHeadInput, ItMouse, ItMouseMode, ItAlt, ItPrefsBack};
     static const int net[] = {ItHeadConnection, ItNetMode, ItHeadWifi, ItWifiScan, ItWifiName, ItWifiPass, ItWifiCountry,
                               ItKeyboard, ItHeadSharing, ItMacInternet, ItHttps, ItShared, ItNetApply, ItNetworkBack};
     static const int saved[] = {ItHeadRestore, ItLoad1, ItLoad1 + 1, ItLoad1 + 2, ItLoad4,
@@ -131,6 +131,7 @@ void Osd::adjust(int item, int dir)
         if (cfg.mouseSpeed > 8) cfg.mouseSpeed = 8;
         break;
     case ItAlt: cfg.altIsOption = !cfg.altIsOption; break;
+    case ItMouseMode: cfg.directMouse = !cfg.directMouse; break;
     case ItModel: {
         static const char *models[] = {"auto", "plus", "ii", "quadra"};
         int i = 0;
@@ -532,6 +533,7 @@ void Osd::label(int item, char *out, u32 max)
         break;
     }
     case ItMouse: appendUint(v, (u32)cfg.mouseSpeed, sizeof v); field("Mouse speed", v); break;
+    case ItMouseMode: field("Mouse", cfg.directMouse ? "Direct (smooth)" : "Like a real Mac"); break;
     case ItAlt: field("Alt key", cfg.altIsOption ? "Option (Win = Cmd)" : "Command (Win = Opt)"); break;
     case ItDisksBack: case ItMachineBack: case ItPrefsBack: case ItNetworkBack: case ItSavedBack:
         strAppend(out, "<  Back", max);

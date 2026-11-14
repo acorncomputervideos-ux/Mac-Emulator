@@ -19,6 +19,7 @@ void Config::setDefaults()
     volume = 8;
     strCopy(soundDevice, "auto", sizeof soundDevice);
     mouseSpeed = 4;
+    directMouse = 1;
     strCopy(network, "auto", sizeof network);
     strCopy(wifiCountry, "GB", sizeof wifiCountry);
     macEthernet = 6066;
@@ -125,6 +126,7 @@ void Config::parse(const char *text, u32 len)
         else if (strEqNoCase(p, "volume")) volume = toInt(val);
         else if (strEqNoCase(p, "sound_device")) strCopy(soundDevice, val, sizeof soundDevice);
         else if (strEqNoCase(p, "mouse_speed")) mouseSpeed = toInt(val);
+        else if (strEqNoCase(p, "mouse")) directMouse = strEqNoCase(val, "adb") ? 0 : 1;
         else if (strEqNoCase(p, "alt_is_option")) altIsOption = toInt(val);
         else if (strEqNoCase(p, "floppy_readonly")) floppyReadOnly = toInt(val);
         else if (strEqNoCase(p, "network")) strCopy(network, val, sizeof network);
@@ -198,6 +200,7 @@ u32 Config::serialize(char *out, u32 max) const
     lineInt(out, max, "volume", volume);
     line(out, max, "sound_device", soundDevice);
     lineInt(out, max, "mouse_speed", mouseSpeed);
+    line(out, max, "mouse", directMouse ? "direct" : "adb");
     lineInt(out, max, "alt_is_option", altIsOption);
     lineInt(out, max, "floppy_readonly", floppyReadOnly);
     line(out, max, "network", network);

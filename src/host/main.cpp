@@ -573,7 +573,7 @@ int main(int argc, char **argv)
                 if (!c) break;
                 c++;
                 if (at == f) {
-                    if (!strncmp(c, "park", 4)) { mac.mouseMove(-2000, -2000); curX = curY = 0; toX = -1; }
+                    if (!strncmp(c, "park", 4)) { if (getenv("MOUSE_DIRECT")) mac.mouseMoveDirect(-2000, -2000); else mac.mouseMove(-2000, -2000); curX = curY = 0; toX = -1; }
                     else if (!strncmp(c, "to ", 3)) sscanf(c + 3, "%d,%d", &toX, &toY);
                     else if (!strncmp(c, "warp ", 5)) {    // set the cursor (low-memory globals)
                         int x = 0, y = 0;
@@ -593,7 +593,8 @@ int main(int argc, char **argv)
                 int dx = toX - curX, dy = toY - curY;
                 dx = dx > 1 ? 1 : dx < -1 ? -1 : dx;
                 dy = dy > 1 ? 1 : dy < -1 ? -1 : dy;
-                mac.mouseMove(dx, dy);
+                if (getenv("MOUSE_DIRECT")) mac.mouseMoveDirect(dx, dy);   // as the Pi's direct mouse
+                else mac.mouseMove(dx, dy);
                 curX += dx; curY += dy;
             }
         }

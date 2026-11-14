@@ -1388,7 +1388,16 @@ void CKernel::DrainEvents (void)
 		switch (E.nType)
 		{
 		case EvKey:		m_pMachine->keyEvent (E.a, E.b != 0);		break;
-		case EvMouseMove:	m_pMachine->mouseMove (E.a, E.b);		break;
+		case EvMouseMove:
+			if (m_Config.directMouse)
+			{
+				m_pMachine->mouseMoveDirect (E.a, E.b);	// (the ADB mouse if Mac OS is not up)
+			}
+			else
+			{
+				m_pMachine->mouseMove (E.a, E.b);
+			}
+			break;
 		case EvMouseButton:	m_pMachine->mouseButton (E.a != 0);		break;
 		default:		m_pMachine->interruptButton ();			break;
 		}

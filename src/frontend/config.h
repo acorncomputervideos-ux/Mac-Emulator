@@ -29,6 +29,7 @@ struct Config {
     int volume;                 // 0..10
     char soundDevice[8];        // "auto" (USB when plugged in, else HDMI), "hdmi", "pwm" (the jack) or "usb"
     int mouseSpeed;             // 1..8, 4 = 1:1
+    int directMouse;            // 1: the pointer set directly (as Basilisk II); 0: through the ADB mouse
     int altIsOption;            // 0: Alt=Command, Win=Option; 1: swapped
     int floppyReadOnly;
     char network[12];           // "auto", "ethernet", "wifi" or "off"
