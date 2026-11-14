@@ -133,6 +133,10 @@ CKernel::CKernel (void)
 	m_pFrameBufferPixels = 0;
 	m_nFrameBufferPitch = 0;
 	m_bDoubleBuffered = FALSE;
+	m_bDrawCore = FALSE;
+	m_nDrawState = 0;
+	m_bDrawFlip = FALSE;
+	m_bDrawResize = FALSE;
 	m_nFront = 0;
 	m_nPendTop[0] = m_nPendTop[1] = 0;
 	m_nPendBottom[0] = m_nPendBottom[1] = 0;
@@ -904,6 +908,11 @@ TShutdownMode CKernel::Run (void)
 		m_Logger.Write (FromKernel, LogNotice, m_bEmuCoreRunning ? "The Mac runs on core 1"
 								     : "Core 1 did not start: running on one");
 		StartJitCore ();
+		if (m_bEmuCoreRunning)
+		{
+			m_bDrawCore = TRUE;		// core 2 draws from now on
+			m_Logger.Write (FromKernel, LogNotice, "The screen is drawn on core 2");
+		}
 	}
 #endif
 
@@ -940,6 +949,7 @@ TShutdownMode CKernel::Run (void)
 		{
 			UpdateJit ();			// switched in the menu: from now on
 			ResumeEmu ();
+			WaitDrawIdle ();				// (core 2 is not drawing)
 			fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 			m_bForceRedraw = TRUE;
 			DrawMac (TRUE);
@@ -954,6 +964,7 @@ TShutdownMode CKernel::Run (void)
 			if (m_pOsd->needsRedraw ())
 			{
 				// Pages differ in size: clear what the last one covered.
+				WaitDrawIdle ();				// (core 2 is not drawing)
 				fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 				DrawMac (TRUE);
 				m_pOsd->draw (m_Surface, m_Font);
@@ -962,6 +973,7 @@ TShutdownMode CKernel::Run (void)
 
 			if (!m_pOsd->active ())
 			{
+				WaitDrawIdle ();				// (core 2 is not drawing)
 				fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 				m_bForceRedraw = TRUE;
 			}
@@ -1024,8 +1036,21 @@ TShutdownMode CKernel::Run (void)
 		Housekeeping ();
 		ReportSharedFolder ();
 		QueueSound ();
-		UpdateScreen ();
-		Present (TRUE);
+		if (m_bDrawCore)
+		{
+			FinishDraw ();				// (normally done already, in WaitUntil)
+			if (m_nDrawState == 0)
+			{
+				DataMemBarrier ();
+				m_nDrawState = 1;		// core 2: draw this frame
+				asm volatile ("dsb ish\n\tsev" ::: "memory");
+			}
+		}
+		else
+		{
+			UpdateScreen ();
+			Present (TRUE);
+		}
 		m_CPUThrottle.Update ();
 		BootLog ();
 		m_nFrames++;
@@ -1088,9 +1113,21 @@ void CKernel::UpdateScreen (void)
 
 void CKernel::Present (boolean bFrame)
 {
+	WaitDrawIdle ();				// (core 0: core 2 is not drawing)
+	if (PresentPrepare (bFrame))
+	{
+		PresentFlip ();
+	}
+}
+
+// The surface's changed lines into the frame buffer: into the half not
+// shown, when double buffered (TRUE: then switch to it).  Memory work only,
+// so core 2 may do it.
+boolean CKernel::PresentPrepare (boolean bFrame)
+{
 	if (m_pFrameBufferPixels == 0 || m_Surface.pixels == 0)
 	{
-		return;
+		return FALSE;
 	}
 	int nTop = m_Surface.dirtyTop, nBottom = m_Surface.dirtyBottom;
 	if (nTop < 0) nTop = 0;
@@ -1101,7 +1138,7 @@ void CKernel::Present (boolean bFrame)
 	if (!m_bDoubleBuffered)
 	{
 		CopyRows (m_pFrameBufferPixels, nTop, nBottom);
-		return;
+		return FALSE;
 	}
 
 	// Both halves now lack these lines; the hidden one gets them (and what
@@ -1125,7 +1162,7 @@ void CKernel::Present (boolean bFrame)
 	unsigned nBack = 1 - m_nFront;
 	if (m_nPendTop[nBack] >= m_nPendBottom[nBack])
 	{
-		return;					// nothing new: no need to switch
+		return FALSE;				// nothing new: no need to switch
 	}
 	// The hidden half may still be on the display if it was switched away
 	// from only just now (the switch happens at the display's next refresh).
@@ -1137,7 +1174,7 @@ void CKernel::Present (boolean bFrame)
 	{
 		if (bFrame)
 		{
-			return;				// (its lines stay pending)
+			return FALSE;			// (its lines stay pending)
 		}
 		m_pFrameBuffer->WaitForVerticalSync ();
 	}
@@ -1145,9 +1182,75 @@ void CKernel::Present (boolean bFrame)
 		  m_nPendTop[nBack], m_nPendBottom[nBack]);
 	m_nPendTop[nBack] = m_Surface.height;
 	m_nPendBottom[nBack] = 0;
+	return TRUE;
+}
+
+// Core 0 only (a firmware message).
+void CKernel::PresentFlip (void)
+{
+	unsigned nBack = 1 - m_nFront;
 	m_pFrameBuffer->SetVirtualOffset (0, nBack * (unsigned) m_Surface.height);
 	m_nFront = nBack;
 	m_nLastFlip = CTimer::GetClockTicks64 ();
+}
+
+// ----------------------------------------------------------------- core 2
+
+// Core 2: draws each frame core 0 asks for, into the hidden half.
+void CKernel::DrawCoreRun (void)
+{
+	for (;;)
+	{
+		while (m_nDrawState != 1)
+		{
+			asm volatile ("wfe");
+		}
+		DataMemBarrier ();
+		DrawMac (m_bForceRedraw, FALSE);
+		if (!m_bDrawResize)
+		{
+			m_bForceRedraw = FALSE;
+			m_bDrawFlip = PresentPrepare (TRUE);
+		}
+		DataMemBarrier ();
+		m_nDrawState = 2;
+		asm volatile ("dsb ish\n\tsev" ::: "memory");
+	}
+}
+
+// Core 0: a frame core 2 has drawn: show it (or set up the new size).
+void CKernel::FinishDraw (void)
+{
+	if (m_nDrawState != 2)
+	{
+		return;
+	}
+	DataMemBarrier ();
+	if (m_bDrawFlip)
+	{
+		m_bDrawFlip = FALSE;
+		PresentFlip ();
+	}
+	m_nDrawState = 0;
+	if (m_bDrawResize)
+	{
+		m_bDrawResize = FALSE;
+		UpdateScreen ();			// (sets up the new frame buffer here)
+		if (PresentPrepare (FALSE))
+		{
+			PresentFlip ();
+		}
+	}
+}
+
+// Core 0, before drawing itself: core 2 finishes (and its frame is shown).
+void CKernel::WaitDrawIdle (void)
+{
+	while (m_nDrawState == 1)
+	{
+		CDiskProxy::Service ();			// (it may need nothing; the Mac may)
+	}
+	FinishDraw ();
 }
 
 void CKernel::CopyRows (volatile u32 *pBuffer, int nTop, int nBottom)
@@ -1304,7 +1407,7 @@ void CKernel::BootLog (boolean bForce)
 	}
 }
 
-void CKernel::DrawMac (boolean bForce)
+void CKernel::DrawMac (boolean bForce, boolean bMayResize)
 {
 	VideoFrame Frame;
 	if (!m_pMachine->video (Frame))
@@ -1322,6 +1425,11 @@ void CKernel::DrawMac (boolean bForce)
 	    || Frame.height != m_nVideoHeight)
 	{
 		m_bHaveVideo = TRUE;
+		if ((Frame.width != m_nVideoWidth || Frame.height != m_nVideoHeight) && !bMayResize)
+		{
+			m_bDrawResize = TRUE;			// (a new frame buffer: core 0's job)
+			return;
+		}
 		if (Frame.width != m_nVideoWidth || Frame.height != m_nVideoHeight)
 		{
 			m_nVideoWidth = Frame.width;
@@ -1346,6 +1454,7 @@ void CKernel::DrawMac (boolean bForce)
 void CKernel::ShowMessage (const char *pLine1, const char *pLine2)
 {
 	int fh = m_Font.height ();
+	WaitDrawIdle ();				// (core 2 is not drawing)
 	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 	int x = (m_Surface.width - (int) strlen (pLine1) * m_Font.width ()) / 2;
 	drawText (m_Surface, m_Font, x, m_Surface.height / 2 - fh, pLine1, ColSelFg);
@@ -1576,7 +1685,10 @@ void CEmuCores::Run (unsigned nCore)
 	{
 		m_pKernel->JitCoreRun ();
 	}
-	// core 2: nothing to do yet
+	else if (nCore == 2)
+	{
+		m_pKernel->DrawCoreRun ();
+	}
 }
 #endif
 
@@ -2344,6 +2456,7 @@ bool CKernel::loadSlot (int nSlot, char *pWhy, unsigned nMax)
 		strCopy (pWhy, "Restoring failed: the Mac starts afresh", nMax);
 	}
 	m_nMacOffTicks = 0;
+	WaitDrawIdle ();				// (core 2 is not drawing)
 	m_bHaveVideo = FALSE;
 	m_bForceRedraw = TRUE;
 	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
@@ -2956,6 +3069,10 @@ void CKernel::WaitUntil (hostu64 nUntil)
 	while (CTimer::GetClockTicks64 () < nUntil)
 	{
 		CDiskProxy::Service ();
+		if (m_nDrawState == 2)
+		{
+			FinishDraw ();			// core 2's frame: on the display at once
+		}
 
 		// Idle: copy a little more of the disks into memory (64 KB takes
 		// a few ms), so that the Mac's reads need not wait for the card.
@@ -3668,6 +3785,7 @@ void CKernel::HandleKey (u8 ucUsage, boolean bDown)
 			if (m_pOsd->active ())
 			{
 				m_pOsd->close ();
+				WaitDrawIdle ();				// (core 2 is not drawing)
 				fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 				m_bForceRedraw = TRUE;
 			}
@@ -4183,6 +4301,7 @@ void CKernel::settingsChanged (void)
 	ApplyPalette ();
 	m_Layout = layoutFor (m_Surface, m_nVideoWidth ? m_nVideoWidth : 512, m_nVideoHeight ? m_nVideoHeight : 342, m_Config.scale);
 	m_Layout.scanlines = m_Config.sharp == 2;
+	WaitDrawIdle ();				// (core 2 is not drawing)
 	fillRect (m_Surface, 0, 0, m_Surface.width, m_Surface.height, ColBorder);
 	m_bForceRedraw = TRUE;
 

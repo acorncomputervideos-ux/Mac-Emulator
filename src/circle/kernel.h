@@ -86,6 +86,7 @@ public:
 
 	void EmuCoreRun (void);			// the Mac's own core (core 1)
 	void JitCoreRun (void);			// core 3: translates the JIT's blocks
+	void DrawCoreRun (void);		// core 2: draws the Mac's frames
 	void StartJitCore (void);
 
 	// macemu::OsdHost
@@ -161,9 +162,22 @@ private:
 	void DrainEvents (void);
 	void UpdateScreen (void);
 	void Present (boolean bFrame = FALSE);	// bFrame: the regular frame (may wait for the next)
+	boolean PresentPrepare (boolean bFrame);	// lines into the hidden half; TRUE: switch to it
+	void PresentFlip (void);
+	// Drawing on core 2: core 0 asks for a frame (state 1), core 2 draws it
+	// into the hidden half (state 2), core 0 switches the display to it
+	// (firmware messages are core 0's alone) and may ask again (state 0).
+	// Core 0 draws itself (menu, messages, a new resolution) only with core
+	// 2 idle: WaitDrawIdle ().
+	volatile boolean	m_bDrawCore;		// core 2 draws
+	volatile int		m_nDrawState;
+	volatile boolean	m_bDrawFlip;		// state 2: switch the display
+	volatile boolean	m_bDrawResize;		// state 2: the Mac's screen changed size
+	void FinishDraw (void);
+	void WaitDrawIdle (void);
 	void CopyRows (volatile u32 *pBuffer, int nTop, int nBottom);
 	void BootLog (boolean bForce = FALSE);
-	void DrawMac (boolean bForce);
+	void DrawMac (boolean bForce, boolean bMayResize = TRUE);	// FALSE: say so (m_bDrawResize) instead
 	void ShowMessage (const char *pLine1, const char *pLine2);
 	void HandlePowerKey (void);
 	boolean HasPowerButton (void);

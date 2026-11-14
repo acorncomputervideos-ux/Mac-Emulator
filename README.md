@@ -111,7 +111,11 @@ Three models are emulated:
   only. The *This Mac* panel on the web page shows which is in use.
 - USB keyboard with the full Mac Plus layout, including keypad and arrows.
   Caps Lock latches like the real key.
-- USB mouse with adjustable speed.
+- USB mouse with adjustable speed. By default the pointer is moved
+  directly (as Basilisk II does): its position in Mac OS's memory, kept on
+  the screen, with no mouse reports to wait for and no acceleration on top.
+  Programs that read the mouse themselves (games) uncouple the pointer and
+  then get the real ADB mouse; *Mouse: Like a real Mac* uses it always.
 - Hot-plugging of keyboard and mouse.
 
 **Emulator controls**
@@ -135,7 +139,7 @@ Three models are emulated:
     every row of Mac pixels, on a display at least twice the Mac's size).
     *Save and restart* restarts the Pi with them.
   - *Speed, display, sound, input*: speed (1×–8×, unlimited), the JIT,
-    colour scheme, sound, volume, mouse speed and the Alt key.
+    colour scheme, sound, volume, mouse speed and mode, and the Alt key.
   - *Network and sharing*: connection type, Wi-Fi name, password and
     country, the layout for typing them, the web page's address; and for
     the Mac: its internet, the HTTPS helper and the shared disk, on or off.
@@ -409,13 +413,24 @@ Three models are emulated:
   checked to be unchanged. The log's `core3=` shows blocks queued, dropped
   (queue full: recorded again later) and stale (the code changed meanwhile).
   `make jittest` runs the checks both ways (`JIT_BG=1`: a second thread).
+- A whole session checked the same way: `tools/jit-system-check.sh ROM DISK
+  [FRAMES] [FOLDER]` runs a Mac twice under qemu-aarch64, interpreted and
+  with the JIT, and compares cycle counts, screenshots and the disk. Booting
+  Mac OS 7.5.3 and installing Netscape 3.04 from the shared folder (9000
+  frames; 1.8 billion instructions in 1.6 million blocks): identical.
 
 **Multi-core**
 - On every Pi with more than one core, the emulated Mac has core 1 to
-  itself and runs without interruption. Core 0 does everything else: USB
-  keyboard and mouse, Wi-Fi/Ethernet and the web page, the screen (a steady
-  60 frames a second, whatever the Mac's speed), sound and the SD card.
-  The Mac's disk accesses are handed to core 0, which serves them at once.
+  itself and runs without interruption. Core 2 draws the screen (a steady
+  60 frames a second, whatever the Mac's speed) and core 3 translates the
+  JIT's code. Core 0 does everything else: USB keyboard and mouse,
+  Wi-Fi/Ethernet and the web page, sound and the SD card; the Mac's disk
+  accesses are handed to it, and it serves them at once.
+- The screen is double buffered: each frame goes into a hidden copy and the
+  display switches to it at its next refresh (the firmware does it), so it
+  never shows half of one frame and half of the next. Core 0 makes the
+  switch (the firmware's messages are its alone) as soon as core 2 has the
+  frame ready; it draws the menu and messages itself, with core 2 idle.
 - The Pi 1 and Zero (one core) run everything on that core, as before.
 
 **Fast start-up**
