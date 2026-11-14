@@ -37,6 +37,7 @@ void Sonic::writeMem(u32 a, const u8 *in, u32 len)
 {
     if (!mem || a >= memSize || len > memSize - a) return;
     memCopy(mem + a, in, len);
+    if (memWrites) (*memWrites)++;                      // (the JIT's code epoch)
 }
 
 // Descriptor fields: 16 bits each, or in 32-bit mode the low half of a long.

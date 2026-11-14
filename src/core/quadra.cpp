@@ -37,7 +37,7 @@ bool Quadra::init(const u8 *romData, u32 romSize, u8 *ramData, u32 ramBytes)
     if (ramBytes < 0x400000 || ramBytes > 0x10000000 || (ramBytes & 0xFFFFF)) return false;
     rom = romData; romMask = romSize - 1;
     ram = ramData; ramSize = ramBytes;
-    sonic.attachMemory(ram, ramSize);
+    sonic.attachMemory(ram, ramSize, &cpu.codeEpoch);
     reset();
     return true;
 }
@@ -74,6 +74,12 @@ void Quadra::reset()
     // initial PC relative to the ROM base.
     putBe32(ram, be32(rom));
     putBe32(ram + 4, 0x40800000 + be32(rom + 4));
+    // No memory test at power-on (3 seconds with 32 MB): the ROM skips it
+    // when it finds its warm-start mark ('WLSC', which it leaves on a
+    // restart) just below the top of the memory it sized, at the top of a
+    // bank: put one below each power of two the RAM reaches.
+    for (u32 top = 0x800000; top && top <= ramSize; top <<= 1) putBe32(ram + top - 0x60, 0x574C5343);
+    cpu.codeMayChange();
     cpu.hardReset();
     updateIrq();
 }

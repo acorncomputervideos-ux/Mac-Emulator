@@ -68,6 +68,7 @@ static void setup(M68K &c, TestBus &b, const State &s, u16 op, const std::vector
     c.setSSP(s.ssp);
     c.setSR(s.sr);
     c.pc = kCode;
+    c.codeMayChange();                                  // (code written behind the CPU's back)
     c.stopped = false;
     c.setIRQ(0);
 }
@@ -171,6 +172,41 @@ int main(int argc, char **argv)
         if (jit.jitInstructions == before) { failures++; puts("FAIL self-modifying code: no block ran"); }
         same(ci, bi, cj, bj, 0x33C1, s);
         if (ci.d[0] != 5 || cj.d[0] != 5) { failures++; printf("FAIL self-modifying code: d0 %08X / %08X\n", ci.d[0], cj.d[0]); }
+    }
+
+    // Chaining: a loop of blocks (a BSR, an RTS, a BNE back) that goes from
+    // block to block without the run loop, stopping where the interpreter
+    // stops; then the same loop writing to its own first instruction each
+    // time round, the same opcode (the blocks are checked again) and then
+    // a new one (they are translated again).
+    //   10000 ADDQ.L #1,D0 / MOVE.L D0,(A1) / BSR.W 1000C / SUBQ.L #1,D1 / BNE.B 10000
+    //   1000C ADDQ.L #2,D2 / MOVE.W D3,(A3) / RTS
+    {
+        static const u8 prog[] = {0x52, 0x80, 0x22, 0x80, 0x61, 0x00, 0x00, 0x06, 0x53, 0x81, 0x66, 0xF4,
+                                  0x54, 0x82, 0x36, 0x83, 0x4E, 0x75};
+        struct Phase { u32 a3; u16 d3; int count; const char *name; };
+        static const Phase phases[] = {{0x20100, 0, 3001, "loop"}, {0x10000, 0x5280, 2999, "rewriting the same code"},
+                                       {0x10000, 0x5480, 3000, "rewriting the code"}};
+        for (const Phase &ph : phases) {
+            State s = {};
+            s.sr = 0x2700; s.ssp = 0x30000; s.usp = 0x31000;
+            s.ext.assign(prog + 2, prog + sizeof prog);
+            s.a[1] = 0x20000; s.a[3] = ph.a3; s.d[1] = 1000000; s.d[3] = ph.d3;
+            for (auto &v : mem) v = 0;
+            for (int w = 0; w < 3; w++) { setup(cj, bj, s, 0x5280, mem); cj.run(200, ~0ull); if (bg) jit.drain(cj); }
+            setup(cj, bj, s, 0x5280, mem);
+            setup(ci, bi, s, 0x5280, mem);
+            cj.totalCycles = ci.totalCycles = 0;
+            u64 runs = jit.blockRuns, insns = jit.jitInstructions;
+            u32 tj = cj.run(ph.count, ~0ull), ti = ci.run(ph.count, ~0ull);
+            same(ci, bi, cj, bj, 0x5280, s);
+            if (tj != ti) { failures++; printf("FAIL chaining (%s): run() returned %u, interpreter %u\n", ph.name, tj, ti); }
+            runs = jit.blockRuns - runs; insns = jit.jitInstructions - insns;
+            printf("chaining (%s): %llu instructions in blocks, %llu blocks started by the run loop\n", ph.name,
+                   (unsigned long long)insns, (unsigned long long)runs);
+            checks++;
+            if (&ph == phases && (insns < (u64)ph.count / 2 || runs * 20 > insns)) { failures++; puts("FAIL chaining: the blocks did not go on from one to the next"); }
+        }
     }
 
     printf("%d opcodes with code of their own; %u blocks, %u instructions translated\n", ops, jit.blocks, jit.nativeInstructions);

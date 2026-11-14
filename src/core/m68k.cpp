@@ -134,6 +134,7 @@ __attribute__((noinline)) void M68K::rollback()
 void M68K::flushTlb(u32 gen)
 {
     tlbGeneration = gen;
+    codeEpoch++;                                        // code may now be elsewhere
     for (int i = 0; i < kTlbSize; i++) tlb[i].tag = 0;
     for (int i = 0; i < kCodeTlbSize; i++) codeTlb[i].tag = 0;
 }
@@ -159,7 +160,13 @@ u8 *M68K::tlbLookup(u32 addr, bool write, bool code)
     if (write && !writable) return 0;
     // Pages with translated code: writes take the slow way, so a block that
     // writes to its own code stops there and is checked before it runs again.
-    if (write && jit && jit->codePage(p)) return 0;
+    // (Only writes near translated code can change it: the epoch.)
+    if (write && jit) {
+        if (int w = jit->codeWrite(p, addr & 0xFFF)) {
+            if (w == 2) codeEpoch++;
+            return 0;
+        }
+    }
     e.tag = tag;
     e.ptr = p;
     e.writable = writable && write;                     // later writes revalidate the M bit once
@@ -237,6 +244,7 @@ void M68K::wrSlow(u32 addr, int sz, u32 v)
     slowAccesses++;
     if (bus->busError && model >= MC68040) return;      // the instruction will run again: no writes now
     if (model == MC68000) {
+        codeEpoch++;
         if (sz == 0) { cyc += 4; bus->write8(addr, (u8)v); }
         else if (sz == 1) { cyc += 4; bus->write16(addr, (u16)v); }
         else { cyc += 8; bus->write16(addr, (u16)(v >> 16)); bus->write16(addr + 2, (u16)v); }
@@ -254,6 +262,7 @@ void M68K::wrSlow(u32 addr, int sz, u32 v)
     }
     bool mapped = mmu && mmu->enabled();
     if ((sz && (addr & 1)) || (mapped && sz && (addr & 0xFFF) > 0x1000 - kSize[sz])) {
+        codeEpoch++;                                    // (byte by byte: RAM, maybe code)
         for (u32 i = 0; i < kSize[sz]; i++) {
             u32 p = mapped ? physical(addr + i, true, false) : addr + i;
             if (bus->busError && model >= MC68040) { faultSeen(); return; }
@@ -262,6 +271,7 @@ void M68K::wrSlow(u32 addr, int sz, u32 v)
         checkTlb();
         return;
     }
+    if ((addr & 0xFFF) > 0x1000 - kSize[sz]) codeEpoch++;   // across pages: RAM, maybe code
     if (mapped) addr = physical(addr, true, false);
     if (bus->busError && model >= MC68040) { faultSeen(); bus->busErrorSize = sz; return; }
     if (sz == 0) bus->write8(addr, (u8)v);

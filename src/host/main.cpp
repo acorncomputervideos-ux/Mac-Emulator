@@ -331,7 +331,7 @@ int main(int argc, char **argv)
         if (getenv("JIT") && atoi(getenv("JIT"))) {
             gJit = new Jit;
             if (getenv("JIT_NATIVE") && !atoi(getenv("JIT_NATIVE"))) gJit->native = false;
-            if (gJit->init()) quad->cpu.jit = gJit;
+            if (gJit->init()) quad->cpu.setJit(gJit);
             else { fprintf(stderr, "no JIT on this host\n"); delete gJit; gJit = 0; }
         }
         if (getenv("SWIM_TRACE")) {
@@ -497,6 +497,7 @@ int main(int argc, char **argv)
         if (f == lateFrame && !host.insertDisk(0, lateImage.c_str()))
             fprintf(stderr, "cannot insert %s\n", lateImage.c_str());
         mac.runFrame();
+        if (getenv("PC_TRACE") && quad) printf("f%d pc %08X\n", f, quad->cpu.pc);   // where the time goes
         if (getenv("DISK_LOG")) {                       // frames with disk activity
             static u32 lastAct = 0;
             u32 act = mac.diskActivity();
@@ -676,8 +677,8 @@ int main(int argc, char **argv)
     if (quad && getenv("SHOW_VBR")) printf("vbr %08X bus error handler %08X restartable %d page faults %u\n", quad->cpu.vbr, be32(&ram[quad->cpu.vbr + 8]), quad->cpu.restartable, quad->cpu.pageFaults);
     printf("last trap %04X, pc %08X\n", mac.debugTrap(), mac.debugPC());
     if (gJit && getenv("JIT_STATS"))
-        printf("JIT: %u blocks (%u instructions of their own), %llu runs, %llu instructions, %u invalidated, %u flushes\n", gJit->blocks, gJit->nativeInstructions,
-               (unsigned long long)gJit->blockRuns, (unsigned long long)gJit->jitInstructions, gJit->invalidated, gJit->flushes);
+        printf("JIT: %u blocks (%u instructions of their own), %llu runs from the loop, %llu instructions, %llu code checks, %u invalidated, %u flushes\n", gJit->blocks, gJit->nativeInstructions,
+               (unsigned long long)gJit->blockRuns, (unsigned long long)gJit->jitInstructions, (unsigned long long)gJit->checks, gJit->invalidated, gJit->flushes);
     if (!saveState.empty()) {
         FILE *sf = fopen(saveState.c_str(), "wb");
         FileState st(sf, true);

@@ -54,7 +54,7 @@ struct JitAccess {
         oNmiSeen = __builtin_offsetof(M68K, nmiSeen), oTraceNext = __builtin_offsetof(M68K, traceNext),
         oOpcode = __builtin_offsetof(M68K, opcode), oBus = __builtin_offsetof(M68K, bus), oIrq = __builtin_offsetof(M68K, irq),
         oImask = __builtin_offsetof(M68K, imask), oFT = __builtin_offsetof(M68K, fT), oTlbGen = __builtin_offsetof(M68K, tlbGeneration),
-        oSlow = __builtin_offsetof(M68K, slowAccesses),
+        oSlow = __builtin_offsetof(M68K, slowAccesses), oEpoch = __builtin_offsetof(M68K, codeEpoch),
         oD = __builtin_offsetof(M68K, d), oA = __builtin_offsetof(M68K, a),
         oFC = __builtin_offsetof(M68K, fC), oFV = __builtin_offsetof(M68K, fV), oFZ = __builtin_offsetof(M68K, fZ),
         oFN = __builtin_offsetof(M68K, fN), oFX = __builtin_offsetof(M68K, fX), oFS = __builtin_offsetof(M68K, fS),
@@ -65,38 +65,63 @@ struct JitAccess {
     };
 };
 
-Jit::Jit() : table(0), code(0), codeSize(0), codeUsed(0), copies(0), copiesSize(0), copiesUsed(0), pages(0) {}
+static void emitPrologue(a64::Emitter &e);
+
+Jit::Jit() : table(0), chains(0), code(0), codeSize(0), codeUsed(0), copies(0), copiesSize(0), copiesUsed(0), pages(0), lines(0) {}
 
 Jit::~Jit()
 {
     delete[] jobs;
     delete[] table;
+    delete[] chains;
     delete[] copies;
     delete[] pages;
+    delete[] lines;
 }
 
 static inline u32 pageHash(u64 page) { return (u32)(page ^ (page >> 13)) & 8191u; }   // kPages - 1
 
-bool Jit::codePage(const u8 *host) const
+int Jit::findPage(const u8 *host) const
 {
     u64 page = (u64)(unsigned long)host >> 12;
-    if (!pages || !pageCount) return false;
+    if (!pages || !pageCount) return -1;
     for (u32 i = pageHash(page); ; i = (i + 1) & (kPages - 1)) {
-        if (pages[i] == page) return true;
-        if (!pages[i]) return false;
+        if (pages[i] == page) return (int)i;
+        if (!pages[i]) return -1;
     }
 }
 
-void Jit::addCodePage(M68K &c, const u8 *host)
+bool Jit::codePage(const u8 *host) const { return findPage(host) >= 0; }
+
+int Jit::codeWrite(const u8 *host, u32 off) const
+{
+    int i = findPage(host);
+    if (i < 0) return 0;
+    u32 last = off + 3 > 0xFFF ? 0xFFF : off + 3;       // (writes of up to 4 bytes)
+    u64 want = (1ull << (off >> 6)) | (1ull << (last >> 6));
+    return lines[i] & want ? 2 : 1;
+}
+
+// The bytes [host, host + len) (in one page) hold translated code.
+void Jit::addCode(M68K &c, const u8 *host, u32 len)
 {
     u64 page = (u64)(unsigned long)host >> 12;
-    if (codePage(host)) return;
-    if (pageCount >= kPages / 2) return;               // full: flushAll empties it
-    u32 i = pageHash(page);
-    while (pages[i]) i = (i + 1) & (kPages - 1);
-    pages[i] = page;
-    pageCount++;
-    JitAccess::dropTlb(c);                              // writable entries for it must go
+    u32 off = (u32)(unsigned long)host & 0xFFF, last = off + (len ? len - 1 : 0);
+    if (last > 0xFFF) last = 0xFFF;
+    u64 mask = 0;
+    for (u32 l = off >> 6; l <= last >> 6; l++) mask |= 1ull << l;
+    int i = findPage(host);
+    if (i < 0) {
+        if (pageCount >= kPages / 2) return;            // full: flushAll empties it (install made room)
+        u32 k = pageHash(page);
+        while (pages[k]) k = (k + 1) & (kPages - 1);
+        pages[k] = page;
+        lines[k] = 0;
+        pageCount++;
+        i = (int)k;
+        JitAccess::dropTlb(c);                          // writable entries for it must go
+    }
+    lines[i] |= mask;
 }
 
 bool Jit::init(u32 codeBytes)
@@ -106,9 +131,17 @@ bool Jit::init(u32 codeBytes)
     if (!code) return false;
     codeSize = codeBytes;
     table = new Block[kTableSize];
+    chains = new Chain[kTableSize];
+    {   // where chained blocks come in: after the prologue's first part
+        u32 tmp[64];
+        a64::Emitter e(tmp, 64);
+        emitPrologue(e);
+        entryWords = e.size();
+    }
     copiesSize = 4 * 1024 * 1024;
     copies = new u8[copiesSize];
     pages = new u64[kPages];
+    lines = new u64[kPages];
     flushAll();
     flushes = 0;
     return true;
@@ -116,7 +149,7 @@ bool Jit::init(u32 codeBytes)
 
 void Jit::flushAll()
 {
-    for (u32 i = 0; i < kTableSize; i++) table[i].fn = 0;
+    for (u32 i = 0; i < kTableSize; i++) { table[i].fn = 0; chains[i].pc = 1; }
     codeUsed = 0;
     copiesUsed = 0;
     for (u32 i = 0; i < kPages; i++) pages[i] = 0;
@@ -137,17 +170,30 @@ int Jit::exec(M68K &c, int remaining, u64 end, u32 &total)
 {
     if (worker && __atomic_load_n(&doneCount, __ATOMIC_ACQUIRE) != seenDone) installDone(c);
     u32 pc = c.pc;
-    const u8 *host = JitAccess::codeHost(c, pc);
-    if (!host) {
-        if (recording) finish(c);
-        return 0;
-    }
-    Block &b = table[slot(pc)];
-    bool found = b.fn && b.pc == pc && b.host == host;
-    if (found && !sameBytes(host, b.copy, b.len)) {     // the code changed
-        b.fn = 0;
-        found = false;
-        invalidated++;
+    u32 s = slot(pc), key = c.codeEpoch * 2 + c.fS;
+    Block &b = table[s];
+    Chain &ch = chains[s];
+    bool found = ch.pc == pc && ch.key == key;          // checked at this epoch: still the same
+    const u8 *host = 0;
+    if (!found) {
+        host = JitAccess::codeHost(c, pc);
+        if (!host) {
+            if (recording) finish(c);
+            return 0;
+        }
+        found = b.fn && b.pc == pc && b.host == host;
+        if (found) {
+            checks++;
+            if (sameBytes(host, b.copy, b.len)) {
+                ch.pc = pc;
+                ch.key = key;
+                ch.entry = (u64)(unsigned long)b.fn + entryWords * 4;
+            } else {                                    // the code changed
+                b.fn = 0;
+                found = false;
+                invalidated++;
+            }
+        }
     }
     if (recording) {
         if (pc != recNext || found) finish(c);          // left the recorded path, or met a block
@@ -155,7 +201,8 @@ int Jit::exec(M68K &c, int remaining, u64 end, u32 &total)
         found = found && b.fn && b.pc == pc;            // (translating may have flushed it)
     }
     if (!found) {
-        startRecording(pc, host);
+        if (!host) host = JitAccess::codeHost(c, pc);
+        if (host) startRecording(pc, host);
         return 0;
     }
     blockRuns++;
@@ -247,13 +294,14 @@ void Jit::translate(M68K &c)
 void Jit::install(M68K &c, u32 pc, const u8 *host, u32 len, const u8 *bytes, const u32 *words, u32 count)
 {
     if (codeUsed + count * 4 + 64 > codeSize || copiesUsed + 4096 > copiesSize || pageCount >= kPages / 2) flushAll();
-    addCodePage(c, (const u8 *)((unsigned long)host & ~4095ul));
+    addCode(c, host, len);
     u32 *at = (u32 *)(code + codeUsed);
     for (u32 i = 0; i < count; i++) at[i] = words[i];
     jitFlushCode(at, count * 4);
     codeUsed += (count * 4 + 63) & ~63u;
 
     Block &b = table[slot(pc)];
+    chains[slot(pc)].pc = 1;                            // (no longer the block checked)
     b.pc = pc;
     b.host = host;
     b.len = len;
@@ -263,6 +311,28 @@ void Jit::install(M68K &c, u32 pc, const u8 *host, u32 len, const u8 *bytes, con
     b.copy = copy;
     b.fn = (BlockFn)(void *)at;
     blocks++;
+}
+
+// The start of every block: the registers saved, the arguments and the
+// counts set.  (Its length is the same for every block: entryWords.)
+static void emitPrologue(a64::Emitter &e)
+{
+    using namespace a64;
+    typedef JitAccess J;
+    e.stpPre(29, 30, SP, -128);                        // 96..127: kept across slow accesses
+    e.stp(19, 20, SP, 16);
+    e.stp(21, 22, SP, 32);
+    e.stp(23, 24, SP, 48);
+    e.stp(25, 26, SP, 64);
+    e.stp(27, 28, SP, 80);
+    e.movrx(19, 0);
+    e.movrw(20, 1);
+    e.movrx(21, 2);
+    e.movrx(22, 3);
+    e.movw(23, 0);
+    e.movw(26, 0);
+    e.movx(24, J::oTlb);
+    e.addxLsl(24, 19, 24, 0);                           // x24: the data TLB
 }
 
 // The code for a block: what translate() always did.  Reads only the CPU's
@@ -279,24 +349,13 @@ u32 Jit::emitBlock(M68K &c, const Rec *recs, int recCount, u32 recStart, const u
     Emitter e(buf, maxWords);
     const int shift = J::model(c) >= M68K::MC68040 ? 2 : 1;
 
-    e.stpPre(29, 30, SP, -128);                        // 96..127: kept across slow accesses
-    e.stp(19, 20, SP, 16);
-    e.stp(21, 22, SP, 32);
-    e.stp(23, 24, SP, 48);
-    e.stp(25, 26, SP, 64);
-    e.stp(27, 28, SP, 80);
-    e.movrx(19, 0);
-    e.movrw(20, 1);
-    e.movrx(21, 2);
-    e.movrx(22, 3);
-    e.movw(23, 0);
+    emitPrologue(e);
+    // Chained blocks come in here (entryWords), with the registers above
+    // as the first block set them and w23, w26 counting on.
     e.ldrx(25, 19, J::oTotal);
-    e.movw(26, 0);
     e.ldrw(27, 19, J::oSlow);
     e.strb(ZR, 19, J::oNmiSeen);                       // (the loop clears these each time;
     e.strb(ZR, 19, J::oTraceNext);                     // only exceptions set them)
-    e.movx(24, J::oTlb);
-    e.addxLsl(24, 19, 24, 0);                           // x24: the data TLB
     e.ldrw(28, 19, J::oFS);
     e.lslwi(28, 28, 1);
     e.movw(2, 1);
@@ -385,6 +444,41 @@ u32 Jit::emitBlock(M68K &c, const Rec *recs, int recCount, u32 recStart, const u
 
     Emitter::patch(toExit, e.here());
     for (int k = 0; k < nExits; k++) Emitter::patch(exits[k], e.here());
+    // Chaining: what the run loop tests before the next instruction, and
+    // then the block at the PC, if it was checked at this epoch.
+    u32 *outs[12];
+    int nOuts = 0;
+    e.cmpw(23, 20);
+    outs[nOuts++] = e.bcond(GE);                        // instructions allowed
+    e.cmpx(25, 21);
+    outs[nOuts++] = e.bcond(HS);                        // cycle limit
+    e.ldrw(0, 19, J::oIrq);
+    e.ldrw(1, 19, J::oImask);
+    e.cmpw(0, 1);
+    outs[nOuts++] = e.bcond(GT);                        // an interrupt due (irq > (int)imask)
+    e.cmpwi(0, 7);
+    outs[nOuts++] = e.bcond(EQ);
+    e.ldrb(0, 19, J::oStopped);
+    outs[nOuts++] = e.cbnz(0);
+    e.ldrw(0, 19, J::oFT);
+    outs[nOuts++] = e.cbnz(0);                          // tracing
+    e.ldrw(0, 19, J::oPc);
+    e.ubfxw(1, 0, 1, 17);                               // slot(pc)
+    e.movx(2, (u64)(unsigned long)chains);
+    e.addxLsl(2, 2, 1, 4);                              // &chains[slot]
+    e.ldrw(3, 2, 0);
+    e.cmpw(3, 0);
+    outs[nOuts++] = e.bcond(NE);
+    e.ldrw(3, 19, J::oEpoch);
+    e.lslwi(3, 3, 1);
+    e.ldrw(4, 19, J::oFS);
+    e.addw(3, 3, 4);
+    e.ldrw(4, 2, 4);
+    e.cmpw(4, 3);
+    outs[nOuts++] = e.bcond(NE);
+    e.ldrx(16, 2, 8);
+    e.br(16);
+    for (int k = 0; k < nOuts; k++) Emitter::patch(outs[k], e.here());
     e.ldrw(0, 22, 0);
     e.addw(0, 0, 26);
     e.strw(0, 22, 0);

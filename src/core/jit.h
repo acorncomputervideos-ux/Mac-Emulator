@@ -10,8 +10,12 @@
 // with and without it; only faster.
 //
 // Blocks are found by the PC and the host address of the code, and checked
-// against a copy of their opcodes each time they start, so code that is
-// changed (patched, loaded over) is translated again.
+// against a copy of their opcodes, so code that is changed (patched,
+// loaded over) is translated again.  The check is made once per value of
+// the CPU's codeEpoch (bumped by anything that could change code or what
+// an address means); until it changes, a block that ends goes straight on
+// to the next one if that one was checked at this epoch ("chaining"),
+// testing on the way what the run loop would have tested.
 //
 // Only built where the host is AArch64 (the Raspberry Pi kernels, and Linux
 // on ARM for tests); elsewhere jitAvailable() is false.
@@ -39,6 +43,9 @@ public:
     bool init(u32 codeBytes = 32 * 1024 * 1024);
     static bool hasOwnCode(u16 op);     // translated to ARM code of its own (tests)
     bool codePage(const u8 *hostPage) const;            // holds translated code
+    // A write at offset off of a host page: 0 not a page with translated
+    // code, 1 one but not near any (within its 64-byte lines), 2 near some.
+    int codeWrite(const u8 *hostPage, u32 off) const;
 
     // From the run loop, before an instruction, when nothing unusual is
     // pending: runs a block at the PC if there is one (returns the number
@@ -60,6 +67,7 @@ public:
     u32 blocks = 0, flushes = 0, invalidated = 0;
     u32 queued = 0, dropped = 0, stale = 0;     // background: jobs, full queue, code changed meanwhile
     u64 blockRuns = 0, jitInstructions = 0, interpreted = 0;
+    u64 checks = 0;                     // blocks' opcodes compared with their copies
     u32 nativeInstructions = 0;         // translated to ARM code of their own
     bool native = true;                 // false: blocks call every handler (stage 1)
 
@@ -74,6 +82,11 @@ private:
     };
     enum { kTableSize = 131072, kMaxInsns = 48 };
     Block *table;
+    // Per table slot: a block checked at an epoch, for chaining (the blocks'
+    // code reads it: keep the layout).  key = epoch * 2 + fS; pc odd = none.
+    struct Chain { u32 pc, key; u64 entry; };
+    Chain *chains;
+    u32 entryWords = 0;                 // where a chained block starts, in words
     u8 *code;
     u32 codeSize, codeUsed;
     u8 *copies;                         // opcode copies
@@ -115,8 +128,10 @@ private:
     // Host pages holding translated code (open addressing; 0 = empty).
     enum { kPages = 8192 };
     u64 *pages;
+    u64 *lines;                         // per page: its 64-byte lines with translated code
     u32 pageCount = 0;
-    void addCodePage(M68K &c, const u8 *host);
+    int findPage(const u8 *host) const;
+    void addCode(M68K &c, const u8 *host, u32 len);
 };
 
 } // namespace macemu

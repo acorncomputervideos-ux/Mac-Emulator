@@ -184,6 +184,16 @@ public:
     // The JIT (AArch64 hosts): runs the usual instructions as translated
     // blocks, with exactly the same results.  Null: the interpreter only.
     class Jit *jit = 0;
+    // Bumped whenever translated code may have changed or may now mean
+    // something else: a write to a page with translated code, a change of
+    // the address map, memory written by DMA or loaded from a saved state.
+    // Blocks checked at the current value need not be checked again.
+    u32 codeEpoch = 0;
+    void codeMayChange() { codeEpoch++; }
+    // Switches the JIT on (or off: null).  While it is off, pages with
+    // translated code may be written through the TLB unseen: on the way
+    // back, the TLB starts again and every block is checked again.
+    void setJit(class Jit *j) { if (j != jit) { jit = j; tlbGeneration = 0xFFFFFFFFu; codeEpoch++; } }
 
     // The emulator's own code inside the Mac: opcodes $71xx (illegal on
     // every 68k) go to hostCall, which returns true if it took them.

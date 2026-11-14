@@ -2685,7 +2685,7 @@ void CKernel::UpdateJit (void)
 		{
 			m_Logger.Write (FromKernel, LogNotice, "JIT off");
 		}
-		m_pQuadra->cpu.jit = 0;
+		m_pQuadra->cpu.setJit (0);
 		return;
 	}
 	if (m_pJit == 0)
@@ -2705,7 +2705,7 @@ void CKernel::UpdateJit (void)
 	{
 		m_Logger.Write (FromKernel, LogNotice, "JIT on");
 	}
-	m_pQuadra->cpu.jit = m_pJit;
+	m_pQuadra->cpu.setJit (m_pJit);
 }
 
 // ----------------------------------------------------------------- network

@@ -40,7 +40,7 @@ public:
     void reset();
 
     // Main memory for the chip's DMA (physical address 0 upwards).
-    void attachMemory(u8 *ram, u32 size) { mem = ram; memSize = size; }
+    void attachMemory(u8 *ram, u32 size, u32 *writes = 0) { mem = ram; memSize = size; memWrites = writes; }
     void attachLink(EtherLink *l) { link = l; }
 
     u16 read(int reg);
@@ -88,6 +88,7 @@ private:
     EtherLink *link;
     u8 *mem;
     u32 memSize;
+    u32 *memWrites = 0;                 // bumped by each DMA write (or null)
     u16 regs[64];
     u16 cam[16][3];
     u8 station[6];                      // the address, asked once after each reset

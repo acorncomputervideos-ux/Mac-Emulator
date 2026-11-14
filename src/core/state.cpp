@@ -154,7 +154,7 @@ void Quadra::state(StateIO &s)
     s.a(djmemc); s.a(iosb);
     u32 gen = mapGeneration;
     s.v(gen);
-    if (!s.saving()) mapGeneration++;                   // the CPU's TLB starts again
+    if (!s.saving()) { mapGeneration++; cpu.codeMayChange(); }   // the CPU's TLB and the JIT's checks start again
     cpu.state(s); fpu.state(s); mmu.state(s); via1.state(s); via2.state(s);
     iwm.state(s); esp.state(s); rtc.state(s); asc.state(s);
     adb.state(s); keyboard.state(s); mouse.state(s);

@@ -106,6 +106,7 @@ public:
         else *at |= ((u32)off & 0x7FFFF) << 5;
     }
     void blr(int rn) { put(0xD63F0000 | ((u32)rn << 5)); }
+    void br(int rn)  { put(0xD61F0000 | ((u32)rn << 5)); }
     void ret()       { put(0xD65F03C0); }
 
 private:

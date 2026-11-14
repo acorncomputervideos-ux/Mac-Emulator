@@ -407,6 +407,15 @@ Three models are emulated:
   interpreter's handlers. `make jittest` checks every one of those opcodes
   against the interpreter from random states (on ARM, or through
   qemu-aarch64), down to each flag, cycle and byte of memory.
+- Blocks are chained: when a block ends, its own code makes the run loop's
+  checks (instruction and cycle budget, interrupts, tracing, STOP) and, if
+  nothing is pending, jumps straight into the next block instead of going
+  back through the interpreter. A block's opcodes are compared with the
+  copy it was made from once, not every time it runs: the CPU keeps a
+  change counter, bumped by writes near translated code (tracked per 64
+  bytes), address map changes, network DMA, saved-state loads and the
+  emulator's own writes, and a block checked since the last change runs
+  as it is. `make jittest` includes a chained loop that rewrites itself.
 - On the Pi 3, 4 and 5 the translating is done on core 3, so the Mac's core
   never waits for it: it records a run of instructions and queues it; core
   3 makes the ARM code; the Mac's core puts it in place once its code is
@@ -440,6 +449,10 @@ Three models are emulated:
 - The emulator does not wait for USB or the network: keyboard, mouse and
   Ethernet are found while the Mac is already starting, and the screen stays
   dark until the Mac draws its first picture.
+- The Quadra skips the ROM's memory test at power-on (about 3 seconds with
+  32 MB, more with more RAM). The emulator leaves the ROM's own warm-start
+  mark in RAM, as a real Quadra has after a restart, and the ROM goes
+  straight on; the start-up chime and everything after it are unchanged.
 
 ## What you need
 
