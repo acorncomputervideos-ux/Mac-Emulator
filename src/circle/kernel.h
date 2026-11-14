@@ -160,7 +160,8 @@ private:
 	void PostEvent (TEmuEvent Type, int a, int b = 0);
 	void DrainEvents (void);
 	void UpdateScreen (void);
-	void Present (void);
+	void Present (boolean bFrame = FALSE);	// bFrame: the regular frame (may wait for the next)
+	void CopyRows (volatile u32 *pBuffer, int nTop, int nBottom);
 	void BootLog (boolean bForce = FALSE);
 	void DrawMac (boolean bForce);
 	void ShowMessage (const char *pLine1, const char *pLine2);
@@ -215,6 +216,17 @@ private:
 	CBcmFrameBuffer		*m_pFrameBuffer;
 	volatile u32		*m_pFrameBufferPixels;	// device memory: aligned 32-bit stores only
 	unsigned		m_nFrameBufferPitch;	// in pixels
+	// Double buffering: the frame buffer is two screens high; the Mac's
+	// frame goes into the half not shown, then the display is switched to it
+	// (at its next refresh: never half a frame, no tearing).
+	boolean			m_bDoubleBuffered;
+	unsigned		m_nFront;		// the half on the display (0, 1)
+	int			m_nPendTop[2], m_nPendBottom[2];	// lines each half still lacks
+	::u64			m_nLastFlip;		// when the display was last switched (us)
+	volatile u32 *FrontPixels (void) const
+	{
+		return m_pFrameBufferPixels + (m_bDoubleBuffered ? m_nFront * m_Surface.height * m_nFrameBufferPitch : 0);
+	}
 	unsigned		m_nDisplayWidth;	// the monitor's mode
 	unsigned		m_nDisplayHeight;
 	CSoundBaseDevice	*m_pSound;

@@ -132,6 +132,11 @@ CKernel::CKernel (void)
 
 	m_pFrameBufferPixels = 0;
 	m_nFrameBufferPitch = 0;
+	m_bDoubleBuffered = FALSE;
+	m_nFront = 0;
+	m_nPendTop[0] = m_nPendTop[1] = 0;
+	m_nPendBottom[0] = m_nPendBottom[1] = 0;
+	m_nLastFlip = 0;
 	m_nDisplayWidth = m_nDisplayHeight = 0;
 	m_Surface.pixels = 0;
 	m_Surface.width = m_Surface.height = m_Surface.pitch = 0;
@@ -354,13 +359,23 @@ boolean CKernel::SetupDisplay (int nMacWidth, int nMacHeight)
 	m_Surface.pixels = 0;
 	m_pFrameBufferPixels = 0;
 
-	m_pFrameBuffer = new CBcmFrameBuffer (nWidth, nHeight, 32);
-	if (!m_pFrameBuffer->Initialize ())
+	// Two screens high, for flipping; one if the firmware cannot.
+	m_bDoubleBuffered = TRUE;
+	m_pFrameBuffer = new CBcmFrameBuffer (nWidth, nHeight, 32, nWidth, 2 * nHeight);
+	if (!m_pFrameBuffer->Initialize () || m_pFrameBuffer->GetVirtHeight () < 2 * nHeight)
 	{
-		return FALSE;
+		delete m_pFrameBuffer;
+		m_bDoubleBuffered = FALSE;
+		m_pFrameBuffer = new CBcmFrameBuffer (nWidth, nHeight, 32);
+		if (!m_pFrameBuffer->Initialize ())
+		{
+			return FALSE;
+		}
 	}
-	m_Logger.Write (FromKernel, LogNotice, "Frame buffer %ux%u for a %dx%d Mac screen on a %ux%u display",
-			nWidth, nHeight, nMacWidth, nMacHeight, m_nDisplayWidth, m_nDisplayHeight);
+	m_nFront = 0;
+	m_Logger.Write (FromKernel, LogNotice, "Frame buffer %ux%u for a %dx%d Mac screen on a %ux%u display%s",
+			nWidth, nHeight, nMacWidth, nMacHeight, m_nDisplayWidth, m_nDisplayHeight,
+			m_bDoubleBuffered ? ", switched at each refresh" : " (single)");
 
 	// Device memory faults on the wide and unaligned stores of optimised
 	// drawing code: draw into a back buffer and copy changed rows out word
@@ -373,6 +388,12 @@ boolean CKernel::SetupDisplay (int nMacWidth, int nMacHeight)
 	m_Surface.pixels = new macemu::u32[m_Surface.width * m_Surface.height];
 	m_Surface.dirtyTop = 0;
 	m_Surface.dirtyBottom = m_Surface.height;
+	m_nPendTop[0] = m_nPendTop[1] = 0;
+	m_nPendBottom[0] = m_nPendBottom[1] = m_Surface.height;
+	if (m_bDoubleBuffered)
+	{
+		m_pFrameBuffer->SetVirtualOffset (0, 0);
+	}
 
 	// Pixel order: 1 = RGB in memory (0xBBGGRR as a word), 0 = BGR.
 	CBcmPropertyTags Tags;
@@ -1004,7 +1025,7 @@ TShutdownMode CKernel::Run (void)
 		ReportSharedFolder ();
 		QueueSound ();
 		UpdateScreen ();
-		Present ();
+		Present (TRUE);
 		m_CPUThrottle.Update ();
 		BootLog ();
 		m_nFrames++;
@@ -1065,7 +1086,7 @@ void CKernel::UpdateScreen (void)
 	m_bForceRedraw = FALSE;
 }
 
-void CKernel::Present (void)
+void CKernel::Present (boolean bFrame)
 {
 	if (m_pFrameBufferPixels == 0 || m_Surface.pixels == 0)
 	{
@@ -1074,17 +1095,72 @@ void CKernel::Present (void)
 	int nTop = m_Surface.dirtyTop, nBottom = m_Surface.dirtyBottom;
 	if (nTop < 0) nTop = 0;
 	if (nBottom > m_Surface.height) nBottom = m_Surface.height;
+	m_Surface.dirtyTop = m_Surface.height;
+	m_Surface.dirtyBottom = 0;
+
+	if (!m_bDoubleBuffered)
+	{
+		CopyRows (m_pFrameBufferPixels, nTop, nBottom);
+		return;
+	}
+
+	// Both halves now lack these lines; the hidden one gets them (and what
+	// it lacked from last time), then is shown.
+	for (unsigned h = 0; h < 2; h++)
+	{
+		if (nTop < nBottom)
+		{
+			if (m_nPendTop[h] >= m_nPendBottom[h])
+			{
+				m_nPendTop[h] = nTop;
+				m_nPendBottom[h] = nBottom;
+			}
+			else
+			{
+				if (nTop < m_nPendTop[h]) m_nPendTop[h] = nTop;
+				if (nBottom > m_nPendBottom[h]) m_nPendBottom[h] = nBottom;
+			}
+		}
+	}
+	unsigned nBack = 1 - m_nFront;
+	if (m_nPendTop[nBack] >= m_nPendBottom[nBack])
+	{
+		return;					// nothing new: no need to switch
+	}
+	// The hidden half may still be on the display if it was switched away
+	// from only just now (the switch happens at the display's next refresh).
+	// Frames come every 16.6 ms: then a refresh has been.  Closer than half
+	// a refresh, the regular frame leaves it to the next (core 0 must not
+	// wait: it serves the Mac's disk and network); other screens wait.
+	hostu64 nNow = CTimer::GetClockTicks64 ();
+	if (nNow - m_nLastFlip < 8000)
+	{
+		if (bFrame)
+		{
+			return;				// (its lines stay pending)
+		}
+		m_pFrameBuffer->WaitForVerticalSync ();
+	}
+	CopyRows (m_pFrameBufferPixels + nBack * m_Surface.height * m_nFrameBufferPitch,
+		  m_nPendTop[nBack], m_nPendBottom[nBack]);
+	m_nPendTop[nBack] = m_Surface.height;
+	m_nPendBottom[nBack] = 0;
+	m_pFrameBuffer->SetVirtualOffset (0, nBack * (unsigned) m_Surface.height);
+	m_nFront = nBack;
+	m_nLastFlip = CTimer::GetClockTicks64 ();
+}
+
+void CKernel::CopyRows (volatile u32 *pBuffer, int nTop, int nBottom)
+{
 	for (int y = nTop; y < nBottom; y++)
 	{
 		const macemu::u32 *pSrc = m_Surface.pixels + y * m_Surface.pitch;
-		volatile u32 *pDst = m_pFrameBufferPixels + y * m_nFrameBufferPitch;
+		volatile u32 *pDst = pBuffer + y * m_nFrameBufferPitch;
 		for (int x = 0; x < m_Surface.width; x++)
 		{
 			pDst[x] = pSrc[x];
 		}
 	}
-	m_Surface.dirtyTop = m_Surface.height;
-	m_Surface.dirtyBottom = 0;
 }
 
 // For the first three minutes, note progress in SD:/macemu.log so that a
@@ -3213,7 +3289,7 @@ void CKernel::PanicHandler (void)
 void CKernel::ShowEmergency (const char *pTitle)
 {
 	m_bEmergencyShown = TRUE;
-	volatile u32 *pFB = m_pFrameBufferPixels;
+	volatile u32 *pFB = m_pFrameBufferPixels != 0 ? FrontPixels () : 0;
 	if (pFB == 0)
 	{
 		return;
