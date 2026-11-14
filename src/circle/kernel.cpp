@@ -1043,7 +1043,9 @@ TShutdownMode CKernel::Run (void)
 			{
 				DataMemBarrier ();
 				m_nDrawState = 1;		// core 2: draw this frame
+#ifdef ARM_ALLOW_MULTI_CORE
 				asm volatile ("dsb ish\n\tsev" ::: "memory");
+#endif
 			}
 		}
 		else
@@ -1197,6 +1199,8 @@ void CKernel::PresentFlip (void)
 // ----------------------------------------------------------------- core 2
 
 // Core 2: draws each frame core 0 asks for, into the hidden half.
+// (Multi-core kernels only: the Pi 1 and Zero draw on their one core.)
+#ifdef ARM_ALLOW_MULTI_CORE
 void CKernel::DrawCoreRun (void)
 {
 	for (;;)
@@ -1217,6 +1221,7 @@ void CKernel::DrawCoreRun (void)
 		asm volatile ("dsb ish\n\tsev" ::: "memory");
 	}
 }
+#endif
 
 // Core 0: a frame core 2 has drawn: show it (or set up the new size).
 void CKernel::FinishDraw (void)
