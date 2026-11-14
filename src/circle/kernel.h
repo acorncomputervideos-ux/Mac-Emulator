@@ -242,7 +242,9 @@ private:
 	// Mac frame each) and has core 2 draw, so each frame is shown once.
 	boolean			m_bVsyncLock;
 	::u64			m_nRefresh256;		// the refresh period (us x 256)
-	::u64			m_nLastVsync;		// when the last refresh was (us)
+	::u64			m_nLastVsync;		// a moment safely after the last refresh (us)
+	::u64			m_nNextRefresh256;	// when the firmware will report the next (us x 256)
+	unsigned		m_nSinceResync;		// refreshes since it was last asked
 	volatile unsigned	m_nVsyncTicks;		// refreshes, for core 1
 	unsigned		m_nVsyncMissed;		// refreshes core 0 was too late for
 	void MeasureRefresh (void);

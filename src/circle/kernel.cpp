@@ -144,6 +144,8 @@ CKernel::CKernel (void)
 	m_bVsyncLock = FALSE;
 	m_nRefresh256 = (::u64) FrameMicros * 256;
 	m_nLastVsync = 0;
+	m_nNextRefresh256 = 0;
+	m_nSinceResync = 0;
 	m_nVsyncTicks = 0;
 	m_nVsyncMissed = 0;
 	m_nDisplayWidth = m_nDisplayHeight = 0;
@@ -1246,40 +1248,88 @@ void CKernel::MeasureRefresh (void)
 	{
 		m_nRefresh256 = nPeriod256;
 		m_nLastVsync = nPrev;
+		m_nNextRefresh256 = nPrev * 256 + nPeriod256;
+		m_nSinceResync = 0;
 		m_bVsyncLock = TRUE;
 	}
 }
 
-// Core 0: until the display's next refresh, serving the SD card, the
-// network and core 2's frame meanwhile; then the refresh counts for core 1.
-// The firmware is asked to wait only for the last moment before it.
+// Core 0: until just after the display's next refresh, serving the SD
+// card, the network and core 2's frame meanwhile; then the refresh counts
+// for core 1.  The firmware reports refreshes only some time after they
+// happen, so asking it for each would miss every other one: refreshes are
+// timed by the clock from the measured period, and every 2 seconds the
+// firmware is asked again (once this refresh's frame is on its way) to
+// keep the period and phase exact.
 void CKernel::WaitForRefresh (void)
 {
 	hostu64 nPeriod = m_nRefresh256 / 256;
-	hostu64 nExpect = m_nLastVsync + nPeriod;
+	hostu64 nNext = m_nNextRefresh256 / 256;	// the firmware's report of the next
 	hostu64 nNow = CTimer::GetClockTicks64 ();
-	if (nNow + nPeriod / 3 > nExpect + nPeriod)
+	unsigned nRefreshes = 1;
+	if (nNow > nNext + nPeriod / 2)
 	{
-		// Too late for that one (core 0 was busy): the next.
-		unsigned nLate = (unsigned) ((nNow - nExpect) / nPeriod) + 1;
-		nExpect += nLate * nPeriod;
+		// Too late for it (core 0 was busy): it and any after it are past.
+		unsigned nLate = (unsigned) ((nNow - nNext) / nPeriod);
+		if (nLate > 4)
+		{
+			// A long pause (the menu): start again from now.
+			m_nNextRefresh256 = (nNow + nPeriod) * 256;
+			m_nLastVsync = nNow;
+			m_nVsyncTicks++;
+			return;
+		}
+		nRefreshes += nLate;
 		m_nVsyncMissed += nLate;
+		m_nNextRefresh256 += nLate * m_nRefresh256;
+		nNext = m_nNextRefresh256 / 256;
 	}
-	WaitUntil (nExpect - 1500);
-	m_pFrameBuffer->WaitForVerticalSync ();
-	nNow = CTimer::GetClockTicks64 ();
-	unsigned nRefreshes = (unsigned) ((nNow - m_nLastVsync + nPeriod / 2) / nPeriod);
-	if (nRefreshes == 1)
+
+	if (++m_nSinceResync >= 120)
 	{
-		// Follow the refresh's own clock (a little at a time).
-		hostu64 nGap256 = (nNow - m_nLastVsync) * 256;
-		m_nRefresh256 = (m_nRefresh256 * 31 + nGap256) / 32;
-		if (m_nRefresh256 < (::u64) FrameMicros * 256 * 985 / 1000) m_nRefresh256 = (::u64) FrameMicros * 256 * 985 / 1000;
-		if (m_nRefresh256 > (::u64) FrameMicros * 256 * 1015 / 1000) m_nRefresh256 = (::u64) FrameMicros * 256 * 1015 / 1000;
+		// Once core 2's frame is drawn and switched to (it goes up at
+		// this refresh), ask the firmware when that refresh is.
+		while (m_nDrawState != 0 && CTimer::GetClockTicks64 () + 3000 < nNext)
+		{
+			WaitUntil (CTimer::GetClockTicks64 () + 200);
+		}
+		if (m_nDrawState == 0 && CTimer::GetClockTicks64 () + 2000 < nNext)
+		{
+			m_nSinceResync = 0;
+			m_pFrameBuffer->WaitForVerticalSync ();
+			hostu64 nSeen = CTimer::GetClockTicks64 ();
+			long long nError = (long long) nSeen - (long long) nNext;
+			if (nError > (long long) nPeriod / 2)
+			{
+				nRefreshes++;			// (it reported the one after)
+				nError -= (long long) nPeriod;
+				m_nNextRefresh256 += m_nRefresh256;
+			}
+			if (nError < (long long) nPeriod / 4 && nError > -(long long) nPeriod / 4)
+			{
+				// Drift over 120 refreshes: half of it into the period.
+				long long nAdjust = nError * 256 / 240;
+				::u64 nNew = (::u64) ((long long) m_nRefresh256 + nAdjust);
+				::u64 nLow = (::u64) FrameMicros * 256 * 985 / 1000, nHigh = (::u64) FrameMicros * 256 * 1015 / 1000;
+				m_nRefresh256 = nNew < nLow ? nLow : nNew > nHigh ? nHigh : nNew;
+			}
+			m_nNextRefresh256 = nSeen * 256 + m_nRefresh256;
+			m_nLastVsync = nSeen - nPeriod / 2;
+			DataMemBarrier ();
+			m_nVsyncTicks += nRefreshes;
+#ifdef ARM_ALLOW_MULTI_CORE
+			asm volatile ("dsb ish\n\tsev" ::: "memory");
+#endif
+			return;
+		}
 	}
-	if (nRefreshes == 0) nRefreshes = 1;
-	if (nRefreshes > 4) nRefreshes = 1;		// (a long pause: start again)
-	m_nLastVsync = nNow;
+
+	// Just after the refresh is reported (it happened before that).
+	WaitUntil (nNext + 500);
+	m_nNextRefresh256 += m_nRefresh256;
+	// Switches made before mid-way through the last refresh interval have
+	// happened (the hidden half is free to draw into).
+	m_nLastVsync = nNext - nPeriod / 2;
 	DataMemBarrier ();
 	m_nVsyncTicks += nRefreshes;
 #ifdef ARM_ALLOW_MULTI_CORE
